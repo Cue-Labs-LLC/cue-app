@@ -45,6 +45,29 @@ def resolve_window(value):
     return key, info['days'], info['label']
 
 
+def marketing_cache_key(org_id, window):
+    """Versioned cache key for an org's marketing metrics. Shared by the Marketing
+    overview and the SMS Campaigns page so a single version bump invalidates both."""
+    from django.core.cache import cache as django_cache
+    try:
+        version = django_cache.get(f'marketing_overview_ver:{org_id}', 0)
+    except Exception:
+        version = 0
+    return f'marketing_overview:{version}:{org_id}:{window}'
+
+
+def get_cached_marketing_metrics(org, window_days, window_key):
+    """Fetch (or compute + cache for 10 min) the org's marketing metrics dict.
+    Single source of truth reused by every view that needs the analytics slice."""
+    from tickets.cache_utils import safe_cache_get, safe_cache_set
+    key = marketing_cache_key(org.pk, window_key)
+    metrics = safe_cache_get(key)
+    if metrics is None:
+        metrics = MarketingAnalyticsService(org, window_days).calculate()
+        safe_cache_set(key, metrics, timeout=600)
+    return metrics
+
+
 def _safe_div(numer, denom):
     if not denom:
         return Decimal('0.0000')
@@ -88,10 +111,64 @@ class MarketingAnalyticsService:
             'top_sms_campaigns': top_sms,
             'top_campaigns': top_email + top_sms,
             'top_events_by_roi': top_events,
+            'native_sms': self._native_sms_summary(),
+            'broadcast_audience': self._broadcast_audience_series(),
             'meta': {
                 'window_start': self.window_start.isoformat() if self.window_start else None,
                 'window_end': self.window_end.isoformat(),
             },
+        }
+
+    def _native_sms_summary(self):
+        """Send-side stats for native marketing SMS (this app's own sends).
+
+        Distinct from `_sms_totals`, which tracks *revenue* synced from external
+        SlickText campaigns. Native sends have no revenue attribution yet (see
+        TODOS.md), so we surface delivery + opt-out counts where users expect
+        them: the marketing SMS tab.
+        """
+        from tickets.models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+
+        campaigns = SMSCampaign.objects.filter(
+            organization=self.organization,
+            deleted_at__isnull=True,
+            status=SMSCampaign.Status.SENT,
+        )
+        if self.window_start is not None:
+            campaigns = campaigns.filter(sent_at__gte=self.window_start)
+
+        recipients = SMSMessageRecipient.objects.filter(campaign__in=campaigns)
+        recipient_stats = recipients.aggregate(
+            sent=Count('id', filter=Q(status__in=['sent', 'delivered', 'undelivered'])),
+            delivered=Count('id', filter=Q(status='delivered')),
+            failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+            unique_clicks=Count('id', filter=Q(first_clicked_at__isnull=False)),
+            total_clicks=Coalesce(Sum('click_count'), 0),
+            unsubscribes=Count('id', filter=Q(opted_out_at__isnull=False)),
+        )
+
+        # Global opt-outs (Twilio STOP) in the window — superset of campaign-attributed
+        # unsubscribes, since a STOP can arrive without matching a recent send.
+        opt_outs = PhoneSuppression.objects.filter(
+            Q(organization=self.organization) | Q(organization__isnull=True),
+        )
+        if self.window_start is not None:
+            opt_outs = opt_outs.filter(created_at__gte=self.window_start)
+
+        sent = recipient_stats['sent'] or 0
+        delivered = recipient_stats['delivered'] or 0
+        unique_clicks = recipient_stats['unique_clicks'] or 0
+        return {
+            'campaigns_sent': campaigns.count(),
+            'messages_sent': sent,
+            'messages_delivered': delivered,
+            'messages_failed': recipient_stats['failed'] or 0,
+            'delivery_rate': _safe_div(delivered, sent),
+            'total_clicks': recipient_stats['total_clicks'] or 0,
+            'unique_clicks': unique_clicks,
+            'click_rate': _safe_div(unique_clicks, delivered),
+            'unsubscribes': recipient_stats['unsubscribes'] or 0,
+            'opt_outs': opt_outs.count(),
         }
 
     def _email_qs(self):
@@ -129,12 +206,12 @@ class MarketingAnalyticsService:
         return qs
 
     @staticmethod
-    def _coalesce_int(manual_field, api_field):
-        return Coalesce(F(manual_field), F(api_field), output_field=IntegerField())
+    def _coalesce_int(*fields):
+        return Coalesce(*[F(f) for f in fields], output_field=IntegerField())
 
     @staticmethod
-    def _coalesce_decimal(manual_field, api_field):
-        return Coalesce(F(manual_field), F(api_field), output_field=DecimalField(max_digits=12, decimal_places=2))
+    def _coalesce_decimal(*fields):
+        return Coalesce(*[F(f) for f in fields], output_field=DecimalField(max_digits=12, decimal_places=2))
 
     def _email_totals(self):
         return self._email_qs().annotate(
@@ -159,8 +236,8 @@ class MarketingAnalyticsService:
             eff_audience=self._coalesce_int('manual_audience', 'audience_size'),
             eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
             eff_unsubs=self._coalesce_int('manual_unsubscribes', 'unsubscribes'),
-            eff_orders=self._coalesce_int('manual_orders', 'orders'),
-            eff_revenue=self._coalesce_decimal('manual_revenue', 'revenue'),
+            eff_orders=self._coalesce_int('manual_orders', 'cue_attributed_orders', 'orders'),
+            eff_revenue=self._coalesce_decimal('manual_revenue', 'cue_attributed_revenue', 'revenue'),
         ).aggregate(
             campaigns=Count('id'),
             audience=Coalesce(Sum('eff_audience'), 0),
@@ -171,11 +248,14 @@ class MarketingAnalyticsService:
         )
 
     def _ads_totals(self):
-        return self._ads_qs().aggregate(
+        return self._ads_qs().annotate(
+            eff_orders=self._coalesce_int('manual_attributed_orders', 'cue_attributed_orders', 'api_attributed_orders'),
+            eff_revenue=self._coalesce_decimal('manual_attributed_revenue', 'cue_attributed_revenue', 'api_attributed_revenue'),
+        ).aggregate(
             line_items=Count('id'),
             spend=Coalesce(Sum('amount'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
-            attributed_orders=Coalesce(Sum('manual_attributed_orders'), 0),
-            attributed_revenue=Coalesce(Sum('manual_attributed_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            attributed_orders=Coalesce(Sum('eff_orders'), 0),
+            attributed_revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         )
 
     def _format_email(self, totals):
@@ -422,6 +502,73 @@ class MarketingAnalyticsService:
 
         return sorted(months.values(), key=lambda r: r['month'])
 
+    def _broadcast_audience_series(self):
+        """One point per broadcast (native SMS + external SlickText) for the
+        audience-over-time line chart and the by-market breakdown.
+
+        Market = the linked event's assigned market ('No market' when a campaign
+        has no assigned market). Market-independent and window-scoped, so it caches with the
+        rest of the metrics dict — the view applies the market filter afterward.
+        """
+        from tickets.models import SMSCampaign
+        from tickets.services.markets import NO_MARKET_LABEL
+
+        def market_of(name):
+            return (name or '').strip() or NO_MARKET_LABEL
+
+        rows = []
+
+        native = (
+            SMSCampaign.objects.filter(
+                organization=self.organization,
+                deleted_at__isnull=True,
+                status=SMSCampaign.Status.SENT,
+                sent_at__isnull=False,
+            )
+            .select_related('event', 'event__market')
+        )
+        if self.window_start is not None:
+            native = native.filter(sent_at__gte=self.window_start)
+        for c in native.values('name', 'sent_at', 'audience_size', 'event__market_id', 'event__market__name'):
+            sent_at = c['sent_at']
+            market_name = market_of(c['event__market__name'])
+            rows.append({
+                'channel': 'native',
+                'name': c['name'] or 'Untitled SMS',
+                'sent_at': sent_at.isoformat(),
+                'sent_ms': int(sent_at.timestamp() * 1000),
+                'audience': c['audience_size'] or 0,
+                'market_id': str(c['event__market_id']) if c['event__market_id'] else '',
+                'market_name': market_name,
+                'market_label': market_name,
+                'market': market_name,
+            })
+
+        slicktext = (
+            self._sms_qs()
+            .exclude(send_time__isnull=True)
+            .select_related('event', 'event__market')
+            .annotate(eff_audience=self._coalesce_int('manual_audience', 'audience_size'))
+            .values('name', 'send_time', 'eff_audience', 'event__market_id', 'event__market__name')
+        )
+        for c in slicktext:
+            send_time = c['send_time']
+            market_name = market_of(c['event__market__name'])
+            rows.append({
+                'channel': 'slicktext',
+                'name': c['name'] or 'Untitled SMS',
+                'sent_at': send_time.isoformat(),
+                'sent_ms': int(send_time.timestamp() * 1000),
+                'audience': c['eff_audience'] or 0,
+                'market_id': str(c['event__market_id']) if c['event__market_id'] else '',
+                'market_name': market_name,
+                'market_label': market_name,
+                'market': market_name,
+            })
+
+        rows.sort(key=lambda r: r['sent_ms'])
+        return rows
+
     def _top_events_by_roi(self, limit=10):
         """Per-event ROI using the isolated-Subquery pattern (CLAUDE.md).
 
@@ -476,7 +623,10 @@ class MarketingAnalyticsService:
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
         ads_revenue_sq = Subquery(
-            ads_subq.values('event').annotate(s=Sum('manual_attributed_revenue')).values('s')[:1],
+            ads_subq.values('event').annotate(
+                s=Sum(Coalesce(F('manual_attributed_revenue'), F('cue_attributed_revenue'), F('api_attributed_revenue'),
+                               output_field=DecimalField(max_digits=12, decimal_places=2)))
+            ).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
 

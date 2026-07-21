@@ -1,0 +1,62 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Display Preferences{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Display Preferences</h1>
+        <p class="page-header-subtitle">Choose which optional cards appear on your event pages.</p>
+    </div>
+</div>
+
+<div class="card" style="max-width: 720px;">
+    <div class="card-header">
+        <h5 class="mb-0">Event page</h5>
+    </div>
+    <div class="card-body">
+        <form method="post" novalidate>
+            {% csrf_token %}
+
+            <div class="form-check form-switch mb-2">
+                {{ form.ai_event_summary_enabled }}
+                <label class="form-check-label" for="{{ form.ai_event_summary_enabled.id_for_label }}">
+                    Show the AI Event Summary card
+                </label>
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem; margin-left: 2.5em;">
+                When on, the AI Event Summary card appears on the Overview tab of each event,
+                letting you generate an AI analysis of the event's performance.
+            </p>
+
+            <div class="form-check form-switch mb-2 mt-3">
+                {{ form.ai_event_summary_auto_regenerate }}
+                <label class="form-check-label" for="{{ form.ai_event_summary_auto_regenerate.id_for_label }}">
+                    Auto-refresh summaries when event data changes
+                </label>
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem; margin-left: 2.5em;">
+                When on, an event's summary is automatically regenerated at most once a day
+                after the event ends whenever its data changes (new orders, finances,
+                marketing results, or survey responses). Turn this off to only regenerate
+                summaries manually.
+            </p>
+
+            <hr class="my-4">
+
+            <div class="mb-2" style="max-width: 360px;">
+                <label class="form-label mb-1" for="{{ form.timezone.id_for_label }}">Timezone</label>
+                {{ form.timezone }}
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem;">
+                Used when showing scheduled send times — for example, the suggested send
+                dates on AI campaign plans.
+            </p>
+
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary">Save preferences</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

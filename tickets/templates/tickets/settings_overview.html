@@ -21,6 +21,11 @@
         <span class="hub-link-title">Venues</span>
         <p class="hub-link-copy">Maintain venues used when creating and reporting on events.</p>
     </a>
+    <a href="{% url 'tickets:market_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-map"></i></span>
+        <span class="hub-link-title">Markets</span>
+        <p class="hub-link-copy">Build geographic markets from event city, state, or country.</p>
+    </a>
     <a href="{% url 'tickets:customer_tag_list' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-tags"></i></span>
         <span class="hub-link-title">Customer Tags</span>
@@ -41,6 +46,16 @@
         <span class="hub-link-title">Organization Profile</span>
         <p class="hub-link-copy">Update public organization details and branding.</p>
     </a>
+    <a href="{% url 'tickets:settings_display_preferences' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-toggles"></i></span>
+        <span class="hub-link-title">Display Preferences</span>
+        <p class="hub-link-copy">Choose which optional cards appear on event pages.</p>
+    </a>
+    <a href="{% url 'tickets:settings_segment_tuning' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-diagram-3"></i></span>
+        <span class="hub-link-title">Segment Settings</span>
+        <p class="hub-link-copy">Choose whether customer segments use automatic scoring or custom cut-offs.</p>
+    </a>
     <a href="{% url 'tickets:custom_field_list' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-sliders"></i></span>
         <span class="hub-link-title">Custom Fields</span>
@@ -51,43 +66,26 @@
         <span class="hub-link-title">Income Sources</span>
         <p class="hub-link-copy">Define non-ticket revenue sources for event finance tracking.</p>
     </a>
-    <a href="{% url 'tickets:meta_ads_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-megaphone"></i></span>
-        <span class="hub-link-title">Meta Ads</span>
-        <p class="hub-link-copy">Connect ad spend for event-level marketing performance.</p>
-    </a>
-    <a href="{% url 'tickets:mailchimp_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-envelope-paper"></i></span>
-        <span class="hub-link-title">Mailchimp</span>
-        <p class="hub-link-copy">Connect campaign reporting for event marketing analysis.</p>
-    </a>
-    <a href="{% url 'tickets:slicktext_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-chat-dots"></i></span>
-        <span class="hub-link-title">SlickText</span>
-        <p class="hub-link-copy">Link SMS broadcasts to events and track audience response.</p>
-    </a>
-    <a href="{% url 'tickets:typeform_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-clipboard2-data"></i></span>
-        <span class="hub-link-title">Typeform</span>
-        <p class="hub-link-copy">Stream Typeform survey responses into Cue and auto-suggest events.</p>
+    <a href="{% url 'tickets:integrations_overview' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-plug"></i></span>
+        <span class="hub-link-title">Integrations</span>
+        <p class="hub-link-copy">Connect Mailchimp, Typeform, SlickText, Meta Ads, and your calendar.</p>
     </a>
     <a href="{% url 'tickets:settings_api_keys' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-key"></i></span>
         <span class="hub-link-title">API Keys</span>
         <p class="hub-link-copy">Create and revoke organization API credentials.</p>
     </a>
+    <a href="{% url 'tickets:webhook_endpoint_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-hdd-network"></i></span>
+        <span class="hub-link-title">Webhooks</span>
+        <p class="hub-link-copy">Send signed HTTP callbacks to your systems when events, orders, and customers are created.</p>
+    </a>
     <a href="{% url 'tickets:ai_token_usage' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-cpu"></i></span>
         <span class="hub-link-title">AI Token Usage</span>
         <p class="hub-link-copy">Review monthly token usage for billable AI features.</p>
     </a>
-    {% if request.user.is_superuser %}
-    <a href="{% url 'tickets:settings_google_calendar' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-calendar-check"></i></span>
-        <span class="hub-link-title">Google Calendar</span>
-        <p class="hub-link-copy">Configure the calendar webhook used for new events.</p>
-    </a>
-    {% endif %}
 </div>
 {% endif %}
 {% endblock %}

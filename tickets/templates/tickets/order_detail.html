@@ -26,14 +26,44 @@
             {% elif order.refunded_amount > 0 %}&nbsp;&middot;&nbsp;<i class="bi bi-arrow-counterclockwise"></i> Refunded ${{ order.refunded_amount|currency }} of ${{ order.total_amount|currency }}{% endif %}
         </p>
     </div>
-    {% if can_refund %}
-    <div>
+    {% if can_resend or can_refund %}
+    <div class="d-flex gap-2">
+        {% if can_resend %}
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resendModal">
+            <i class="bi bi-envelope"></i> Resend Confirmation
+        </button>
+        {% endif %}
+        {% if can_refund %}
         <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#refundModal">
             <i class="bi bi-arrow-counterclockwise"></i> Refund Order
         </button>
+        {% endif %}
     </div>
     {% endif %}
 </div>
+
+{% if can_resend %}
+<div class="modal fade" id="resendModal" tabindex="-1" aria-labelledby="resendModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" action="{% url 'tickets:resend_order_confirmation' order.id %}">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title" id="resendModalLabel">Resend Confirmation Email</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0">Resend the confirmation email for order <strong>{{ order.display_order_number }}</strong> to <strong>{{ order.customer.email }}</strong>?</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-envelope"></i> Send Email</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if can_refund %}
 <div class="modal fade" id="refundModal" tabindex="-1" aria-labelledby="refundModalLabel" aria-hidden="true">

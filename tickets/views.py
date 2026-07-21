@@ -9,6 +9,7 @@ import uuid as _uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django import forms as django_forms
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -18,51 +19,57 @@ from django.urls import reverse, reverse_lazy
 from django.conf import settings
 from django.db.models import (
     Sum, Count, Avg, Max, Min, Q, Subquery, OuterRef, Prefetch,
-    Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
+    Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField, IntegerField,
 )
 from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast, TruncMonth, TruncQuarter
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
-from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
-from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, TicketOrder, Ticket, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
-    SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
+    SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
+    DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
+    LoyaltyProgram, LoyaltyTier, PhoneSuppression, SMSConsentRecord,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
-    TICKETING_TYPE_DIRECT,
+    TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
-    VenueForm, EventForm, EventTalentFormSet, LoginForm,
+    VenueForm, VenueChoiceField, EventForm, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
-    OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
+    OTPVerificationForm, MemberInviteForm, AttendeePhoneForm, SubscribeForm,
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
+    OrgDisplayPreferencesForm, SegmentTuningForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
+    LoyaltyProgramForm, LoyaltyTierFormSet,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
+from .services.markets import MarketBuilder, NO_MARKET_LABEL
+from .services.webhooks import fire_event_created, fire_order_created, fire_customer_created
 from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation import (
     BEHAVIOR_PROFILE_BADGE_COLORS,
@@ -72,7 +79,6 @@ from .services.segmentation import (
 from .services.segmentation.segment_definitions import (
     SEGMENT_BADGE_COLORS,
     SEGMENT_DESCRIPTIONS,
-    SEGMENT_RULES,
 )
 RFM_RECENCY_LABELS = {
     5: "Bought very recently",
@@ -103,6 +109,12 @@ BEHAVIOR_METRIC_LABELS = {
 
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
+from .services.loyalty import (
+    LoyaltyProgramStats,
+    award_points_for_order,
+    revoke_points_for_order,
+    revoke_points_for_orders,
+)
 from .services.meta_ads import (
     MetaAdsAPIError,
     MetaAdsClient,
@@ -131,17 +143,22 @@ from .services.marketing import (
     MarketingAnalyticsService,
     WINDOW_CHOICES as MARKETING_WINDOW_CHOICES,
     generate_marketing_narrative,
+    get_cached_marketing_metrics,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
+from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options, _valid_uuids
+from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, get_or_create_customer_for_purchase, ticket_qr_payload
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
+    loyalty_enabled,
 )
 
 from django.core.cache import cache as django_cache
 
 from .cache_utils import safe_cache_delete, safe_cache_get, safe_cache_set
+from .integrations.registry import marketing_providers
 
 import logging
 logger = logging.getLogger(__name__)
@@ -301,6 +318,16 @@ def _invalidate_event_list_cache(org):
         pass
 
 
+def _invalidate_event_campaign_match_cache(event_id):
+    """Drop cached Mailchimp/SlickText/Meta match rankings for this event."""
+    from tickets.services import campaign_match_cache
+    for source in ("mailchimp", "slicktext", "meta"):
+        try:
+            campaign_match_cache.invalidate(source, event_id)
+        except Exception:
+            pass
+
+
 EVENT_STATS_CACHE_VERSION = 5
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
@@ -331,6 +358,7 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'survey_total_response_count',
     'survey_results',
     'attendee_segments',
+    'audience',
 })
 
 
@@ -1112,6 +1140,82 @@ def logout_view(request):
     return LogoutView.as_view()(request)
 
 
+@login_required
+def admin_impersonate_start(request, user_id):
+    """Log an internal Cue admin (superuser) in as another user for debugging.
+
+    Reversible: the admin's own id is stashed in the session as
+    ``_impersonator_id`` so the banner can offer a one-click restore. Only
+    superusers may start impersonation, and privileged (staff/superuser)
+    accounts can never be targeted.
+    """
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from django.http import HttpResponseForbidden
+
+    if not request.user.is_superuser:
+        return HttpResponseForbidden('Access denied.')
+
+    target = get_object_or_404(User, pk=user_id)
+
+    if target.is_superuser or target.is_staff:
+        messages.error(request, 'Cannot impersonate an admin or staff account.')
+        return redirect('/admin/tickets/userprofile/')
+
+    if target == request.user:
+        return redirect('tickets:home')
+
+    admin_id = request.user.pk
+    logger.warning("Impersonation START: admin %s -> user %s", admin_id, target.pk)
+
+    # auth_login() flushes the session when switching to a different user, so
+    # set the impersonation marker *after* it. The flush also clears the stale
+    # _org_id, forcing get_organization() to re-resolve for the target.
+    auth_login(request, target, backend='tickets.backends.EmailBackend')
+    request.session['_impersonator_id'] = admin_id
+    clear_org_cache(request)
+
+    messages.warning(
+        request,
+        f'You are now impersonating {target.get_full_name() or target.email}.'
+    )
+    return redirect('tickets:home')
+
+
+@login_required
+@require_http_methods(["POST"])
+def admin_impersonate_stop(request):
+    """End an active impersonation and restore the original admin session.
+
+    Authorizes on the presence of the ``_impersonator_id`` session key rather
+    than on ``is_superuser`` — by this point request.user is the (non-superuser)
+    impersonated target, and that key can only have been set by
+    admin_impersonate_start().
+    """
+    from django.contrib.auth import login as auth_login, logout as auth_logout
+    from django.contrib.auth.models import User
+
+    impersonator_id = request.session.get('_impersonator_id')
+    if not impersonator_id:
+        return redirect('tickets:home')
+
+    try:
+        admin_user = User.objects.get(pk=impersonator_id)
+    except User.DoesNotExist:
+        auth_logout(request)
+        return redirect('tickets:login')
+
+    logger.warning(
+        "Impersonation STOP: admin %s <- user %s",
+        impersonator_id, request.user.pk,
+    )
+    # Logging back in as a different user flushes the session, which clears
+    # _impersonator_id along with it.
+    auth_login(request, admin_user, backend='tickets.backends.EmailBackend')
+    clear_org_cache(request)
+    return redirect('/admin/tickets/userprofile/')
+
+
 class PasswordResetView(auth_views.PasswordResetView):
     """Password reset request view."""
     template_name = 'tickets/auth/password_reset.html'
@@ -1386,21 +1490,28 @@ def public_org_profile(request, slug):
     from .models import TICKETING_TYPE_DIRECT
     org = get_object_or_404(Organization, slug=slug)
     today = django_tz.now().date()
-    events = (
+    base_events = (
         Event.objects.filter(
             organization=org,
-            status=EVENT_STATUS_LIVE,
+            status__in=[EVENT_STATUS_LIVE, EVENT_STATUS_ENDED],
             ticketing_type=TICKETING_TYPE_DIRECT,
             deleted_at__isnull=True,
         )
-        .filter(
-            Q(end_date__isnull=False, end_date__gte=today) |
-            Q(end_date__isnull=True, start_date__gte=today)
-        )
         .select_related('venue')
-        .order_by('start_date', 'start_time', 'name')
     )
-    return render(request, 'tickets/public_org_profile.html', {'org': org, 'events': events})
+    upcoming_events = base_events.filter(
+        Q(end_date__isnull=False, end_date__gte=today) |
+        Q(end_date__isnull=True, start_date__gte=today)
+    ).order_by('start_date', 'start_time', 'name')
+    past_events = base_events.filter(
+        Q(end_date__isnull=False, end_date__lt=today) |
+        Q(end_date__isnull=True, start_date__lt=today)
+    ).order_by('-start_date', '-start_time', 'name')
+    return render(request, 'tickets/public_org_profile.html', {
+        'org': org,
+        'upcoming_events': upcoming_events,
+        'past_events': past_events,
+    })
 
 
 @login_required
@@ -1414,6 +1525,7 @@ def org_required(request):
 def create_organization(request):
     """Create a new organization and assign the current user to it."""
     from .forms import OrganizationForm
+    from .services.org_onboarding import initialize_new_organization
     if not request.user.is_superuser:
         approved = OrganizerWaitlist.objects.filter(
             email=request.user.email,
@@ -1450,13 +1562,32 @@ def create_organization(request):
                 if profile.organization_id is None:
                     profile.organization = org
                 profile.save(update_fields=['organization', 'role', 'org_role'])
+            # Seed trial SMS credits after the org is committed (credit() locks the
+            # org row). Idempotent + non-fatal — see initialize_new_organization.
+            initialize_new_organization(org)
             clear_org_cache(request)
             request.session['_org_id'] = str(org.pk)
-            messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
+            messages.success(
+                request,
+                f"Welcome to Cue! '{org.name}' is ready — follow the Getting started "
+                "steps below to launch your first event.",
+            )
             return redirect('tickets:home')
     else:
-        form = OrganizationForm()
-    return render(request, 'tickets/create_organization.html', {'form': form})
+        # Prefill the org name from the waitlist application so approved users
+        # confirm-and-create rather than re-entering info they already gave.
+        initial = {}
+        approved = OrganizerWaitlist.objects.filter(
+            email=request.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        ).order_by('-approved_at').first()
+        if approved and approved.organization_name:
+            initial['name'] = approved.organization_name
+        form = OrganizationForm(initial=initial)
+    return render(request, 'tickets/create_organization.html', {
+        'form': form,
+        'prefilled_from_waitlist': bool(initial.get('name')),
+    })
 
 
 @login_required
@@ -1712,6 +1843,177 @@ def invite_revoke(request, token):
     return redirect('tickets:member_list')
 
 
+def _onboarding_state(org, has_customers):
+    """Build the dashboard "Getting started" checklist for a new organizer.
+
+    Analytics-first: the guaranteed payoff is importing data to unlock customer
+    segments; SMS is a consent-gated later step (its CTA never points at a send
+    screen until there's an opted-in audience). Step completion is derived from
+    existing data (no per-step flags). The card hides once every step is complete
+    or the org dismisses it. ``has_customers`` is passed in from the home view's
+    already-computed customer count to avoid re-querying it here.
+    """
+    empty = {'show': False, 'steps': [], 'complete_count': 0, 'total': 0,
+             'all_complete': False, 'has_sent_campaign': None}
+    if org is None:
+        # Only superusers can reach the dashboard without an org; nothing to onboard.
+        return empty
+    # Dismissed orgs skip all predicate queries on every dashboard load.
+    if org.onboarding_dismissed_at:
+        return empty
+
+    from tickets.models import SMSCampaign
+
+    real_customers = Customer.objects.filter(organization=org).exclude(
+        email__endswith='@placeholder.local'
+    )
+    # Campaign audience is gated on consent + a phone (models.py); mirror it here.
+    has_eligible_audience = has_customers and real_customers.filter(
+        sms_opt_in=True).exclude(phone='').exists()
+    has_sent_campaign = SMSCampaign.objects.filter(
+        organization=org, status=SMSCampaign.Status.SENT
+    ).exists()
+    profile_set = bool(org.photo or org.description or org.website)
+
+    # SMS step is consent-gated: with no opted-in audience, the CTA leads to the
+    # customer list (where consent status lives), never a compose/blast screen.
+    if has_eligible_audience:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Reach your opted-in customers with a text.',
+            'url': reverse('tickets:sms_campaign_create'),
+            'cta': 'Compose campaign',
+            'complete': has_sent_campaign,
+        }
+    else:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Imported contacts need marketing consent before you can text them '
+                           '— map a consent column on import, or collect opt-ins.',
+            'url': reverse('tickets:customer_list') + '?focus=consent',
+            'cta': 'Review consent',
+            'complete': has_sent_campaign,
+        }
+
+    steps = [
+        {
+            'key': 'set_profile',
+            'label': 'Set up your organization profile',
+            'description': 'Add a logo, description, and website so customers recognize you.',
+            'url': reverse('tickets:org_profile'),
+            'cta': 'Edit profile',
+            'complete': profile_set,
+        },
+        {
+            'key': 'import_data',
+            'label': 'Import an event report',
+            'description': 'Upload a sales report from a past event to see who your customers are.',
+            # Straight to the external (CSV) flow — skip the type chooser, which
+            # leads with Direct Ticketing and misreads as "sell tickets", not import.
+            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+            'cta': 'Import data',
+            'complete': has_customers,
+        },
+        {
+            'key': 'review_segments',
+            'label': 'Review your customer segments',
+            'description': 'See your VIPs, regulars, and at-risk customers.',
+            'url': reverse('tickets:customer_segments'),
+            'cta': 'View segments',
+            'complete': has_customers,
+        },
+        sms_step,
+    ]
+
+    complete_count = sum(1 for step in steps if step['complete'])
+    all_complete = complete_count == len(steps)
+    return {
+        'show': not all_complete,
+        'steps': steps,
+        'complete_count': complete_count,
+        'total': len(steps),
+        'all_complete': all_complete,
+        # Surfaced so the direct-ticketing upsell can reuse it without re-querying.
+        'has_sent_campaign': has_sent_campaign,
+    }
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_onboarding(request):
+    """Hide the dashboard "Getting started" checklist for the current org."""
+    org = get_organization(request)
+    org.onboarding_dismissed_at = django_tz.now()
+    org.save(update_fields=['onboarding_dismissed_at'])
+    return redirect('tickets:home')
+
+
+def _direct_ticketing_upsell(org, has_customers, has_sent_campaign=None):
+    """Whether to show the value-gated "sell through Cue" upsell card (D4/4A).
+
+    Shown only AFTER the org has seen value (imported customers or sent a
+    campaign), and only while direct ticketing isn't set up and the card hasn't
+    been dismissed. Kept quiet and dismissible — never a banner or modal.
+
+    ``has_sent_campaign`` may be passed in (the checklist already computes it) to
+    avoid a duplicate query; it's only looked up here when needed and unknown.
+    """
+    if org is None or org.directticketing_upsell_dismissed_at or org.stripe_onboarding_complete:
+        return False
+    if has_customers:
+        return True
+    if has_sent_campaign is None:
+        from tickets.models import SMSCampaign
+        has_sent_campaign = SMSCampaign.objects.filter(
+            organization=org, status=SMSCampaign.Status.SENT
+        ).exists()
+    return has_sent_campaign
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_directticketing_upsell(request):
+    """Permanently hide the direct-ticketing upsell card for the current org."""
+    org = get_organization(request)
+    org.directticketing_upsell_dismissed_at = django_tz.now()
+    org.save(update_fields=['directticketing_upsell_dismissed_at'])
+    return redirect('tickets:home')
+
+
+@login_required
+@require_org
+@require_organizer
+def sample_import_csv(request):
+    """Downloadable canonical sample CSV for first-time importers.
+
+    Shows the columns a ticket-order export should have, including the optional
+    SMS consent column that maps to Customer.sms_opt_in on import.
+    """
+    import csv as _csv
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="cue-sample-import.csv"'
+    writer = _csv.writer(response)
+    writer.writerow([
+        'order_date', 'customer_name', 'customer_email', 'customer_phone',
+        'ticket_type', 'total_amount', 'sms_opt_in',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Jordan Rivera', 'jordan@example.com', '+15555550101',
+        'General Admission', '45.00', 'yes',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Sam Chen', 'sam@example.com', '+15555550102',
+        'VIP', '90.00', 'no',
+    ])
+    return response
+
+
 @login_required
 @require_org
 @require_organizer
@@ -1798,7 +2100,13 @@ def home(request):
             '-created_at',
         )[:3]
     )
-    
+
+    # Reuse the already-computed customer count for the onboarding predicates so
+    # the checklist and the upsell don't re-query "does this org have customers"
+    # or "has it sent a campaign".
+    has_customers = total_customers > 0
+    onboarding = _onboarding_state(org, has_customers)
+
     context = {
         'page_obj': page_obj,
         'event_ids_show_warning': event_ids_show_warning,
@@ -1809,6 +2117,10 @@ def home(request):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
+        'onboarding': onboarding,
+        'show_directticketing_upsell': _direct_ticketing_upsell(
+            org, has_customers, onboarding.get('has_sent_campaign')
+        ),
     }
     return render(request, 'tickets/home.html', context)
 
@@ -2063,9 +2375,27 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
     return JsonResponse(payload)
 
 
+def require_external_events(view):
+    """Gate a view behind the org's external_events_enabled flag.
+
+    External (CSV-imported) events are off by default; orgs are direct-ticketing
+    only until this per-org flag is enabled. Mirrors require_loyalty_feature.
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if not org or not org.external_events_enabled:
+            raise Http404('External events are not enabled for this organization.')
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -2297,6 +2627,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def reprocess_csv_file(request, file_id):
     """Delete all orders from an upload and re-run the CSV processor with current format settings."""
@@ -2313,7 +2644,16 @@ def reprocess_csv_file(request, file_id):
             .values_list('event_id', flat=True)
             .distinct()
         )
-        TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
+        with transaction.atomic():
+            # Revoke loyalty points BEFORE the hard delete — reprocessing
+            # re-creates orders with new UUIDs and would double-award.
+            # Failures PROPAGATE so a failed revoke aborts the delete instead
+            # of stranding points (eng review D4).
+            revoke_points_for_orders(
+                list(TicketOrder.objects.filter(uploaded_file=uploaded_file).values_list('id', flat=True)),
+                description='CSV reprocess',
+            )
+            TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
         uploaded_file.status = 'pending'
         uploaded_file.metadata.pop('processing_results', None)
         uploaded_file.save(update_fields=['status', 'metadata'])
@@ -2326,6 +2666,24 @@ def reprocess_csv_file(request, file_id):
         'uploaded_file': uploaded_file,
         'order_count': order_count,
     })
+
+
+@login_required
+@require_org
+@require_host
+def download_csv_file(request, file_id):
+    """Download the original CSV that was uploaded for this import."""
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
+    if not uploaded_file.csv_file:
+        messages.error(request, "No stored file available to download.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+    return FileResponse(
+        uploaded_file.csv_file.open('rb'),
+        as_attachment=True,
+        filename=uploaded_file.filename,
+        content_type='text/csv',
+    )
 
 
 @login_required
@@ -2389,6 +2747,13 @@ def upload_delete(request, file_id):
                 orders.values_list('customer_id', flat=True).distinct()
             )
 
+            # Revoke loyalty points BEFORE the hard delete; failures PROPAGATE
+            # (abort the whole delete) so points can never strand (D4).
+            revoke_points_for_orders(
+                list(orders.values_list('id', flat=True)),
+                description='Upload deleted',
+            )
+
             # Delete orders first (Tickets will cascade delete)
             orders.delete()
 
@@ -2420,51 +2785,198 @@ def upload_delete(request, file_id):
         return redirect('tickets:home')
 
 
-@login_required
-@require_org
-@require_host
-def customer_list(request):
-    """Display list of all customers with LTV and optional segment/tag filter."""
-    org = get_organization(request)
-    customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
+# Bootstrap badge color per acquisition source. Blank/unknown falls back to secondary.
+ACQUISITION_SOURCE_BADGE_COLORS = {
+    'subscribe_form': 'info',
+    'ticket_purchase': 'success',
+    'import': 'secondary',
+    'manual': 'primary',
+}
+
+
+def build_customer_queryset(org, params, *, for_export=False):
+    """Build the filtered/annotated/sorted ``Customer`` queryset for the list.
+
+    Single source of truth for the Customers page queryset, shared by
+    ``customer_list`` (paginated HTML) and ``customer_export_csv`` (streaming
+    CSV) so the two never drift on which rows/filters/sort they produce.
+
+    ``params`` is a mapping of the list's GET params (typically ``request.GET``).
+    ``for_export`` is accepted for caller clarity; ``order_count`` is annotated
+    unconditionally (the list has always shown it and the export outputs it).
+
+    Returns ``(queryset, meta)``. The queryset has NOT been paginated or given
+    ``prefetch_related`` — callers add those. ``meta`` carries the resolved
+    filter values, ``sort_by``, ``market_context``, ``has_market``,
+    ``filter_params_qs`` and ``has_active_filters`` for the templates.
+    """
+    market_context = _customer_market_filter_context(org, params.get('market', ''))
 
     # Segment filter
-    segment_filter = request.GET.get('segment', '').strip()
-    if segment_filter:
-        customers = customers.filter(rfm_segment=segment_filter)
+    segment_filter = params.get('segment', '').strip()
+
+    # Acquisition source filter — validate against the model's choices so a bad
+    # query param can't inject an arbitrary lookup value.
+    source_filter = params.get('source', '').strip()
+    if source_filter not in Customer.AcquisitionSource.values:
+        source_filter = ''
 
     # Tag filter — validate UUID to avoid ValueError on bad input
-    tag_filter = request.GET.get('tag', '').strip()
+    tag_filter = params.get('tag', '').strip()
     if tag_filter:
         try:
             _uuid.UUID(tag_filter)
-            customers = customers.filter(tags__id=tag_filter)
         except ValueError:
             tag_filter = ''
 
     # Search
-    search_query = request.GET.get('search', '')
-    if search_query:
-        customers = customers.filter(
-            name__icontains=search_query
-        ) | customers.filter(
-            email__icontains=search_query
+    search_query = params.get('search', '')
+    last_order_from = _customer_filter_date(params.get('last_order_from', ''))
+    last_order_to = _customer_filter_date(params.get('last_order_to', ''))
+    phone_filter = params.get('phone_filter', '').strip()
+    sms_filter = params.get('sms_filter', '').strip()   # '1', '0', or ''
+    min_ltv = params.get('min_ltv', '').strip()
+    max_ltv = params.get('max_ltv', '').strip()
+    min_orders = params.get('min_orders', '').strip()
+    max_orders = params.get('max_orders', '').strip()
+    # Audience tab (a clean partition of the org's people):
+    #   'customers'   = has purchased (order_count > 0)
+    #   'subscribers' = on the SMS list, no purchase (sms_opt_in & order_count == 0)
+    #   'contacts'    = no purchase, not on the SMS list
+    #   ''            = all
+    customer_type = params.get('type', '').strip()
+    if customer_type not in ('customers', 'subscribers', 'contacts'):
+        customer_type = ''
+    sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
+    has_active_filters = any([
+        search_query,
+        segment_filter,
+        source_filter,
+        tag_filter,
+        market_context['market_filter'],
+        last_order_from,
+        last_order_to,
+        phone_filter,
+        sms_filter,
+        min_ltv,
+        max_ltv,
+        min_orders,
+        max_orders,
+    ])
+
+    # Build the queryset via the shared filter helper (also used by SMS
+    # recipient lists) so filtering logic lives in one place.
+    customers = filter_customers(org, {
+        'rfm_segment': segment_filter or None,
+        'acquisition_source': source_filter or None,
+        'tag_id': tag_filter or None,
+        'search': search_query or None,
+        'market_id': market_context['market_filter'] or None,
+        'last_order_after': last_order_from or None,
+        'last_order_before': last_order_to or None,
+        'phone': phone_filter or None,
+        'sms_opt_in': sms_opt_in_filter,
+        'min_ltv': min_ltv or None,
+        'max_ltv': max_ltv or None,
+    })
+
+    customers = customers.annotate(order_count=Count('ticket_orders', distinct=True))
+    if min_orders:
+        try:
+            customers = customers.filter(order_count__gte=int(min_orders))
+        except ValueError:
+            pass
+    if max_orders:
+        try:
+            customers = customers.filter(order_count__lte=int(max_orders))
+        except ValueError:
+            pass
+
+    # Audience-tab counts, computed BEFORE the type filter so they reflect any other
+    # active filters (search/market/etc). The three buckets partition the set, so
+    # total = their sum (no extra COUNT).
+    customers_count = customers.filter(order_count__gt=0).count()
+    subscribers_count = customers.filter(order_count=0, sms_opt_in=True).count()
+    contacts_count = customers.filter(order_count=0, sms_opt_in=False).count()
+    total_count = customers_count + subscribers_count + contacts_count
+    if customer_type == 'customers':
+        customers = customers.filter(order_count__gt=0)
+    elif customer_type == 'subscribers':
+        customers = customers.filter(order_count=0, sms_opt_in=True)
+    elif customer_type == 'contacts':
+        customers = customers.filter(order_count=0, sms_opt_in=False)
+
+    # T6: when a market filter is active, annotate each customer row with
+    # market-scoped net LTV and last-order date via isolated Subqueries.
+    active_market = market_context['market_filter']
+    if active_market:
+        if active_market == NO_MARKET_VALUE:
+            _mkt_q = {'event__market__isnull': True}
+        else:
+            _mkt_q = {'event__market_id': active_market}
+        _base_order_filter = dict(
+            customer=OuterRef('pk'),
+            event__organization=org,
+            is_in_person=False,
+            refunded_at__isnull=True,
+            **_mkt_q,
+        )
+        _mkt_revenue_sq = Subquery(
+            TicketOrder.objects.filter(**_base_order_filter)
+            .values('customer')
+            .annotate(v=Sum(ExpressionWrapper(
+                F('total_amount') - F('refunded_amount'),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            )))
+            .values('v')[:1],
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        )
+        _mkt_fee_filter = {
+            f'ticket_order__{k}': v for k, v in _base_order_filter.items()
+            if k != 'customer'
+        }
+        _mkt_fee_filter['ticket_order__customer'] = OuterRef('pk')
+        _mkt_fee_sq = Subquery(
+            StripeCheckoutSession.objects.filter(**_mkt_fee_filter)
+            .values('ticket_order__customer')
+            .annotate(v=Sum('platform_fee_cents'))
+            .values('v')[:1],
+            output_field=IntegerField(),
+        )
+        _mkt_last_sq = Subquery(
+            TicketOrder.objects.filter(
+                customer=OuterRef('pk'),
+                event__organization=org,
+                **_mkt_q,
+            ).order_by('-order_date').values('order_date')[:1],
+        )
+        customers = customers.annotate(
+            market_ltv=ExpressionWrapper(
+                Coalesce(_mkt_revenue_sq, Value(Decimal('0.00')))
+                - Cast(Coalesce(_mkt_fee_sq, Value(0)), output_field=DecimalField(max_digits=10, decimal_places=2))
+                  / Value(Decimal('100')),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ),
+            market_last_order=_mkt_last_sq,
         )
 
-    customers = customers.annotate(order_count=Count('ticket_orders'))
-
     # Sorting
+    default_sort = '-market_ltv' if active_market else '-lifetime_value'
     allowed_sorts = {
         'name', '-name',
         'email', '-email',
         'lifetime_value', '-lifetime_value',
         'last_order_date', '-last_order_date',
         'rfm_segment', '-rfm_segment',
+        'acquisition_source', '-acquisition_source',
         'first_tag_name', '-first_tag_name',
+        'points_balance', '-points_balance',
     }
-    sort_by = request.GET.get('sort', '-lifetime_value')
+    if active_market:
+        allowed_sorts |= {'market_ltv', '-market_ltv', 'market_last_order', '-market_last_order'}
+    sort_by = params.get('sort', default_sort)
     if sort_by not in allowed_sorts:
-        sort_by = '-lifetime_value'
+        sort_by = default_sort
 
     if sort_by in ('first_tag_name', '-first_tag_name'):
         # Isolated subquery so we don't join through the M2M and inflate other annotations.
@@ -2479,13 +2991,106 @@ def customer_list(request):
     else:
         customers = customers.order_by(sort_by)
 
+    # Params EXCLUDING the audience tab — the tab pills append their own `type=`.
+    _fp_notype = {k: v for k, v in {
+        'search': search_query,
+        'segment': segment_filter,
+        'source': source_filter,
+        'tag': tag_filter,
+        'market': market_context['market_filter'],
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+    }.items() if v}
+    # Full set incl. the tab — sort links preserve the active tab.
+    _fp = dict(_fp_notype, **({'type': customer_type} if customer_type else {}))
+
+    meta = {
+        'market_context': market_context,
+        'market_filter': market_context['market_filter'],
+        'has_market': bool(active_market),
+        'sort_by': sort_by,
+        'search_query': search_query,
+        'segment_filter': segment_filter,
+        'source_filter': source_filter,
+        'source_choices': Customer.AcquisitionSource.choices,
+        'tag_filter': tag_filter,
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+        'customer_type': customer_type,
+        'total_count': total_count,
+        'customers_count': customers_count,
+        'subscribers_count': subscribers_count,
+        'contacts_count': contacts_count,
+        'filter_params_qs': urlencode(_fp),
+        'filter_params_qs_notype': urlencode(_fp_notype),
+        'has_active_filters': has_active_filters,
+    }
+    return customers, meta
+
+
+# Optional columns on the Customers table, in display order. Name is intentionally
+# excluded — it's the mandatory clickable identifier. Keys are stored on
+# Organization.customer_list_columns; null there means "show all defaults".
+CUSTOMER_LIST_COLUMNS = [
+    ('email', 'Email'), ('phone', 'Phone'), ('sms', 'SMS Subscriber'),
+    ('segment', 'Segment'), ('source', 'Source'), ('ltv', 'Lifetime Value'),
+    ('points', 'Points Balance'), ('last_order', 'Last Order'),
+    ('orders', 'Total Orders'), ('tags', 'Tags'),
+]
+DEFAULT_CUSTOMER_LIST_COLUMN_KEYS = [k for k, _ in CUSTOMER_LIST_COLUMNS]
+
+
+@login_required
+@require_org
+@require_host
+def customer_list(request):
+    """Display list of all customers with LTV and optional segment/tag filter."""
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET)
+    market_context = meta['market_context']
+    segment_filter = meta['segment_filter']
+
     # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
     customers = customers.prefetch_related('tags')
+    # The Subscribers/Contacts tabs render a Home market column — pull it in one join.
+    if meta['customer_type'] in ('subscribers', 'contacts'):
+        customers = customers.select_related('home_market')
 
     # Pagination
     paginator = Paginator(customers, 50)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
+
+    # Flag rows whose phone replied STOP (on the suppression list). Suppression
+    # overrides sms_opt_in — these can't be texted until they text START — so the
+    # list shows an explicit "Opted out" state instead of a misleading green check.
+    # Scoped to the current page's phones so it's one small query, not per-row.
+    if org.sms_marketing_enabled:
+        from .sms import normalize_phone
+        page_customers = list(page_obj)
+        phones = {normalize_phone(c.phone) for c in page_customers if c.phone}
+        suppressed = set()
+        if phones:
+            suppressed = set(
+                PhoneSuppression.objects.filter(
+                    Q(organization=org) | Q(organization__isnull=True),
+                    phone__in=phones,
+                ).values_list('phone', flat=True)
+            )
+        for c in page_customers:
+            c.sms_suppressed = bool(c.phone) and normalize_phone(c.phone) in suppressed
 
     segment_choices = list(SEGMENT_BADGE_COLORS.keys())
     current_segment_definition = None
@@ -2499,29 +3104,199 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
+
+    # Column visibility (per-org preference). A saved list scopes visible columns;
+    # null/None means "show everything". Preferences apply only to the buyers/Everyone
+    # layout — the Subscribers/Contacts tabs keep their own tailored columns.
+    saved_columns = org.customer_list_columns
+    if isinstance(saved_columns, list):
+        visible_columns = [k for k in saved_columns if k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS]
+    else:
+        visible_columns = list(DEFAULT_CUSTOMER_LIST_COLUMN_KEYS)
+    apply_column_prefs = meta['customer_type'] not in ('subscribers', 'contacts')
+    # The Points column only renders when the loyalty program is enabled, so don't
+    # offer it in the picker (and don't leak its label) when the flag is off.
+    loyalty_on = loyalty_enabled(org)
+    customer_list_columns = [
+        {'key': k, 'label': label, 'checked': k in visible_columns}
+        for k, label in CUSTOMER_LIST_COLUMNS
+        if k != 'points' or loyalty_on
+    ]
+
     context = {
         'page_obj': page_obj,
-        'search_query': search_query,
-        'sort_by': sort_by,
+        'visible_columns': visible_columns,
+        'apply_column_prefs': apply_column_prefs,
+        'customer_list_columns': customer_list_columns,
+        'search_query': meta['search_query'],
+        'sort_by': meta['sort_by'],
         'segment_filter': segment_filter,
-        'tag_filter': tag_filter,
+        'tag_filter': meta['tag_filter'],
+        'market_filter': market_context['market_filter'],
+        'last_order_from': meta['last_order_from'],
+        'last_order_to': meta['last_order_to'],
+        'phone_filter': meta['phone_filter'],
+        'sms_filter': meta['sms_filter'],
+        'min_ltv': meta['min_ltv'],
+        'max_ltv': meta['max_ltv'],
+        'min_orders': meta['min_orders'],
+        'max_orders': meta['max_orders'],
+        'filter_params_qs': meta['filter_params_qs'],
+        'filter_params_qs_notype': meta['filter_params_qs_notype'],
+        'has_active_filters': meta['has_active_filters'],
+        'customer_type': meta['customer_type'],
+        'total_count': meta['total_count'],
+        'customers_count': meta['customers_count'],
+        'subscribers_count': meta['subscribers_count'],
+        'contacts_count': meta['contacts_count'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
+        'source_filter': meta['source_filter'],
+        'source_choices': meta['source_choices'],
+        'source_badge_colors': ACQUISITION_SOURCE_BADGE_COLORS,
         'org_tags': org_tags,
+        # Onboarding "Review consent" step lands here with ?focus=consent to
+        # explain how SMS consent works and where the controls are.
+        'show_consent_help': request.GET.get('focus') == 'consent',
     }
+    context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def customer_list_columns_save(request):
+    """Save the org's visible-column preference for the Customers table (admins only)."""
+    org = get_organization(request)
+    selected = request.POST.getlist('columns')
+    # Keep the canonical order and drop anything not in the known column set.
+    org.customer_list_columns = [
+        k for k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS if k in selected
+    ]
+    org.save(update_fields=['customer_list_columns'])
+
+    next_url = request.POST.get('next', '')
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}
+    ):
+        return redirect(next_url)
+    return redirect('tickets:customer_list')
+
+
+class _Echo:
+    """File-like object whose ``write`` returns the value (Django streaming CSV)."""
+
+    def write(self, value):
+        return value
+
+
+def _csv_money(value):
+    """Render a Decimal/None money value as a plain fixed-point string for CSV.
+
+    ``None`` -> '' (empty cell); avoids scientific notation and the literal
+    string 'None' that ``str(Decimal)``/``csv`` would otherwise emit.
+    """
+    return format(value, 'f') if value is not None else ''
+
+
+@login_required
+@require_org
+@require_host
+def customer_export_csv(request):
+    """Stream the filtered Customers list as a CSV download.
+
+    Reuses ``build_customer_queryset`` so every filter and the sort order match
+    what the Customers page shows. Selection semantics:
+
+    * ``select_all=1`` (or no ids at all, e.g. the header "Export CSV" link with
+      ``mode=all``) -> export every customer matching the active filters.
+    * ``ids=<uuid>&ids=<uuid>...`` without ``select_all`` -> only those rows,
+      still org-scoped and filtered.
+
+    Streams via a server-side cursor (``.iterator(chunk_size=1000)``) so memory
+    stays flat for large (~100k) exports; a header row is yielded first for an
+    early first byte so intermediary proxies don't idle-timeout.
+    """
+    from django.http import StreamingHttpResponse
+
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET, for_export=True)
+
+    # Selection: explicit ids unless "select all matching".
+    if request.GET.get('select_all') != '1':
+        ids = _valid_uuids(request.GET.getlist('ids'))
+        if ids:
+            customers = customers.filter(id__in=ids)
+        # else (mode=all / no selection): export everything matching the filters.
+
+    # OR-search and market-active joins can duplicate rows — dedupe before export.
+    customers = customers.distinct()
+
+    has_market = meta['has_market']
+    loyalty = org.loyalty_feature_enabled
+
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value']
+    if loyalty:
+        header.append('Points Balance')
+    header += ['Last Order Date', 'Total Orders']
+    if has_market:
+        header += ['Market LTV', 'Market Last Order']
+    header.append('Tags')
+
+    writer = csv.writer(_Echo())
+
+    def rows():
+        yield writer.writerow(header)
+        # chunk_size is required for prefetch_related to work with .iterator().
+        for c in customers.prefetch_related('tags').iterator(chunk_size=1000):
+            row = [
+                c.name or '',
+                c.email or '',
+                c.phone or '',
+                'Yes' if c.sms_opt_in else 'No',
+                c.rfm_segment or '',
+                c.get_acquisition_source_display() if c.acquisition_source else '',
+                _csv_money(c.lifetime_value),
+            ]
+            if loyalty:
+                row.append(c.points_balance if c.points_balance is not None else 0)
+            row += [
+                c.last_order_date.isoformat() if c.last_order_date else '',
+                getattr(c, 'order_count', '') if getattr(c, 'order_count', None) is not None else '',
+            ]
+            if has_market:
+                row += [
+                    _csv_money(getattr(c, 'market_ltv', None)),
+                    c.market_last_order.isoformat() if getattr(c, 'market_last_order', None) else '',
+                ]
+            row.append('; '.join(t.name for t in c.tags.all()))
+            yield writer.writerow(row)
+
+    ts = django_tz.localtime().strftime('%Y%m%d-%H%M')
+    response = StreamingHttpResponse(rows(), content_type='text/csv')
+    response['Content-Disposition'] = f'attachment; filename="customers-{ts}.csv"'
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'   # disable proxy buffering so bytes stream out
+    return response
+
+
+def _customer_filter_date(raw_date):
+    parsed = parse_date((raw_date or '').strip())
+    return parsed.isoformat() if parsed else ''
 
 
 @login_required
 @require_org
 @require_host
 def customer_ltv_by_market(request):
-    """Display customer LTV metrics aggregated by city (event venue city)."""
+    """Display customer LTV metrics aggregated by assigned market."""
     org = get_organization(request)
     qs = (
         TicketOrder.objects.filter(event__organization=org)
-        .values('event__venue__city')
+        .values('event__market_id', 'event__market__name')
         .annotate(
             total_ltv=Sum('total_amount'),
             order_count=Count('id'),
@@ -2530,9 +3305,9 @@ def customer_ltv_by_market(request):
     )
     sort_by = request.GET.get('sort', '-total_ltv')
     if sort_by == 'city':
-        qs = qs.order_by('event__venue__city')
+        qs = qs.order_by('event__market__name')
     elif sort_by == '-city':
-        qs = qs.order_by('-event__venue__city')
+        qs = qs.order_by('-event__market__name')
     elif sort_by == 'total_ltv':
         qs = qs.order_by('total_ltv')
     elif sort_by == '-total_ltv':
@@ -2550,14 +3325,17 @@ def customer_ltv_by_market(request):
 
     market_stats = []
     for row in qs:
-        city = row['event__venue__city'] or ''
+        market_name = (row['event__market__name'] or '').strip() or NO_MARKET_LABEL
         customer_count = row['customer_count'] or 0
         total_ltv = row['total_ltv'] or Decimal('0.00')
         avg_ltv = (total_ltv / customer_count) if customer_count else Decimal('0.00')
         order_count = row['order_count'] or 0
         avg_orders = round(order_count / customer_count, 1) if customer_count else 0
         market_stats.append({
-            'city': city.strip() or '-',
+            'market_id': str(row['event__market_id']) if row['event__market_id'] else '',
+            'market_name': market_name,
+            'market_label': market_name,
+            'city': market_name,
             'total_ltv': total_ltv,
             'order_count': order_count,
             'customer_count': customer_count,
@@ -2567,6 +3345,9 @@ def customer_ltv_by_market(request):
 
     chart_data = [
         {
+            'market_id': row['market_id'],
+            'market_name': row['market_name'],
+            'market_label': row['market_label'],
             'city': row['city'],
             'total_ltv': float(row['total_ltv']),
             'avg_ltv': float(row['avg_ltv']),
@@ -2592,6 +3373,37 @@ def _format_range(min_max):
     return f"{lo}-{hi}"
 
 
+def _segment_mode_display(org):
+    """Return display copy for how this org currently assigns RFM segments."""
+    if org.segment_mode == 'absolute':
+        from .services.segmentation.segment_definitions import default_segment_bands
+
+        defaults = default_segment_bands()
+        bands = {**defaults, **(org.segment_bands or {})}
+        return {
+            'label': 'Custom rules',
+            'summary': (
+                'Customers are sorted with fixed cut-offs: active within {active} days, '
+                'slipping away through {cooling} days, repeat at {few} orders, '
+                'frequent at {many} orders, good spender at ${mid:g}, top spender at ${high:g}.'
+            ).format(
+                active=int(bands['recency_active_days']),
+                cooling=int(bands['recency_cooling_days']),
+                few=int(bands['freq_few']),
+                many=int(bands['freq_many']),
+                mid=float(bands['monetary_mid']),
+                high=float(bands['monetary_high']),
+            ),
+        }
+    return {
+        'label': 'Automatic',
+        'summary': (
+            'Cue sorts customers automatically using relative RFM scores for recency, '
+            'frequency, and total spend within your organization.'
+        ),
+    }
+
+
 def _parse_churn_days(request):
     """Return a validated churn threshold from the query string."""
     raw_days = request.GET.get('days', '').strip()
@@ -2604,19 +3416,116 @@ def _parse_churn_days(request):
     return days
 
 
-def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colors):
+def _segment_group_case(field_path):
+    """Case/When expression mapping blank/null segment fields to 'Dormant'."""
+    return Case(
+        When(**{field_path: ''}, then=Value('Dormant')),
+        When(**{f'{field_path}__isnull': True}, then=Value('Dormant')),
+        default=F(field_path),
+        output_field=CharField(),
+    )
+
+
+def _annotate_net_revenue(qs):
+    """Filter to non-refunded orders and annotate _fee_cents per order.
+
+    Required before using _net_revenue_sum() in an aggregation.
+    """
+    fee_sq = Subquery(
+        StripeCheckoutSession.objects.filter(
+            ticket_order=OuterRef('pk')
+        ).values('platform_fee_cents')[:1],
+        output_field=IntegerField(),
+    )
+    return qs.filter(refunded_at__isnull=True).annotate(
+        _fee_cents=Coalesce(fee_sq, Value(0)),
+    )
+
+
+def _net_revenue_sum(**kwargs):
+    """Sum expression for net per-order revenue. Requires _annotate_net_revenue() first.
+
+    Pass filter=Q(...) to apply conditional aggregation (e.g. is_in_person=False).
+    """
+    return Coalesce(
+        Sum(
+            ExpressionWrapper(
+                F('total_amount') - F('refunded_amount')
+                - Cast(F('_fee_cents'), output_field=DecimalField(max_digits=10, decimal_places=2))
+                  / Value(Decimal('100')),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ),
+            **kwargs,
+        ),
+        Value(Decimal('0.00')),
+    )
+
+
+def _customer_market_filter_context(org, raw_market):
+    """Return normalized market-filter state for customer/segment pages.
+
+    Short-circuits with empty context when the org has no markets yet,
+    avoiding the has_no_market query and all downstream UI cost.
+    """
+    market_choices, has_no_market = market_filter_options(org)
+    _empty = {
+        'market_choices': [],
+        'has_no_market': False,
+        'market_filter': '',
+        'selected_market_label': '',
+        'no_market_value': NO_MARKET_VALUE,
+    }
+    if not market_choices:
+        return _empty
+    raw_market = (raw_market or '').strip()
+    selected_market = ''
+    selected_market_label = ''
+    if raw_market == NO_MARKET_VALUE and has_no_market:
+        selected_market = NO_MARKET_VALUE
+        selected_market_label = NO_MARKET_LABEL
+    elif raw_market:
+        try:
+            market_uuid = _uuid.UUID(raw_market)
+        except (ValueError, TypeError):
+            market_uuid = None
+        if market_uuid:
+            selected = next((m for m in market_choices if str(m.id) == str(market_uuid)), None)
+            if selected:
+                selected_market = str(selected.id)
+                selected_market_label = selected.name
+    return {
+        'market_choices': market_choices,
+        'has_no_market': has_no_market,
+        'market_filter': selected_market,
+        'selected_market_label': selected_market_label,
+        'no_market_value': NO_MARKET_VALUE,
+    }
+
+
+def _apply_order_market_filter(qs, market_filter):
+    if market_filter == NO_MARKET_VALUE:
+        return qs.filter(event__market__isnull=True)
+    if market_filter:
+        return qs.filter(event__market_id=market_filter)
+    return qs
+
+
+def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colors, market_filter=''):
     value_expr = f'{field_name}'
-    customer_rows = (
-        Customer.objects.filter(organization=org)
-        .exclude(email__endswith='@placeholder.local')
-        .annotate(
-            group_name=Case(
-                When(**{f'{value_expr}': ''}, then=Value('Dormant')),
-                When(**{f'{value_expr}__isnull': True}, then=Value('Dormant')),
-                default=F(value_expr),
-                output_field=CharField(),
-            )
+    # T1: wrap market-filtered qs in pk__in subquery to de-dup the multi-valued
+    # ticket_orders join before aggregating, so Avg('avg_days_between_orders') is
+    # not weighted by order count.
+    if market_filter:
+        customer_qs = Customer.objects.filter(
+            pk__in=filter_customers(org, {'market_id': market_filter}).values('pk')
         )
+    else:
+        customer_qs = Customer.objects.filter(
+            organization=org
+        ).exclude(email__endswith='@placeholder.local')
+    customer_rows = (
+        customer_qs
+        .annotate(group_name=_segment_group_case(value_expr))  # T12
         .values('group_name')
         .annotate(
             count=Count('id'),
@@ -2624,29 +3533,33 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
             avg_gap=Avg('avg_days_between_orders'),
         )
     )
+    order_qs = TicketOrder.objects.filter(
+        customer__organization=org,
+        event__organization=org,
+        is_in_person=False,
+    ).exclude(customer__email__endswith='@placeholder.local')
+    order_qs = _apply_order_market_filter(order_qs, market_filter)
+    order_qs = _annotate_net_revenue(order_qs)  # T4: filters refunded, annotates _fee_cents
     order_rows = (
-        TicketOrder.objects.filter(customer__organization=org, is_in_person=False)
-        .annotate(
-            group_name=Case(
-                When(**{f'customer__{value_expr}': ''}, then=Value('Dormant')),
-                When(**{f'customer__{value_expr}__isnull': True}, then=Value('Dormant')),
-                default=F(f'customer__{value_expr}'),
-                output_field=CharField(),
-            )
-        )
+        order_qs
+        .annotate(group_name=_segment_group_case(f'customer__{value_expr}'))  # T12
         .values('group_name')
-        .annotate(total_orders=Count('id'))
+        .annotate(
+            total_orders=Count('id'),
+            market_ltv=_net_revenue_sum(),  # T4: net revenue
+        )
     )
 
     customer_map = {row['group_name'] or 'Dormant': row for row in customer_rows}
-    order_map = {row['group_name'] or 'Dormant': row['total_orders'] for row in order_rows}
+    order_map = {row['group_name'] or 'Dormant': row for row in order_rows}
     total_customers = sum(row['count'] for row in customer_map.values())
     stats = []
     for name in ordered_labels:
         row = customer_map.get(name, {'count': 0, 'total_ltv': Decimal('0'), 'avg_gap': None})
         count = row['count']
-        total_ltv = row.get('total_ltv') or Decimal('0')
-        total_orders = order_map.get(name, 0)
+        order_row = order_map.get(name, {})
+        total_ltv = (order_row.get('market_ltv') if market_filter else row.get('total_ltv')) or Decimal('0')
+        total_orders = order_row.get('total_orders') or 0
         avg_gap = row.get('avg_gap')
         stats.append({
             'segment': name,
@@ -2656,8 +3569,85 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
             'avg_orders': round((total_orders / count), 1) if count else 0,
             'avg_gap': round(avg_gap, 1) if avg_gap is not None else None,
             'badge_color': badge_colors.get(name, 'secondary'),
+            'description': SEGMENT_DESCRIPTIONS.get(name, ''),
         })
     return stats, total_customers
+
+
+def _market_segment_breakdown(org, ordered_labels, badge_colors):
+    # T7: base queryset uses ALL order types for customer counts (matching
+    # filter_customers membership). Revenue stats use is_in_person=False only.
+    # T4: revenue is net (excluding refunds and Stripe fees) via conditional Sum.
+    base_qs = (
+        TicketOrder.objects.filter(
+            customer__organization=org,
+            event__organization=org,
+        )
+        .exclude(customer__email__endswith='@placeholder.local')
+    )
+    # Annotate _fee_cents per order (0 when no Stripe session)
+    fee_sq = Subquery(
+        StripeCheckoutSession.objects.filter(
+            ticket_order=OuterRef('pk')
+        ).values('platform_fee_cents')[:1],
+        output_field=IntegerField(),
+    )
+    base_qs = base_qs.annotate(
+        group_name=_segment_group_case('customer__rfm_segment'),  # T12
+        _fee_cents=Coalesce(fee_sq, Value(0)),
+    )
+    order_rows = (
+        base_qs
+        .values('event__market_id', 'event__market__name', 'group_name')
+        .annotate(
+            # T7: all orders for customer membership count
+            count=Count('customer', distinct=True),
+            # T4: net revenue — is_in_person=False, non-refunded orders only
+            total_net_revenue=_net_revenue_sum(
+                filter=Q(is_in_person=False, refunded_at__isnull=True),
+            ),
+            total_orders=Count('id', filter=Q(is_in_person=False)),
+        )
+    )
+    market_map = {}
+    for row in order_rows:
+        market_id = str(row['event__market_id']) if row['event__market_id'] else NO_MARKET_VALUE
+        market_name = (row['event__market__name'] or '').strip() or NO_MARKET_LABEL
+        market = market_map.setdefault(market_id, {
+            'market_id': market_id,
+            'market_name': market_name,
+            'segments': {},
+            'total_customers': 0,
+        })
+        segment = row['group_name'] or 'Dormant'
+        count = row['count'] or 0
+        market['segments'][segment] = {
+            'segment': segment,
+            'count': count,
+            'total_ltv': row['total_net_revenue'] or Decimal('0'),
+            'total_orders': row['total_orders'] or 0,
+            'badge_color': badge_colors.get(segment, 'secondary'),
+        }
+        market['total_customers'] += count
+
+    rows = []
+    for market in market_map.values():
+        segments = []
+        for name in ordered_labels:
+            seg = market['segments'].get(name)
+            if not seg:
+                continue
+            count = seg['count']
+            segments.append({
+                **seg,
+                'pct': round((100.0 * count / market['total_customers']), 1) if market['total_customers'] else 0,
+                'avg_ltv': (seg['total_ltv'] / count) if count else Decimal('0'),
+                'avg_orders': round((seg['total_orders'] / count), 1) if count else 0,
+            })
+        if segments:
+            market['segments'] = segments
+            rows.append(market)
+    return sorted(rows, key=lambda row: (row['market_name'] == NO_MARKET_LABEL, row['market_name'].lower()))
 
 
 @login_required
@@ -2670,11 +3660,10 @@ def analytics_overview(request):
 
 
 def _marketing_cache_key(org_id, window):
-    try:
-        version = django_cache.get(f'marketing_overview_ver:{org_id}', 0)
-    except Exception:
-        version = 0
-    return f'marketing_overview:{version}:{org_id}:{window}'
+    # Delegates to the shared helper so the Marketing overview, AI analyze, and
+    # the SMS Campaigns page all key (and invalidate) against one definition.
+    from .services.marketing import marketing_cache_key
+    return marketing_cache_key(org_id, window)
 
 
 def _invalidate_marketing_cache(org):
@@ -2703,16 +3692,12 @@ def marketing_overview(request):
     """Org-wide marketing performance dashboard with AI recommendations."""
     org = get_organization(request)
     window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
-    allowed_tabs = {'overview', 'email', 'sms', 'ads'}
+    allowed_tabs = {'overview', 'email', 'ads'}
     active_tab = request.GET.get('tab', 'overview').lower()
     if active_tab not in allowed_tabs:
         active_tab = 'overview'
 
-    cache_key = _marketing_cache_key(org.pk, window_key)
-    metrics = safe_cache_get(cache_key)
-    if metrics is None:
-        metrics = MarketingAnalyticsService(org, window_days).calculate()
-        safe_cache_set(cache_key, metrics, timeout=600)
+    metrics = get_cached_marketing_metrics(org, window_days, window_key)
 
     recommendations = (
         AIRecommendation.objects
@@ -2747,6 +3732,21 @@ def marketing_overview(request):
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
 
+    # Public subscribe link the organizer shares (Linktree, flyers, socials) to
+    # grow their SMS audience. Built absolute so copy/QR work off-dashboard.
+    import base64
+    from .utils import generate_qr_png_bytes
+    from .services.customer_filters import market_filter_options
+    subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
+    _qr_png = generate_qr_png_bytes(subscribe_url)
+    subscribe_qr = (
+        'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
+    )
+    # Market segmentation on the subscribe form is only offered when the org has >1
+    # market (otherwise there's nothing to segment). The toggle stores the choice on
+    # the org; the subscribe form then asks each new fan which market they're in.
+    market_count = len(market_filter_options(org)[0])
+
     context = {
         'metrics': metrics,
         'recommendations': recommendations,
@@ -2756,8 +3756,40 @@ def marketing_overview(request):
         'active_tab': active_tab,
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
+        'org_sms_marketing_enabled': org.sms_marketing_enabled,
+        'subscribe_url': subscribe_url,
+        'subscribe_qr': subscribe_qr,
+        'market_count': market_count,
+        'subscribe_title': org.sms_subscribe_title,
+        'segment_by_market': org.sms_subscribe_segment_by_market,
+        'market_label': org.sms_subscribe_market_label,
+        'marketing_section': 'overview',
     }
     return render(request, 'tickets/marketing_overview.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def marketing_subscribe_settings(request):
+    """Configure the public subscribe page's headline and market segmentation. Small
+    dedicated endpoint so the heavy GET marketing_overview stays GET-only. Independent
+    controls post here: the custom title, the on/off switch, and the picker's custom
+    label. Each only touches its own field (the presence of a field's key selects its
+    branch) so saving one never clobbers the others."""
+    org = get_organization(request)
+    if 'subscribe_title' in request.POST:
+        org.sms_subscribe_title = request.POST.get('subscribe_title', '').strip()[:80]
+        org.save(update_fields=['sms_subscribe_title', 'updated_at'])
+    elif 'market_label' in request.POST:
+        org.sms_subscribe_market_label = request.POST.get('market_label', '').strip()[:60]
+        org.save(update_fields=['sms_subscribe_market_label', 'updated_at'])
+    else:
+        org.sms_subscribe_segment_by_market = bool(request.POST.get('segment_by_market'))
+        org.save(update_fields=['sms_subscribe_segment_by_market', 'updated_at'])
+    messages.success(request, 'Subscribe settings updated.')
+    return redirect('tickets:marketing_overview')
 
 
 @login_required
@@ -2797,65 +3829,35 @@ def marketing_ai_analyze(request):
 @require_org
 @require_host
 def customer_segments(request):
-    """Analytics page for RFM segments and purchase-pattern behavior profiles."""
+    """Minimal analytics page for RFM segment distribution."""
     org = get_organization(request)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
-
-    # Build segment definitions for "What the segments mean" card (simple language + optional R/F/M).
-    segment_definitions = []
-    for name, r_range, f_range, m_range in SEGMENT_RULES:
-        segment_definitions.append({
-            "segment": name,
-            "description": SEGMENT_DESCRIPTIONS.get(name, ""),
-            "badge_color": SEGMENT_BADGE_COLORS.get(name, "secondary"),
-            "r_range": _format_range(r_range),
-            "f_range": _format_range(f_range),
-            "m_range": _format_range(m_range),
-        })
+    market_context = _customer_market_filter_context(org, request.GET.get('market', ''))
 
     segment_stats, total_customers = _normalized_customer_group_stats(
         org,
         'rfm_segment',
         segment_order,
         SEGMENT_BADGE_COLORS,
+        market_context['market_filter'],
     )
-    segment_stats_json = json.dumps([
-        {'segment': s['segment'], 'count': s['count'], 'avg_ltv': float(s['avg_ltv'])}
-        for s in segment_stats
-    ])
-    behavior_stats, _ = _normalized_customer_group_stats(
-        org,
-        'behavior_profile',
-        BEHAVIOR_PROFILE_ORDER,
-        BEHAVIOR_PROFILE_BADGE_COLORS,
+    segment_mode_display = _segment_mode_display(org)
+    # T5: only compute the breakdown when the org has markets; zero-market orgs
+    # would see a redundant "No market" table that duplicates the main table.
+    breakdown = (
+        _market_segment_breakdown(org, segment_order, SEGMENT_BADGE_COLORS)
+        if market_context['market_choices']
+        else []
     )
-    behavior_stats_json = json.dumps([
-        {
-            'segment': s['segment'],
-            'count': s['count'],
-            'avg_ltv': float(s['avg_ltv']),
-            'avg_gap': s['avg_gap'],
-        }
-        for s in behavior_stats
-    ])
-    behavior_definitions = [
-        {
-            'segment': name,
-            'description': BEHAVIOR_PROFILE_DESCRIPTIONS.get(name, ''),
-            'badge_color': BEHAVIOR_PROFILE_BADGE_COLORS.get(name, 'secondary'),
-        }
-        for name in BEHAVIOR_PROFILE_ORDER
-    ]
     context = {
         'segment_stats': segment_stats,
-        'segment_stats_json': segment_stats_json,
-        'segment_definitions': segment_definitions,
-        'behavior_stats': behavior_stats,
-        'behavior_stats_json': behavior_stats_json,
-        'behavior_definitions': behavior_definitions,
         'total_customers': total_customers,
+        'market_segment_breakdown': breakdown,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
+        'segment_mode_label': segment_mode_display['label'],
+        'segment_mode_summary': segment_mode_display['summary'],
     }
+    context.update(market_context)
     return render(request, 'tickets/customer_segments.html', context)
 
 
@@ -2921,14 +3923,13 @@ def churn_bulk_tag(request):
     if redirect_days not in THRESHOLD_OPTIONS:
         redirect_days = 90
 
-    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    from tickets.services.tagging import tag_customers
     customers = Customer.objects.filter(organization=org, id__in=customer_ids)
-
-    tagged_count = customers.count()
-    for customer in customers:
-        customer.tags.add(tag)
-
-    messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
+    tag, tagged_count = tag_customers(org, customers, tag_id=tag_id)
+    if tag is None:
+        messages.error(request, 'Select a valid tag.')
+    else:
+        messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
     return redirect(f"{reverse('tickets:churn_overview')}?days={redirect_days}")
 
 
@@ -2947,6 +3948,390 @@ def recalculate_segments(request):
         recalculate_rfm_task.delay(str(org.id))
         messages.success(request, 'Segment recalculation started. Results will appear shortly.')
     return redirect('tickets:customer_segments')
+
+
+def _segment_health_backtest_rows(bt):
+    """Shape a backtest result (per-segment table) for the template, or None."""
+    if not bt or bt.get('status') != 'ok':
+        return None
+    rows = sorted(
+        bt['per_segment'].items(), key=lambda kv: -kv[1]['avg_future_revenue']
+    )
+    return [
+        {
+            'segment': name,
+            'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+            'n': s['n'],
+            'repeat_rate': round(s['repeat_rate'] * 100, 1),
+            'avg_future_revenue': s['avg_future_revenue'],
+        }
+        for name, s in rows
+    ]
+
+
+def _align_backtest_rows(proposed_rows, current_rows, order):
+    """Align two backtest tables to the same segments, same order, for easy compare.
+
+    Returns (proposed, current) covering the union of segments present in either,
+    ordered by `order`, zero-filling any segment absent from one side.
+    """
+    proposed_rows = proposed_rows or []
+    current_rows = current_rows or []
+    by_p = {r['segment']: r for r in proposed_rows}
+    by_c = {r['segment']: r for r in current_rows}
+    present = set(by_p) | set(by_c)
+    names = [s for s in order if s in present]
+    names += [s for s in present if s not in order]  # defensive: unranked names last
+
+    def zero(name):
+        return {
+            'segment': name, 'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+            'n': 0, 'repeat_rate': 0.0, 'avg_future_revenue': 0.0,
+        }
+
+    return (
+        [by_p.get(n) or zero(n) for n in names],
+        [by_c.get(n) or zero(n) for n in names],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Loyalty programs
+# ---------------------------------------------------------------------------
+
+def require_loyalty_feature(view):
+    """Gate a view behind the org's loyalty_feature_enabled flag (pilot rollout).
+
+    Mirrors require_sms_feature in sms_views.py: per-org flag on Organization
+    (the global FeatureFlagSettings singleton cannot scope to orgs).
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if not org or not org.loyalty_feature_enabled:
+            raise Http404('Loyalty programs are not enabled for this organization.')
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+def _active_loyalty_programs(org):
+    """Org-scoped, non-deleted programs (AuditBaseModel hides soft-deleted rows manually)."""
+    return LoyaltyProgram.objects.filter(organization=org, deleted_at__isnull=True)
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+def loyalty_program_list(request):
+    """List the org's loyalty programs with member counts."""
+    org = get_organization(request)
+    programs = list(
+        _active_loyalty_programs(org)
+        .annotate(tier_count=Count('tiers', distinct=True))
+        .order_by('-is_active', '-created_at')
+    )
+    # Member count per program = customers whose tier belongs to that program.
+    member_counts = dict(
+        Customer.objects.filter(
+            organization=org, loyalty_tier__program__in=programs,
+        )
+        .values_list('loyalty_tier__program')
+        .annotate(c=Count('id'))
+    )
+    for program in programs:
+        program.member_count = member_counts.get(program.id, 0)
+    return render(request, 'tickets/loyalty/program_list.html', {'programs': programs})
+
+
+def _clear_loyalty_members(program):
+    """Null out the tier of every customer assigned to this program's tiers."""
+    Customer.objects.filter(loyalty_tier__program=program).update(
+        loyalty_tier=None, loyalty_tier_updated_at=django_tz.now(),
+    )
+
+
+def _save_loyalty_program(request, program):
+    """Shared create/edit handler. Returns (form, formset, saved_program_or_None)."""
+    if request.method == 'POST':
+        form = LoyaltyProgramForm(request.POST, instance=program)
+        formset = LoyaltyTierFormSet(request.POST, instance=program)
+        if form.is_valid() and formset.is_valid():
+            # Cross-validation: a points-based tier rule under a program with
+            # points disabled would be permanently unreachable.
+            if not form.cleaned_data.get('points_enabled'):
+                uses_points_rule = any(
+                    f.cleaned_data and not f.cleaned_data.get('DELETE')
+                    and f.cleaned_data.get('min_lifetime_points') is not None
+                    for f in formset.forms if hasattr(f, 'cleaned_data')
+                )
+                if uses_points_rule:
+                    formset._non_form_errors.append(
+                        'A tier uses a minimum-points rule, but points are not '
+                        'enabled on this program. Enable points or remove the rule.'
+                    )
+                    return form, formset, None
+            with transaction.atomic():
+                saved = form.save(commit=False)
+                saved.organization = program.organization
+                if saved.created_by_id is None:
+                    saved.created_by = request.user
+                saved.updated_by = request.user
+                if saved.is_active:
+                    # Deactivate other programs BEFORE saving this one active,
+                    # so the one-active-per-org DB constraint never trips, and
+                    # clear their now-orphaned member assignments.
+                    others = LoyaltyProgram.objects.filter(
+                        organization=saved.organization, is_active=True,
+                    ).exclude(pk=saved.pk)
+                    for other in others:
+                        _clear_loyalty_members(other)
+                    others.update(is_active=False)
+                else:
+                    # Program saved inactive: it should hold no members.
+                    if saved.pk:
+                        _clear_loyalty_members(saved)
+                saved.save()
+                formset.instance = saved
+                formset.save()
+            # Only an active program drives assignment; inactive ones are gated
+            # out by the task anyway, so don't bother enqueuing.
+            if saved.is_active:
+                wants_backfill = (
+                    saved.points_enabled and form.cleaned_data.get('backfill_past_orders')
+                )
+                if wants_backfill:
+                    # Backfill chains the recalc itself — skipping the immediate
+                    # recalc avoids assigning tiers against pre-backfill zeros.
+                    from .tasks import backfill_loyalty_points_task
+                    backfill_loyalty_points_task.delay(str(saved.id))
+                else:
+                    from .tasks import recalculate_loyalty_tiers_task
+                    recalculate_loyalty_tiers_task.delay(str(saved.id))
+            return form, formset, saved
+    else:
+        form = LoyaltyProgramForm(instance=program)
+        formset = LoyaltyTierFormSet(instance=program)
+    return form, formset, None
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["GET", "POST"])
+def loyalty_program_create(request):
+    """Builder: create a program and its tiers on one page."""
+    org = get_organization(request)
+    program = LoyaltyProgram(organization=org)
+    form, formset, saved = _save_loyalty_program(request, program)
+    if saved is not None:
+        messages.success(request, f'Loyalty program "{saved.name}" created. Members are being assigned.')
+        return redirect('tickets:loyalty_program_detail', program_id=saved.id)
+    return render(request, 'tickets/loyalty/program_form.html', {
+        'form': form, 'formset': formset, 'editing': False,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["GET", "POST"])
+def loyalty_program_edit(request, program_id):
+    """Builder: edit an existing program and its tiers."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    form, formset, saved = _save_loyalty_program(request, program)
+    if saved is not None:
+        messages.success(request, 'Loyalty program updated. Members are being reassigned.')
+        return redirect('tickets:loyalty_program_detail', program_id=saved.id)
+    return render(request, 'tickets/loyalty/program_form.html', {
+        'form': form, 'formset': formset, 'editing': True, 'program': program,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+def loyalty_program_detail(request, program_id):
+    """Dashboard: tier distribution, member counts, perks, recalc controls."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    stats = LoyaltyProgramStats(program).calculate()
+    points_stats = None
+    if program.points_enabled:
+        # One aggregate pass over org customers (CLAUDE.md: combine aggregations).
+        points_stats = Customer.objects.filter(organization=org).exclude(
+            email__endswith='@placeholder.local'
+        ).aggregate(
+            outstanding=Coalesce(Sum('points_balance'), 0),
+            issued=Coalesce(Sum('lifetime_points'), 0),
+            members_with_points=Count('id', filter=Q(points_balance__gt=0)),
+        )
+    return render(request, 'tickets/loyalty/program_detail.html', {
+        'program': program,
+        'stats': stats,
+        'points_stats': points_stats,
+        'points_backfilled_at': org.loyalty_points_backfilled_at,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+def loyalty_tier_members(request, program_id, tier_id):
+    """Paginated member list for a single tier."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    tier = get_object_or_404(LoyaltyTier.objects.filter(program=program), id=tier_id)
+    members = Customer.objects.filter(organization=org, loyalty_tier=tier)
+
+    # Search by name or email (kept inline rather than via filter_customers, which
+    # would drop placeholder-email CSV members from the tier list).
+    search_query = request.GET.get('search', '').strip()
+    if search_query:
+        members = members.filter(
+            Q(name__icontains=search_query) | Q(email__icontains=search_query)
+        )
+
+    # Market filter — matches a member's most-frequented market (see annotation below).
+    market_filter = request.GET.get('market', '').strip()
+    market_choices = list(
+        Market.objects.filter(organization=org).order_by('name').values_list('name', flat=True)
+    )
+
+    # Sorting — validate against an allowlist, default to highest lifetime value.
+    allowed_sorts = {
+        'name', '-name', 'email', '-email',
+        'lifetime_value', '-lifetime_value',
+        'last_order_date', '-last_order_date',
+    }
+    sort_by = request.GET.get('sort', '-lifetime_value')
+    if sort_by not in allowed_sorts:
+        sort_by = '-lifetime_value'
+
+    if sort_by in ('last_order_date', '-last_order_date'):
+        last = F('last_order_date')
+        ordering = [
+            last.desc(nulls_last=True) if sort_by.startswith('-') else last.asc(nulls_last=True),
+            'name',
+        ]
+    elif sort_by in ('lifetime_value', '-lifetime_value'):
+        ordering = [sort_by, 'name']  # preserve the name tiebreak this page had
+    else:
+        ordering = [sort_by]
+    # Annotate each member with their most-frequented market — the market where
+    # they've placed the most orders — as a per-row subquery so the same value
+    # drives both the column display and the market filter. Customer has no direct
+    # market field; markets live on the Event a customer's orders belong to. Ties
+    # are broken by market name for a deterministic winner.
+    top_market_sq = (
+        TicketOrder.objects.filter(
+            customer=OuterRef('pk'),
+            event__market__isnull=False,
+        )
+        .values('event__market__name')
+        .annotate(order_count=Count('id'))
+        .order_by('-order_count', 'event__market__name')
+        .values('event__market__name')[:1]
+    )
+    members = members.annotate(top_market=Subquery(top_market_sq))
+    if market_filter:
+        members = members.filter(top_market=market_filter)
+
+    members = members.order_by(*ordering)
+
+    paginator = Paginator(members, 50)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'tickets/loyalty/tier_members.html', {
+        'program': program,
+        'tier': tier,
+        'page_obj': page_obj,
+        'search_query': search_query,
+        'sort_by': sort_by,
+        'market_filter': market_filter,
+        'market_choices': market_choices,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["POST"])
+def loyalty_recalculate(request, program_id):
+    """Enqueue tier reassignment for a program; redirect with message."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    if not program.is_active:
+        messages.warning(request, 'Activate this program before recalculating its members.')
+    elif program.recalc_in_progress:
+        messages.info(request, 'Recalculation already in progress.')
+    else:
+        from .tasks import recalculate_loyalty_tiers_task
+        recalculate_loyalty_tiers_task.delay(str(program.id))
+        messages.success(request, 'Member recalculation started. Results will appear shortly.')
+    return redirect('tickets:loyalty_program_detail', program_id=program.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["POST"])
+def loyalty_recompute_points(request, program_id):
+    """Wipe + rebuild the org's points ledger at the CURRENT rate (reset + re-backfill).
+
+    Irreversible and org-wide, so it's gated by a server-validated typed
+    confirmation (confirm_name == program.name) on top of the client type-to-
+    confirm. The actual reset + re-award + reconciliation run in the backfill
+    task under its claim lock.
+    """
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    if not program.points_enabled:
+        messages.warning(request, 'Enable points on this program before recomputing balances.')
+    elif not program.is_active:
+        messages.warning(request, 'Activate this program before recomputing its points.')
+    elif request.POST.get('confirm_name', '').strip() != program.name:
+        messages.warning(request, 'Type the program name exactly to confirm the recompute.')
+    elif program.recalc_in_progress:
+        messages.info(request, 'A recalculation or recompute is already in progress.')
+    else:
+        from .tasks import backfill_loyalty_points_task
+        backfill_loyalty_points_task.delay(str(program.id), reset_first=True)
+        messages.success(
+            request,
+            'Recomputing all balances at the current rate — this rebuilds points history for every member.',
+        )
+    return redirect('tickets:loyalty_program_detail', program_id=program.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["POST"])
+def loyalty_program_delete(request, program_id):
+    """Soft-delete a program and clear its members' tier assignment."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    with transaction.atomic():
+        _clear_loyalty_members(program)
+        # Drop the active flag so a future program can be the org's sole active
+        # one without tripping the one-active-per-org constraint.
+        if program.is_active:
+            program.is_active = False
+            program.save(update_fields=['is_active'])
+        program.delete()  # soft delete (AuditBaseModel)
+    messages.success(request, f'Loyalty program "{program.name}" deleted.')
+    return redirect('tickets:loyalty_program_list')
 
 
 @login_required
@@ -2980,11 +4365,20 @@ def repeat_customers(request):
     else:
         summary = result['summary']
 
-    # Build market (venue city) aggregation from already-filtered events
+    # Build market aggregation from already-filtered events
     markets = {}
     for e in chart_events:
-        city = e.get('venue_city') or 'Unknown'
-        m = markets.setdefault(city, {'city': city, 'total': 0, 'new_count': 0, 'returning_count': 0})
+        market_label = e.get('market_label') or NO_MARKET_LABEL
+        market_id = e.get('market_id') or ''
+        m = markets.setdefault(market_label, {
+            'market_id': market_id,
+            'market_name': market_label,
+            'market_label': market_label,
+            'city': market_label,
+            'total': 0,
+            'new_count': 0,
+            'returning_count': 0,
+        })
         m['total'] += e['total']
         m['new_count'] += e['new_count']
         m['returning_count'] += e['returning_count']
@@ -3044,6 +4438,86 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def audience_analytics(request):
+    """Analytics page: total customer count over time, filterable by market."""
+    org = get_organization(request)
+    markets, has_no_market = market_filter_options(org)
+
+    selected = request.GET.get('market', '')
+    market_id, no_market = None, False
+    if selected == 'none' and has_no_market:
+        no_market = True
+    elif selected and any(str(m.id) == selected for m in markets):
+        market_id = selected
+    else:
+        selected = ''  # ignore stale/invalid ids, fall back to all markets
+
+    # Default to the all-time view so the full growth story shows on first load.
+    if 'window' in request.GET:
+        start_date, end_date, active_window = _parse_window(request)
+    else:
+        start_date, end_date, active_window = None, None, 'all'
+
+    from tickets.services.audience_growth import AudienceGrowthCalculator
+    result = AudienceGrowthCalculator(
+        org, market_id=market_id, no_market=no_market,
+        start_date=start_date, end_date=end_date,
+    ).calculate()
+
+    return render(request, 'tickets/audience_analytics.html', {
+        'series_json': json.dumps(result['series'], default=str),
+        'summary': result['summary'],
+        'has_data': bool(result['series']),
+        'markets': markets,
+        'has_no_market': has_no_market,
+        'selected_market': selected,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def market_trends(request):
+    """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
+    org = get_organization(request)
+    period = request.GET.get('period', 'quarter')
+    if period not in ('month', 'quarter'):
+        period = 'quarter'
+    metric = request.GET.get('metric', 'revenue')
+    if metric not in ('revenue', 'tickets', 'profitability', 'nps'):
+        metric = 'revenue'
+    window = request.GET.get('window', '2y')
+    if window not in ('1y', '2y', '3y', 'all'):
+        window = '2y'
+
+    from tickets.services.market_trends import MarketTrendCalculator
+    result = MarketTrendCalculator(org, period=period, metric=metric, window=window).calculate()
+    markets = result['markets']
+
+    context = {
+        'markets': markets,
+        'markets_json': json.dumps(markets, default=str),
+        'summary': result['summary'],
+        'period': period,
+        'metric': metric,
+        'window': window,
+        'change_unit': 'pts' if metric == 'nps' else '%',
+        'sms_marketing_enabled': org.sms_marketing_enabled,
+    }
+    # AJAX selector switches request only the dynamic region so the page (and the
+    # currently selected market) is preserved without a full reload.
+    if request.GET.get('fragment'):
+        return render(request, 'tickets/_market_trends_content.html', context)
+    return render(request, 'tickets/market_trends.html', context)
+
+
+@login_required
+@require_org
+@require_host
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
@@ -3088,8 +4562,11 @@ def cohort_retention(request):
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
-    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
-    
+    customer = get_object_or_404(
+        Customer.objects.filter(organization=org).select_related('loyalty_tier', 'loyalty_tier__program'),
+        id=customer_id,
+    )
+
     # Subquery for platform fee — zero for non-direct (CSV) orders
     _fee_subq = Subquery(
         StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk'))
@@ -3108,32 +4585,31 @@ def customer_detail(request, customer_id):
     order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
         avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
+        first_order_date=Min('order_date'),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
     avg_order_value = order_stats['avg_order_value']
+    first_order_date = order_stats['first_order_date']
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Event attendance - select_related to avoid N+1 on venue in template
-    events_attended = Event.objects.filter(
-        ticket_orders__customer=customer
-    ).select_related('venue').distinct()
-
-    # Paginate orders — annotate net_amount so the template shows post-fee totals
-    orders = customer.ticket_orders.select_related('event').annotate(
+    # Orders feed the merged timeline. annotate net_amount so the template shows
+    # post-fee totals; select_related event__venue so the Venue label doesn't
+    # trigger an N+1. Paginated further down as part of the merged timeline list.
+    orders = customer.ticket_orders.select_related('event', 'event__venue').annotate(
         tickets_count=Count('tickets'),
         net_amount=_net_amount,
-    ).order_by('-order_date')
-    paginator = Paginator(orders, 20)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    )
 
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
     )
     behavior_profile_badge_color = BEHAVIOR_PROFILE_BADGE_COLORS.get(
         (customer.behavior_profile or '').strip(), 'secondary'
+    )
+    acquisition_source_badge_color = ACQUISITION_SOURCE_BADGE_COLORS.get(
+        (customer.acquisition_source or '').strip(), 'secondary'
     )
     rfm_recency_label = RFM_RECENCY_LABELS.get(customer.rfm_recency_score)
     rfm_frequency_label = RFM_FREQUENCY_LABELS.get(customer.rfm_frequency_score)
@@ -3145,16 +4621,103 @@ def customer_detail(request, customer_id):
     org_tags = CustomerTag.objects.filter(organization=org)
     available_tags = [t for t in org_tags if t.id not in assigned_tag_ids]
 
+    # Defensive multi-tenancy guard: only surface a loyalty tier that belongs to
+    # this org's own program. A foreign tier (from a bad admin edit/script) must
+    # never leak another org's program name/perks onto this page.
+    loyalty_tier = customer.loyalty_tier
+    if loyalty_tier and loyalty_tier.program.organization_id != org.id:
+        loyalty_tier = None
+
+    # Points: surface the balance when the org's active program awards points.
+    loyalty_points_enabled = _active_loyalty_programs(org).filter(
+        is_active=True, points_enabled=True
+    ).exists()
+
+    # Marketing (native SMS) activity — one row per message sent to this customer.
+    # Org-scoped already since `customer` is org-scoped. select_related avoids an
+    # N+1 on campaign.name in the template. SMS has no "opened" event, so the
+    # closest engagement signal is the tracked link click (first_clicked_at).
+    # Only surfaced (in the header + timeline) when the org has SMS enabled.
+    sms_marketing_enabled = org.sms_marketing_enabled
+    sms_messages = (
+        customer.sms_message_recipients
+        .select_related('campaign')
+    )
+    # Single-pass summary counts for the timeline header's stat rail.
+    sms_stats = customer.sms_message_recipients.aggregate(
+        total=Count('id'),
+        delivered=Count('id', filter=Q(status='delivered')),
+        failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+        clicked=Count('id', filter=Q(first_clicked_at__isnull=False)),
+    )
+    # Is this number on the SMS suppression list (replied STOP)? Suppression overrides
+    # sms_opt_in — an organizer can't re-consent on their behalf, only the recipient
+    # texting START can — so the consent badge must reflect it.
+    from .sms import normalize_phone
+    sms_suppressed = bool(customer.phone) and PhoneSuppression.is_suppressed(
+        normalize_phone(customer.phone), org
+    )
+
+    # Survey responses this customer submitted — one timeline entry each.
+    survey_responses = customer.survey_responses.select_related('event')
+
+    # Loyalty tier transitions — only when the org runs the loyalty feature.
+    loyalty_feature_enabled = org.loyalty_feature_enabled
+    tier_transitions = (
+        customer.tier_transitions.select_related('from_tier', 'to_tier')
+        if loyalty_feature_enabled else []
+    )
+
+    # ---- Merge every interaction into one reverse-chronological timeline. ----
+    # A single customer's interaction volume is small, so we assemble uniform
+    # {kind, ts, obj} items in Python and paginate the combined list (Django's
+    # Paginator accepts a plain list) rather than a DB-level UNION. All ts values
+    # are timezone-aware datetimes, so cross-type ordering is correct.
+    # Each item carries a `url` deep-linking to the underlying record so the
+    # timeline entry title is clickable (order/survey -> event, sms -> campaign,
+    # tier -> loyalty program). Related objects are already select_related, so
+    # building these URLs adds no extra queries.
+    timeline_items = []
+    for order in orders:
+        timeline_items.append({
+            'kind': 'order', 'ts': order.order_date or order.created_at, 'obj': order,
+            'url': reverse('tickets:event_detail', args=[order.event_id]),
+        })
+    if sms_marketing_enabled:
+        for msg in sms_messages:
+            timeline_items.append({
+                'kind': 'sms', 'ts': msg.sent_at or msg.created_at, 'obj': msg,
+                'url': reverse('tickets:sms_campaign_detail', args=[msg.campaign_id]),
+            })
+    for response in survey_responses:
+        timeline_items.append({
+            'kind': 'survey', 'ts': response.submitted_at, 'obj': response,
+            'url': reverse('tickets:event_detail', args=[response.event_id]),
+        })
+    for transition in tier_transitions:
+        tier = transition.to_tier or transition.from_tier
+        timeline_items.append({
+            'kind': 'tier', 'ts': transition.changed_at, 'obj': transition,
+            'url': (reverse('tickets:loyalty_program_detail', args=[tier.program_id])
+                    if tier else None),
+        })
+    timeline_items.sort(key=lambda i: i['ts'], reverse=True)
+    paginator = Paginator(timeline_items, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
     context = {
         'customer': customer,
+        'loyalty_tier': loyalty_tier,
+        'loyalty_points_enabled': loyalty_points_enabled,
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
+        'first_order_date': first_order_date,
         'last_order_date': last_order_date,
-        'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
         'behavior_profile_badge_color': behavior_profile_badge_color,
+        'acquisition_source_badge_color': acquisition_source_badge_color,
         'rfm_recency_label': rfm_recency_label,
         'rfm_frequency_label': rfm_frequency_label,
         'rfm_monetary_label': rfm_monetary_label,
@@ -3162,6 +4725,9 @@ def customer_detail(request, customer_id):
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
+        'sms_stats': sms_stats,
+        'sms_suppressed': sms_suppressed,
+        'sms_marketing_enabled': sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)
 
@@ -3557,6 +5123,7 @@ def _compute_event_stats(event):
             remaining = None if is_unlimited else max(allocated - sold, 0)
             percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
             ticket_type_allocation_charts.append({
+                'tt_id': str(tt.id),
                 'label': tt.name,
                 'sold': sold,
                 'allocated': allocated,
@@ -3582,14 +5149,48 @@ def _compute_event_stats(event):
             if row['ticket_type']
         ]
 
-    # Sales over time — for the chart; cached here so it's not re-run on every page load
-    sales_over_time = list(
-        event.ticket_orders
-        .annotate(date=TruncDate('order_date'))
+    # Sales over time — for the chart; cached here so it's not re-run on every page load.
+    # Tickets and revenue are aggregated independently to avoid join inflation of revenue
+    # when grouping through the tickets relation.
+    revenue_by_date = {
+        row['date']: row['revenue']
+        for row in (
+            event.ticket_orders
+            .annotate(date=TruncDate('order_date'))
+            .values('date')
+            .annotate(revenue=Sum('total_amount'))
+        )
+    }
+    tickets_by_date = (
+        Ticket.objects
+        .filter(ticket_order__event=event)
+        .annotate(date=TruncDate('ticket_order__order_date'))
         .values('date')
-        .annotate(count=Count('id'), revenue=Sum('total_amount'))
+        .annotate(count=Count('id'))
         .order_by('date')
     )
+    sales_over_time = [
+        {
+            'date': row['date'],
+            'count': row['count'],
+            'revenue': revenue_by_date.get(row['date'], 0),
+        }
+        for row in tickets_by_date
+    ]
+    # Backfill days with no sales so the chart's x-axis is continuous from the
+    # first to the last day of activity (the ORM aggregation above omits empty days).
+    if sales_over_time:
+        by_date = {row['date']: row for row in sales_over_time}
+        start_date = sales_over_time[0]['date']
+        end_date = sales_over_time[-1]['date']
+        filled = []
+        current = start_date
+        while current <= end_date:
+            filled.append(
+                by_date.get(current, {'date': current, 'count': 0, 'revenue': 0})
+            )
+            current += timedelta(days=1)
+        sales_over_time = filled
     page_views_over_time = list(
         EventDailyPageView.objects.filter(event=event)
         .order_by('date')
@@ -3599,10 +5200,15 @@ def _compute_event_stats(event):
     # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
+    # Earliest pending scheduled send (None if nothing is scheduled / all sent).
+    survey_scheduled_send_at = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=True, scheduled_send_at__isnull=False,
+    ).aggregate(earliest=Min('scheduled_send_at'))['earliest']
 
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
     internal_comments = []
+    choice_breakdowns = []
 
     if survey_responses_count > 0:
         star_avg = SurveyAnswer.objects.filter(
@@ -3640,12 +5246,37 @@ def _compute_event_stats(event):
             )[:5]
         ]
 
+        # Choice-question tallies — one annotated query over the option table,
+        # grouped into per-question breakdowns (no N+1).
+        choice_q_ids = list(
+            SurveyAnswer.objects.filter(
+                response__event=event,
+                question__question_type__in=SurveyQuestion.CHOICE_TYPES,
+            ).values_list('question_id', flat=True).distinct()
+        )
+        if choice_q_ids:
+            option_rows = (
+                SurveyQuestionOption.objects.filter(question_id__in=choice_q_ids)
+                .annotate(n=Count('answers', filter=Q(answers__response__event=event)))
+                .order_by('question__position', 'position')
+                .values('question_id', 'question__question_text', 'label', 'n')
+            )
+            grouped = {}
+            for row in option_rows:
+                bucket = grouped.setdefault(
+                    row['question_id'],
+                    {'question': row['question__question_text'], 'options': []},
+                )
+                bucket['options'].append({'label': row['label'], 'count': row['n']})
+            choice_breakdowns = list(grouped.values())
+
     # Survey results — external (ExternalSurveyResponse from CSV uploads)
     ext_qs = ExternalSurveyResponse.objects.filter(event=event)
     ext_count = ext_qs.count()
     ext_nps_total = ext_promoters = ext_passives = ext_detractors = 0
     ext_comments = []
     ext_rating_breakdown = []
+    ext_structured = {}
 
     if ext_count > 0:
         # Single aggregate instead of 4 separate .count() calls
@@ -3680,6 +5311,37 @@ def _compute_event_stats(event):
             .annotate(count=Count('id'))
             .order_by('-count')
         )
+
+        # Structured multi-select answers (JSON lists) — count value frequency.
+        from collections import Counter
+        enjoyed_c, genres_c, improvements_c = Counter(), Counter(), Counter()
+        for r in ext_qs.values('enjoyed', 'genres', 'improvements'):
+            enjoyed_c.update(v for v in (r['enjoyed'] or []) if v)
+            genres_c.update(v for v in (r['genres'] or []) if v)
+            improvements_c.update(v for v in (r['improvements'] or []) if v)
+
+        def _top(counter):
+            return [{'label': label, 'count': count} for label, count in counter.most_common(5)]
+
+        # Single-select answers (CharFields) — same breakdown pattern as overall_rating.
+        def _char_breakdown(field):
+            return [
+                {'label': row[field], 'count': row['count']}
+                for row in ext_qs.exclude(**{field: ''})
+                .values(field)
+                .annotate(count=Count('id'))
+                .order_by('-count')[:5]
+            ]
+
+        ext_structured = {
+            'enjoyed': _top(enjoyed_c),
+            'genres': _top(genres_c),
+            'improvements': _top(improvements_c),
+            'crowd_vibe': _char_breakdown('crowd_vibe'),
+            'venue_feel': _char_breakdown('venue_feel'),
+            'pre_event_info': _char_breakdown('pre_event_info'),
+            'found_out_how': _char_breakdown('found_out_how'),
+        }
 
     # Merge both sources
     survey_results = None
@@ -3719,6 +5381,8 @@ def _compute_event_stats(event):
             'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
+            'ext_structured': ext_structured,
+            'choice_breakdowns': choice_breakdowns,
         }
 
     # Customer segment breakdown for attendees of this event.
@@ -3740,6 +5404,23 @@ def _compute_event_stats(event):
         }
         for r in segment_rows
     ]
+
+    ci_show, ci_total, ci_checked, ci_by_type = _compute_event_checkin_stats(event)
+    checkin = {
+        'show': ci_show,
+        'total_tickets': ci_total,
+        'checked_in': ci_checked,
+        'percent': round(ci_checked / ci_total * 100) if ci_total else 0,
+        'by_type': ci_by_type,
+    }
+
+    # Audience analytics — only when the event has attendance data to show
+    # (direct events past start, or external events with imported scan data).
+    if ci_show:
+        from tickets.services.audience import EventAudienceCalculator
+        audience = EventAudienceCalculator(event).calculate()
+    else:
+        audience = {'show': False}
 
     result = {
         'total_orders': total_orders,
@@ -3765,13 +5446,125 @@ def _compute_event_stats(event):
         'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
         'external_survey_responses_count': ext_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
+        'checkin': checkin,
+        'audience': audience,
     }
     safe_cache_set(cache_key, result, timeout=300)
     return result
+
+
+def _compute_marketing_events(event):
+    """Return a flat, date-sorted list of marketing sends for this event.
+
+    Each item is {'date': 'YYYY-MM-DD', 'type': 'sms'|'email', 'label': name}.
+    Used to overlay send markers on the Activity chart. Computed fresh per request
+    (NOT cached in _compute_event_stats) because the campaign models have no
+    cache-invalidation signals — a send after caching would otherwise stay hidden.
+
+    Timestamps are localized to match the chart's TruncDate-based axis labels.
+    """
+    from tickets.models import SMSCampaign
+
+    def _local_date(ts):
+        return django_tz.localtime(ts).date().isoformat()
+
+    events = []
+
+    # Mailchimp email campaigns.
+    for row in event.email_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'campaign_title'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'email',
+            'label': row['campaign_title'],
+        })
+
+    # External SlickText SMS campaigns.
+    for row in event.sms_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'name'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    # Native Twilio SMS campaigns — only actually-sent ones.
+    for row in event.native_sms_campaigns.filter(
+        status=SMSCampaign.Status.SENT, sent_at__isnull=False, deleted_at__isnull=True,
+    ).values('sent_at', 'name'):
+        events.append({
+            'date': _local_date(row['sent_at']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    events.sort(key=lambda e: e['date'])
+    return events
+
+
+def _compute_event_checkin_stats(event):
+    """Return (should_show, total_tickets, checked_in_tickets, by_type).
+
+    Check-ins are counted at the individual ticket level via Ticket.scanned_at,
+    which is the single source of truth: live check-ins stamp every ticket in the
+    admitted order, and CSV imports stamp each scanned ticket (so partially-scanned
+    multi-ticket orders are counted accurately).
+
+    should_show is True when the event's local start datetime has passed AND it is
+    either a direct-ticketing event or an external event that has imported scan
+    data. by_type is a list of {label, total, checked_in, percent} dicts grouped by
+    Ticket.ticket_type, sorted by total desc.
+    """
+    tz_name = event.timezone or 'America/Los_Angeles'
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo('America/Los_Angeles')
+
+    start_local = datetime.combine(
+        event.start_date, event.start_time or time(0, 0)
+    ).replace(tzinfo=tz)
+    if start_local > django_tz.now():
+        return False, 0, 0, []
+
+    agg = event.ticket_orders.aggregate(
+        total=Count('tickets'),
+        checked_in=Count('tickets', filter=Q(tickets__scanned_at__isnull=False)),
+    )
+
+    # Direct events always show (even at 0%); external events only once they have
+    # imported scan data, so untouched external events don't show an empty chart.
+    if event.ticketing_type != 'direct' and not (agg['checked_in'] or 0):
+        return False, 0, 0, []
+
+    by_type_qs = (
+        Ticket.objects.filter(ticket_order__event=event)
+        .values('ticket_type')
+        .annotate(
+            total=Count('id'),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
+        )
+        .order_by('-total')
+    )
+    by_type = [
+        {
+            'label': row['ticket_type'] or 'Unspecified',
+            'total': row['total'],
+            'checked_in': row['checked_in'],
+            'percent': round(row['checked_in'] / row['total'] * 100) if row['total'] else 0,
+        }
+        for row in by_type_qs
+        if row['total']
+    ]
+
+    return True, agg['total'] or 0, agg['checked_in'] or 0, by_type
 
 
 def _get_adjacent_event(org, event, direction):
@@ -3802,9 +5595,63 @@ def _get_adjacent_event(org, event, direction):
     ).order_by('-start_date', '-sort_start_time', 'name').first()
 
 
+def _get_pacing_comparison_candidates(org, event, limit=100):
+    """Past events available to compare against for sales pacing.
+
+    Returns up to ``limit`` events that started before ``event`` (most recent
+    first), ordered so events at the same venue come first — the same venue is
+    the fairest pacing comparison. The caller uses the first item as the default
+    comparison event and feeds the rest to the searchable comparison combobox.
+    """
+    past = list(
+        Event.objects.filter(
+            organization=org,
+            start_date__lt=event.start_date,
+        )
+        .exclude(id=event.id)
+        .only('id', 'name', 'start_date', 'venue_id')
+        .order_by('-start_date')[:limit]
+    )
+    same_venue = [e for e in past if e.venue_id == event.venue_id]
+    other = [e for e in past if e.venue_id != event.venue_id]
+    return same_venue + other
+
+
+def _recompute_utm_attribution_for_event(org, event):
+    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
+
+    Covers both channels that attribute via first-party UTMs captured on ticket
+    orders: Meta Ads (utm_id/utm_campaign -> EventExpense) and SlickText SMS
+    broadcasts (utm_id/utm_campaign + utm_source=SlickText -> EventSMSCampaign).
+    """
+    try:
+        from tickets.services.marketing.utm_attribution import UTMAttributionCalculator
+        UTMAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
+    try:
+        from tickets.services.marketing.sms_attribution import SMSAttributionCalculator
+        SMSAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("SMS attribution recompute failed for org=%s event=%s", org.id, event.id)
+
+
+# How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
+_META_ADS_REFRESH_TTL_SECONDS = 30 * 60
+
+
 def _refresh_meta_ads_expenses_for_event(org, event, user=None):
-    """Best-effort refresh of linked Meta Ads campaign spend before event stats render."""
+    """Best-effort refresh of linked Meta Ads campaign spend before event stats render.
+
+    Lifetime insights are a heavy, rate-limited Graph API call, so we throttle to
+    at most one refresh per event per window via a short-TTL cache marker instead
+    of hitting Meta on every event-detail page load.
+    """
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
+        return False
+
+    refresh_marker_key = f"meta_ads_refresh:{event.pk}"
+    if django_cache.get(refresh_marker_key):
         return False
 
     meta_expenses = list(
@@ -3823,15 +5670,14 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     had_error = False
     changed = False
     synced = False
-    sync_time = django_tz.now()
 
     for expense in meta_expenses:
         try:
-            spend = client.get_campaign_spend(expense.external_id)
+            insights = client.get_campaign_insights(expense.external_id)
         except MetaAdsAPIError as exc:
             had_error = True
             logger.warning(
-                "Meta Ads spend refresh failed for org=%s event=%s campaign=%s: %s",
+                "Meta Ads insights refresh failed for org=%s event=%s campaign=%s: %s",
                 org.id,
                 event.id,
                 expense.external_id,
@@ -3839,23 +5685,13 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
             )
             continue
 
-        metadata = dict(expense.external_metadata or {})
-        metadata['last_synced_at'] = sync_time.isoformat()
-        update_fields = ['external_metadata', 'updated_at', 'version']
-        expense.external_metadata = metadata
-        expense.version += 1
         synced = True
-
-        if expense.amount != spend:
-            expense.amount = spend
-            update_fields.append('amount')
+        if _update_meta_ads_expense_from_insights(expense, insights, user):
             changed = True
 
-        if user and user.is_authenticated:
-            expense.updated_by = user
-            update_fields.append('updated_by')
-
-        expense.save(update_fields=update_fields)
+    # Mark refreshed regardless of per-campaign outcome so a failing account can't
+    # re-trigger the full set of API calls on every subsequent page load.
+    django_cache.set(refresh_marker_key, True, _META_ADS_REFRESH_TTL_SECONDS)
 
     if synced:
         django_cache.delete(_event_stats_cache_key(event.pk))
@@ -3884,15 +5720,29 @@ def _get_active_meta_ads_expense_or_404(org, event_id, expense_id):
     return event, expense
 
 
-def _update_meta_ads_expense_spend(expense, spend, user=None):
+def _update_meta_ads_expense_from_insights(expense, insights, user=None):
+    """Write Meta insights (spend + attribution) onto a linked expense. Returns api_changed."""
     metadata = dict(expense.external_metadata or {})
     metadata['last_synced_at'] = django_tz.now().isoformat()
 
-    api_changed = expense.amount != spend
-    expense.amount = spend
+    api_changed = (
+        expense.amount != insights.spend
+        or expense.api_attributed_orders != insights.purchases
+        or expense.api_attributed_revenue != insights.purchase_value
+    )
+    expense.amount = insights.spend
+    expense.api_attributed_orders = insights.purchases
+    expense.api_attributed_revenue = insights.purchase_value
     expense.external_metadata = metadata
     expense.version += 1
-    update_fields = ['amount', 'external_metadata', 'version', 'updated_at']
+    update_fields = [
+        'amount',
+        'api_attributed_orders',
+        'api_attributed_revenue',
+        'external_metadata',
+        'version',
+        'updated_at',
+    ]
 
     if user and user.is_authenticated:
         expense.updated_by = user
@@ -3903,6 +5753,7 @@ def _update_meta_ads_expense_spend(expense, spend, user=None):
         update_fields.append('api_data_changed_at')
 
     expense.save(update_fields=update_fields)
+    return api_changed
 
 
 def _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id):
@@ -4160,13 +6011,17 @@ def _serialize_slicktext_campaign(sms_campaign, event):
 
 
 def _slicktext_fetch_campaign_with_analytics(client, campaign_id):
-    """Fetch a SlickText campaign plus its analytics and bundle them as a report."""
+    """Fetch a SlickText campaign plus best-effort analytics/link metrics."""
     campaign = client.get_campaign(campaign_id)
     try:
         analytics = client.get_campaign_analytics(campaign_id)
     except SlickTextAPIError:
         analytics = {}
-    return build_slicktext_campaign_report(campaign, analytics)
+    try:
+        links = client.get_campaign_links(campaign_id)
+    except SlickTextAPIError:
+        links = []
+    return build_slicktext_campaign_report(campaign, analytics, links)
 
 
 @login_required
@@ -4201,7 +6056,10 @@ def event_detail(request, event_id):
 
     if _refresh_meta_ads_expenses_for_event(org, event, request.user):
         messages.warning(request, 'Could not refresh one or more Meta Ads campaign spends.')
+    _recompute_utm_attribution_for_event(org, event)
     mailchimp_connection = _get_mailchimp_connection(org)
+
+    weather_forecast = get_event_weather_forecast(event)
 
     # Compute event stats via shared helper
     stats = _compute_event_stats(event)
@@ -4223,9 +6081,51 @@ def event_detail(request, event_id):
     margin_pct = stats['margin_pct']
     ticket_type_breakdown = stats['ticket_type_breakdown']
     ticket_type_allocation_charts = stats.get('ticket_type_allocation_charts', [])
+    allocation_sold_total = sum(
+        c['sold'] for c in ticket_type_allocation_charts if not c['is_unlimited']
+    )
+    allocation_alloc_total = sum(
+        c['allocated'] for c in ticket_type_allocation_charts if not c['is_unlimited']
+    )
+    allocation_remaining_total = max(allocation_alloc_total - allocation_sold_total, 0)
+    allocation_percent_total = (
+        round(min(allocation_sold_total / allocation_alloc_total * 100, 100))
+        if allocation_alloc_total else 0
+    )
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
+    survey_scheduled_send_at = stats['survey_scheduled_send_at']
+    survey_scheduled_send_display = (
+        _format_survey_send_time(event, survey_scheduled_send_at)
+        if survey_scheduled_send_at else None
+    )
+    # Resolved send schedule (event override → org default) shown read-only in the
+    # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
+    # itself is configured in the survey builder, not here.
+    _resolved_schedule = event.resolved_survey_schedule()
+    _schedule_send_at_display = None
+    _schedule_is_past = False
+    if _resolved_schedule:
+        try:
+            _schedule_dt = _compute_survey_send_at(
+                event, _resolved_schedule['offset_type'], _resolved_schedule['offset_value'],
+                _resolved_schedule['time_of_day'], _resolved_schedule.get('anchor', 'end'),
+            )
+            _schedule_is_past = _schedule_dt <= django_tz.now()
+            _schedule_send_at_display = _format_survey_send_time(event, _schedule_dt)
+        except ValueError:
+            pass
+    survey_schedule_resolved = {
+        'has_schedule': _resolved_schedule is not None,
+        'description': _describe_survey_schedule(_resolved_schedule),
+        'send_at_display': _schedule_send_at_display,
+        'is_past': _schedule_is_past,
+        # Schedule can actually be used only if it computes to a future time.
+        'can_schedule': bool(_schedule_send_at_display) and not _schedule_is_past,
+        # A prior cancel opted this event out of automatic arming.
+        'opted_out': event.survey_auto_send_opted_out,
+    }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
@@ -4326,13 +6226,89 @@ def event_detail(request, event_id):
         for row in stats['page_views_over_time']
     ])
 
+    marketing_events = _compute_marketing_events(event)
+    marketing_events_json = json.dumps(marketing_events)
+
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
+
+    show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
+    checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
+
+    audience = stats.get('audience') or {'show': False}
+    notable_attendees_page = None
+    if audience.get('show'):
+        from tickets.services.audience import EventAudienceCalculator
+        from tickets.services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
+        notable_qs = EventAudienceCalculator(event).notable_attendees_queryset()
+        notable_paginator = Paginator(notable_qs, 10)
+        notable_attendees_page = notable_paginator.get_page(request.GET.get('audience_page'))
 
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
+    # Sales pacing — compare this event's cumulative sales curve against a
+    # comparable past event, aligned on a days-before-event axis.
+    pacing_candidates = _get_pacing_comparison_candidates(org, event)
+    show_pacing_card = bool(total_orders) and bool(pacing_candidates)
+    pacing_current_json = 'null'
+    pacing_compare_json = 'null'
+    pacing_candidate_list = []
+    pacing_default_compare_id = None
+    pacing_today_days_before = None
+    if show_pacing_card:
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        calc = SalesCurveCalculator()
+        default_compare = pacing_candidates[0]
+        pacing_default_compare_id = str(default_compare.id)
+        pacing_current_json = json.dumps(calc.get_pacing_series(event))
+        pacing_compare_json = json.dumps(calc.get_pacing_series(default_compare))
+        pacing_candidate_list = [
+            {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
+            for e in pacing_candidates
+        ]
+        # Days-before-event for "today", so the chart can mark where the current
+        # event stands on the shared pacing axis (positive = event still upcoming).
+        pacing_today_days_before = (event.start_date - django_tz.localdate()).days
+
+    # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
+    # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
+    from tickets.sms_views import _annotate_counts
+    from tickets.models import SMSCampaign
+    native_sms_campaigns = list(
+        _annotate_counts(
+            SMSCampaign.objects.filter(
+                organization=org, event=event, deleted_at__isnull=True,
+            )
+        ).order_by('-created_at')[:10]
+    )
+
+    # Customers tab — distinct buyers of this event, for bulk-tagging. Only built
+    # for SMS-enabled orgs (the tab is hidden otherwise) to avoid extra queries.
+    event_customers_page = None
+    event_org_tags = []
+    if org.sms_marketing_enabled:
+        event_customers_qs = (
+            Customer.objects.filter(organization=org, ticket_orders__event=event)
+            .distinct()
+            .annotate(
+                event_orders=Count('ticket_orders', filter=Q(ticket_orders__event=event)),
+                event_spend=Coalesce(
+                    Sum('ticket_orders__total_amount', filter=Q(ticket_orders__event=event)),
+                    Decimal('0.00'),
+                ),
+            )
+            .order_by('name')
+        )
+        cust_paginator = Paginator(event_customers_qs, 100)
+        event_customers_page = cust_paginator.get_page(request.GET.get('cust_page'))
+        event_org_tags = CustomerTag.objects.filter(organization=org)
+
     context = {
         'event': event,
+        'native_sms_campaigns': native_sms_campaigns,
+        'event_customers_page': event_customers_page,
+        'org_tags': event_org_tags,
+        'weather_forecast': weather_forecast,
         'active_scanner_sessions': active_scanner_sessions,
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
@@ -4357,7 +6333,10 @@ def event_detail(request, event_id):
         'mailchimp_pending_count': mailchimp_pending_count,
         'slicktext_pending_count': slicktext_pending_count,
         'meta_ads_pending_count': meta_ads_pending_count,
+        'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
+        'expense_form': EventExpenseForm(initial={'expense_date': event.start_date}),
+        'event_income_form': EventIncomeForm(organization=org, auto_id='id_income_%s'),
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
@@ -4367,6 +6346,9 @@ def event_detail(request, event_id):
         'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
+        'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -4374,14 +6356,35 @@ def event_detail(request, event_id):
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'ticket_type_allocation_charts': ticket_type_allocation_charts,
         'ticket_type_allocation_charts_json': ticket_type_allocation_charts_json,
+        'allocation_sold_total': allocation_sold_total,
+        'allocation_alloc_total': allocation_alloc_total,
+        'allocation_remaining_total': allocation_remaining_total,
+        'allocation_percent_total': allocation_percent_total,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
+        'marketing_events_json': marketing_events_json,
+        'has_marketing_events': bool(marketing_events),
         'has_page_view_data': bool(stats['page_views_over_time']),
         'show_page_views_chart': event.ticketing_type == 'direct',
+        'show_checkin_chart': show_checkin_chart,
+        'checkin_total_tickets': checkin_total_tickets,
+        'checkin_count': checkin_count,
+        'checkin_percent': checkin_percent,
+        'checkin_by_type': checkin_by_type,
+        'audience': audience,
+        'show_audience_tab': audience.get('show'),
+        'notable_attendees_page': notable_attendees_page,
+        'segment_badge_colors': SEGMENT_BADGE_COLORS if audience.get('show') else {},
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
         'next_event_name': next_event.name if next_event else None,
+        'show_pacing_card': show_pacing_card,
+        'pacing_current_json': pacing_current_json,
+        'pacing_compare_json': pacing_compare_json,
+        'pacing_candidates': pacing_candidate_list,
+        'pacing_default_compare_id': pacing_default_compare_id,
+        'pacing_today_days_before': pacing_today_days_before,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -4430,7 +6433,9 @@ def event_detail(request, event_id):
         )
         for tl in tracking_links:
             tl.purchase_revenue = Decimal(str(tl.purchase_revenue_cents)) / 100
-            tl.full_url = request.build_absolute_uri(f'/track/{tl.token}/')
+            tl.full_url = request.build_absolute_uri(
+                reverse('tickets:track_link_redirect', kwargs={'token': tl.token})
+            )
         context['tracking_links'] = tracking_links
     context['today'] = date.today()
 
@@ -4489,6 +6494,8 @@ def event_detail(request, event_id):
                 'feedback': ' • '.join(feedback_parts),
                 'source': 'Cue survey',
                 'response_id': None,
+                'detail_kind': 'internal',
+                'detail_id': resp.id,
             })
     if external_survey_responses_count > 0:
         for resp in (
@@ -4503,6 +6510,8 @@ def event_detail(request, event_id):
                 'feedback': resp.text_feedback or '',
                 'source': 'Typeform' if resp.typeform_response_id else 'External upload',
                 'response_id': resp.id,
+                'detail_kind': 'external',
+                'detail_id': resp.id,
             })
     survey_response_rows.sort(key=lambda r: r['date'] or datetime.min, reverse=True)
     responses_paginator = Paginator(survey_response_rows, 25)
@@ -4523,6 +6532,42 @@ def event_detail(request, event_id):
 
 @login_required
 @require_org
+def event_pacing_api(request, event_id):
+    """Return the sales-pacing series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so pacing can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_pacing_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
+
+
+@login_required
+@require_org
+@require_organizer
+def event_weather_hourly(request, event_id):
+    """Return JSON hourly forecast for every day the event spans."""
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+    data = get_event_hourly_forecast(event)
+    if data is None:
+        return JsonResponse({'days': [], 'venue_name': None})
+    return JsonResponse(data)
+
+
+@login_required
+@require_org
 @require_organizer
 def event_uploads_summary(request, event_id):
     """Render the uploads card separately so the main detail page can load sooner."""
@@ -4536,6 +6581,55 @@ def event_uploads_summary(request, event_id):
         'event': event,
         'upload_stats': upload_stats,
     })
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_summary_stream(request, event_id):
+    """SSE endpoint - streams an LLM-generated event summary."""
+    from django.http import StreamingHttpResponse
+    from django.core.cache import cache as django_cache
+
+    from .services.event_summary import EventSummaryService
+
+    org = get_organization(request)
+
+    # Respect the org's display preference — endpoint is unavailable when hidden
+    if not org.ai_event_summary_enabled:
+        raise Http404()
+
+    # Rate limit: 30 *successful* generations per org per hour. We only check the
+    # ceiling here; the counter is incremented by the service after a summary is
+    # actually produced, so failed attempts (e.g. a missing OpenAI key) don't burn
+    # the budget or mask the real error behind a misleading "rate limit" message.
+    rate_key = f"summary_ratelimit:{org.id}"
+    try:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
+            return JsonResponse(
+                {'error': 'Rate limit exceeded. Please try again later.'},
+                status=429,
+            )
+    except Exception:
+        # Redis unavailable — skip rate limiting rather than blocking the request
+        pass
+
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    event_data = _compute_event_stats(event)
+
+    service = EventSummaryService(org, user=request.user)
+    response = StreamingHttpResponse(
+        service.stream_summary(event, event_data, rate_limit_key=rate_key),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 @login_required
@@ -4630,6 +6724,13 @@ def event_delete(request, event_id):
                     event.ticket_orders.values_list('customer_id', flat=True).distinct()
                 )
                 event_name = event.name
+                # Revoke loyalty points BEFORE the cascade hard-deletes the
+                # event's orders; failures PROPAGATE so the delete aborts
+                # rather than stranding points (eng review D6).
+                revoke_points_for_orders(
+                    list(event.ticket_orders.values_list('id', flat=True)),
+                    description='Event deleted',
+                )
                 event.hard_delete()
 
                 customers_deleted = _reconcile_customers_after_order_deletion(
@@ -4697,6 +6798,11 @@ def order_detail(request, order_id):
         and order.refunded_at is None
         and remaining_refundable > 0
     )
+    can_resend = (
+        order.event.ticketing_type == TICKETING_TYPE_DIRECT
+        and stripe_session is not None
+        and bool(order.customer.email)
+    )
 
     context = {
         'order': order,
@@ -4705,6 +6811,7 @@ def order_detail(request, order_id):
         'ticket_types': ticket_types,
         'stripe_session': stripe_session,
         'can_refund': can_refund,
+        'can_resend': can_resend,
         'remaining_refundable': remaining_refundable,
     }
     return render(request, 'tickets/order_detail.html', context)
@@ -4741,6 +6848,15 @@ def refund_order(request, order_id):
         or remaining <= 0
     ):
         messages.error(request, 'This order cannot be refunded.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+        # In-person charges live on the connected account; the platform key
+        # can't refund them. Stripe keeps the platform fee on these refunds.
+        messages.error(
+            request,
+            'In-person orders must be refunded from your Stripe dashboard for now.',
+        )
         return redirect('tickets:order_detail', order_id=order_id)
 
     refund_type = request.POST.get('refund_type', 'full')
@@ -4800,6 +6916,13 @@ def refund_order(request, order_id):
                     )
 
         order.customer.update_lifetime_value()
+        if refund_type == 'full':
+            # Loyalty points clawback: full refunds only (matches LTV's
+            # coarse handling). Swallow — a refund must never fail on points.
+            try:
+                revoke_points_for_order(order, description='Order refunded')
+            except Exception:
+                logger.exception("Points revoke failed for refunded order %s", order.id)
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
@@ -4825,15 +6948,42 @@ def refund_order(request, order_id):
     return redirect('tickets:order_detail', order_id=order_id)
 
 
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def resend_order_confirmation(request, order_id):
+    """Re-send the order confirmation email for a direct-purchase order."""
+    org = get_organization(request)
+    order = get_object_or_404(
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'stripe_checkout_session',
+        ),
+        id=order_id
+    )
+    stripe_session = getattr(order, 'stripe_checkout_session', None)
+    if order.event.ticketing_type != TICKETING_TYPE_DIRECT or stripe_session is None:
+        messages.error(request, 'Confirmation emails can only be resent for direct-purchase orders.')
+        return redirect('tickets:order_detail', order_id=order_id)
+    if not order.customer.email:
+        messages.error(request, 'This order has no customer email on file.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    from .tasks import send_order_confirmation_email_task
+    send_order_confirmation_email_task.delay(str(order.id))
+    messages.success(request, f'Confirmation email queued to {order.customer.email}.')
+    return redirect('tickets:order_detail', order_id=order_id)
+
+
 # Format Management Views
 
 @login_required
 @require_org
 @require_host
 def format_list(request):
-    """List all CSV formats."""
+    """List all CSV formats available to the org (its own + global built-ins)."""
     org = get_organization(request)
-    formats = CSVFormat.objects.filter(organization=org)
+    formats = CSVFormat.available_for(org)
     context = {
         'formats': formats,
     }
@@ -4939,6 +7089,96 @@ def format_set_default(request, format_id):
     return redirect('tickets:format_list')
 
 
+@login_required
+@require_org
+@require_host
+def format_duplicate(request, format_id):
+    """Copy a visible format (incl. a global built-in) into an editable org copy."""
+    org = get_organization(request)
+    # Source can be one of the org's own formats or a global built-in.
+    source = get_object_or_404(CSVFormat.available_for(org), id=format_id)
+
+    # Build a unique name within the global-unique constraint.
+    base_name = f"{source.name} (Custom)"
+    new_name = base_name
+    suffix = 2
+    while CSVFormat.objects.filter(name=new_name).exists():
+        new_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    copy = CSVFormat(
+        organization=org,
+        name=new_name,
+        description=source.description,
+        is_default=False,
+        is_system=False,
+        requires_manual_pricing=source.requires_manual_pricing,
+        uses_tiers=source.uses_tiers,
+        column_mapping=source.column_mapping,
+    )
+    copy.save()
+    messages.success(
+        request,
+        f"Created an editable copy '{copy.name}'. Customize it below.",
+    )
+    return redirect('tickets:format_edit', format_id=copy.id)
+
+
+# Market Management Views
+
+@login_required
+@require_org
+@require_host
+def market_list(request):
+    """List organization markets with event counts."""
+    org = get_organization(request)
+    markets = (
+        Market.objects.filter(organization=org)
+        .annotate(event_count=Count('events'))
+        .order_by('geography_level', 'name')
+    )
+    context = {
+        'markets': markets,
+    }
+    return render(request, 'tickets/market_list.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def market_builder(request):
+    """Bulk-create markets from event venue city, state, or country."""
+    org = get_organization(request)
+    builder = MarketBuilder(org)
+    level = builder.normalize_level(
+        request.POST.get('level') if request.method == 'POST' else request.GET.get('level')
+    )
+
+    if request.method == 'POST':
+        values = request.POST.getlist('values')
+        if not values:
+            messages.error(request, 'Select at least one region to create markets.')
+            return redirect(f"{reverse('tickets:market_builder')}?{urlencode({'level': level})}")
+
+        result = builder.build(level, values)
+        messages.success(
+            request,
+            f"Created {result['created_count']} market(s) and assigned "
+            f"{result['updated_count']} event(s)."
+        )
+        return redirect('tickets:market_list')
+
+    context = {
+        'level': level,
+        'level_choices': [
+            {'value': key, 'label': label}
+            for key, label in builder.LEVEL_LABELS.items()
+        ],
+        'preview_rows': builder.preview(level),
+    }
+    return render(request, 'tickets/market_builder.html', context)
+
+
 # Venue Management Views
 
 @login_required
@@ -4993,6 +7233,48 @@ def venue_create(request):
 @login_required
 @require_org
 @require_host
+@require_http_methods(["POST"])
+def venue_create_inline(request):
+    """Create a venue via AJAX (from the create/edit event page) and return JSON.
+
+    Returns the new venue's id, dropdown label (matching VenueChoiceField), and
+    capacity so the event form's venue <select> can be updated without a reload.
+    """
+    org = get_organization(request)
+    form = VenueForm(request.POST)
+    if form.is_valid():
+        venue = form.save(commit=False)
+        venue.organization = org
+        # unique_together includes `organization`, which isn't a form field, so the
+        # form can't validate it — guard the IntegrityError and report it inline.
+        # Normalize first so the check matches the city casing applied on save().
+        from .address_utils import normalize_venue_address_fields
+        normalize_venue_address_fields(venue)
+        if Venue.objects.filter(
+            organization=org, name=venue.name, city=venue.city
+        ).exists():
+            return JsonResponse(
+                {'success': False, 'errors': {
+                    'name': ['A venue with this name and city already exists.']
+                }},
+                status=400,
+            )
+        venue.save()
+        label = VenueChoiceField(queryset=Venue.objects.none()).label_from_instance(venue)
+        return JsonResponse({
+            'success': True,
+            'venue': {
+                'id': str(venue.id),
+                'label': label,
+                'capacity': venue.capacity,
+            },
+        })
+    return JsonResponse({'success': False, 'errors': form.errors}, status=400)
+
+
+@login_required
+@require_org
+@require_host
 def venue_edit(request, venue_id):
     """Edit an existing venue."""
     org = get_organization(request)
@@ -5001,6 +7283,7 @@ def venue_edit(request, venue_id):
         form = VenueForm(request.POST, instance=venue)
         if form.is_valid():
             form.save()
+            MarketBuilder(org).assign_events_for_venue(venue)
             messages.success(request, f"Venue '{venue.name}, {venue.city}' updated successfully.")
             return redirect('tickets:venue_list')
     else:
@@ -5018,7 +7301,14 @@ def venue_edit(request, venue_id):
 @require_org
 @require_host
 def event_type_select(request):
-    """Landing page to choose Direct or External ticketing before creating an event."""
+    """Landing page to choose Direct or External ticketing before creating an event.
+
+    When external events are disabled for the org (the default), skip the chooser
+    and go straight to the direct-ticketing create form.
+    """
+    org = get_organization(request)
+    if not (org and org.external_events_enabled):
+        return redirect('tickets:event_create', ticketing_type='direct')
     return render(request, 'tickets/event_type_select.html', {})
 
 
@@ -5028,9 +7318,12 @@ def event_type_select(request):
 def event_create(request, ticketing_type):
     """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
+    from django.conf import settings as django_settings
     if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
         return redirect('tickets:event_type_select')
     org = get_organization(request)
+    if ticketing_type == TICKETING_TYPE_EXTERNAL and not org.external_events_enabled:
+        return redirect('tickets:event_create', ticketing_type=TICKETING_TYPE_DIRECT)
 
     if ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
@@ -5058,6 +7351,7 @@ def event_create(request, ticketing_type):
                     event.created_by = request.user
                     event.venue = venue
                     event.ticketing_type = TICKETING_TYPE_DIRECT
+                    MarketBuilder(org).assign_event(event, save=False)
                     event.save()
                     created_by_index = {}
                     for idx, tt_form in enumerate(ticket_formset.forms):
@@ -5083,6 +7377,7 @@ def event_create(request, ticketing_type):
                     _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
                     _sync_event_to_google_calendar(event)
+                    fire_event_created(event)
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(organization=org)
@@ -5103,6 +7398,7 @@ def event_create(request, ticketing_type):
             'ticketing_type': ticketing_type,
             'no_venues': no_venues,
             'venue_capacities_json': json.dumps(venue_capacities),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_create.html', context)
 
@@ -5113,20 +7409,13 @@ def event_create(request, ticketing_type):
             ticketing_type_locked=True,
             hide_ticket_link=False,
         )
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             event = form.save(commit=False)
             event.organization = org
             event.created_by = request.user
             event.status = EVENT_STATUS_LIVE
+            MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values for current org's dropdown custom fields only
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -5144,6 +7433,7 @@ def event_create(request, ticketing_type):
             _invalidate_marketing_cache(org)
             messages.success(request, f"Event '{event.name}' created successfully.")
             _sync_event_to_google_calendar(event)
+            fire_event_created(event)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(
@@ -5152,7 +7442,6 @@ def event_create(request, ticketing_type):
             hide_ticket_link=False,
             initial={'ticketing_type': ticketing_type},
         )
-        talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
     venue_capacities = {
         str(v.id): v.capacity
@@ -5161,9 +7450,9 @@ def event_create(request, ticketing_type):
     }
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_create.html', context)
 
@@ -5174,6 +7463,7 @@ def event_create(request, ticketing_type):
 def event_edit(request, event_id):
     """Edit an existing event."""
     from .models import TICKETING_TYPE_DIRECT
+    from django.conf import settings as django_settings
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
@@ -5188,9 +7478,11 @@ def event_edit(request, event_id):
                     event = form.save(commit=False)
                     event.updated_by = request.user
                     event.venue = venue
+                    MarketBuilder(org).assign_event(event, save=False)
                     event.save()
                     _invalidate_event_list_cache(org)
                     _invalidate_marketing_cache(org)
+                    _invalidate_event_campaign_match_cache(event.id)
                     messages.success(request, f"Event '{event.name}' updated successfully.")
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
@@ -5218,25 +7510,19 @@ def event_edit(request, event_id):
                 for v in Venue.objects.filter(organization=org)
                 if v.capacity
             }),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_edit.html', context)
 
     # External ticketing path
     if request.method == 'POST':
         form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             was_future = event.start_date >= date.today()
             event = form.save(commit=False)
             event.updated_by = request.user
+            MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -5252,20 +7538,17 @@ def event_edit(request, event_id):
                 value.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            _invalidate_event_campaign_match_cache(event.id)
             messages.success(request, f"Event '{event.name}' updated successfully.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(
-            queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
-            prefix='talent',
-        )
 
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'event': event,
         'ticketing_type': event.ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_edit.html', context)
 
@@ -5273,6 +7556,7 @@ def event_edit(request, event_id):
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def event_upload_csv(request, event_id):
     """Upload a CSV directly for an existing event."""
@@ -5341,402 +7625,34 @@ def settings_overview(request):
     return render(request, 'tickets/settings_overview.html')
 
 
-@login_required
-@require_org
-@require_admin
-def settings_google_calendar(request):
-    """Google Calendar (Pipedream) settings: set or edit webhook URL, or disconnect."""
-    from django.core.validators import URLValidator
-    from django.core.exceptions import ValidationError
-
-    org = get_organization(request)
-    connection = PipedreamCalendarConnection.objects.filter(organization=org).first()
-
-    if request.method == 'POST':
-        webhook_url = (request.POST.get('webhook_url') or '').strip()
-        if not webhook_url:
-            messages.error(request, 'Please enter a webhook URL.')
-            return redirect('tickets:settings_google_calendar')
-        try:
-            URLValidator()(webhook_url)
-        except ValidationError:
-            messages.error(request, 'Please enter a valid URL.')
-            return redirect('tickets:settings_google_calendar')
-        connection, created = PipedreamCalendarConnection.objects.get_or_create(
-            organization=org,
-            defaults={'webhook_url': webhook_url},
-        )
-        if not created:
-            connection.webhook_url = webhook_url
-            connection.save()
-        messages.success(request, 'Google Calendar (Pipedream) webhook saved. New events will be sent to this URL.')
-        return redirect('tickets:settings_google_calendar')
-
-    context = {
-        'connection': connection,
-    }
-    return render(request, 'tickets/settings_google_calendar.html', context)
 
 
-@login_required
-@require_org
-@require_admin
-def settings_google_calendar_disconnect(request):
-    """Remove Pipedream calendar connection for the current org."""
-    if request.method != 'POST':
-        return redirect('tickets:settings_google_calendar')
-    org = get_organization(request)
-    PipedreamCalendarConnection.objects.filter(organization=org).delete()
-    messages.success(request, 'Google Calendar (Pipedream) disconnected.')
-    return redirect('tickets:settings_google_calendar')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def meta_ads_settings(request):
-    """Show Meta Ads connection state for the current org."""
-    org = get_organization(request)
-    accounts = None
-    if org.meta_ads_access_token and not org.meta_ads_account_id:
-        try:
-            accounts = MetaAdsClient(org.meta_ads_access_token).list_ad_accounts()
-        except MetaAdsAPIError as exc:
-            messages.error(request, f'Could not load Meta ad accounts: {exc}')
-
-    return render(request, 'tickets/settings_meta_ads.html', {
-        'accounts': accounts,
-        'callback_url': request.build_absolute_uri(reverse('tickets:meta_ads_callback')),
-        'facebook_configured': bool(settings.FACEBOOK_APP_ID and settings.FACEBOOK_APP_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def meta_ads_connect(request):
-    """Start Facebook OAuth for Meta Ads Insights access."""
-    if not settings.FACEBOOK_APP_ID or not settings.FACEBOOK_APP_SECRET:
-        messages.error(request, 'Meta Ads is not configured. Add FACEBOOK_APP_ID and FACEBOOK_APP_SECRET.')
-        return redirect('tickets:meta_ads_settings')
-
-    state = secrets.token_urlsafe(32)
-    request.session['meta_oauth_state'] = state
-    callback_url = request.build_absolute_uri(reverse('tickets:meta_ads_callback'))
-    params = urlencode({
-        'client_id': settings.FACEBOOK_APP_ID,
-        'redirect_uri': callback_url,
-        'state': state,
-        'scope': 'ads_read,business_management',
-        'response_type': 'code',
-    })
-    return redirect(f'https://www.facebook.com/{settings.FACEBOOK_GRAPH_API_VERSION}/dialog/oauth?{params}')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def meta_ads_callback(request):
-    """Handle Facebook OAuth callback and persist the long-lived user token."""
-    org = get_organization(request)
-    expected_state = request.session.pop('meta_oauth_state', None)
-    if not expected_state or request.GET.get('state') != expected_state:
-        messages.error(request, 'Meta Ads connection could not be verified. Please try again.')
-        return redirect('tickets:meta_ads_settings')
-
-    if request.GET.get('error'):
-        messages.error(request, request.GET.get('error_description') or 'Meta Ads authorization was cancelled.')
-        return redirect('tickets:meta_ads_settings')
-
-    code = request.GET.get('code')
-    if not code:
-        messages.error(request, 'Meta did not return an authorization code.')
-        return redirect('tickets:meta_ads_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:meta_ads_callback'))
-    try:
-        short_token = meta_exchange_code_for_token(code, callback_url)
-        long_token = exchange_for_long_lived_token(short_token['access_token'])
-        access_token = long_token['access_token']
-        profile = MetaAdsClient(access_token).get_user_profile()
-    except (KeyError, MetaAdsAPIError) as exc:
-        messages.error(request, f'Could not connect Meta Ads: {exc}')
-        return redirect('tickets:meta_ads_settings')
-
-    expires_in = long_token.get('expires_in')
-    org.meta_ads_access_token = access_token
-    org.meta_ads_user_id = profile.get('id', '')
-    org.meta_ads_account_id = ''
-    org.meta_ads_account_name = ''
-    org.meta_ads_token_expires_at = (
-        django_tz.now() + timedelta(seconds=int(expires_in))
-        if expires_in else None
-    )
-    org.save(update_fields=[
-        'meta_ads_access_token',
-        'meta_ads_user_id',
-        'meta_ads_account_id',
-        'meta_ads_account_name',
-        'meta_ads_token_expires_at',
-    ])
-    messages.success(request, 'Meta Ads connected. Choose an ad account to finish setup.')
-    return redirect('tickets:meta_ads_select_account')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET", "POST"])
-def meta_ads_select_account(request):
-    """Pick the Meta ad account to use for campaign spend."""
-    org = get_organization(request)
-    if not org.meta_ads_access_token:
-        messages.error(request, 'Connect Meta Ads before choosing an ad account.')
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        accounts = MetaAdsClient(org.meta_ads_access_token).list_ad_accounts()
-    except MetaAdsAPIError as exc:
-        messages.error(request, f'Could not load Meta ad accounts: {exc}')
-        return redirect('tickets:meta_ads_settings')
-
-    if request.method == 'POST':
-        selected_account_id = request.POST.get('account_id', '')
-        selected = next((account for account in accounts if account.get('id') == selected_account_id), None)
-        if not selected:
-            messages.error(request, 'Please choose a valid Meta ad account.')
-            return redirect('tickets:meta_ads_select_account')
-
-        org.meta_ads_account_id = selected.get('id', '')
-        org.meta_ads_account_name = selected.get('name', '')
-        org.save(update_fields=['meta_ads_account_id', 'meta_ads_account_name'])
-        messages.success(request, f'Meta Ads account "{org.meta_ads_account_name}" connected.')
-        return redirect('tickets:meta_ads_settings')
-
-    return render(request, 'tickets/settings_meta_ads.html', {
-        'accounts': accounts,
-        'callback_url': request.build_absolute_uri(reverse('tickets:meta_ads_callback')),
-        'facebook_configured': bool(settings.FACEBOOK_APP_ID and settings.FACEBOOK_APP_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def meta_ads_disconnect(request):
-    """Clear Meta Ads tokens and account selection for the current org."""
-    org = get_organization(request)
-    org.meta_ads_access_token = ''
-    org.meta_ads_user_id = ''
-    org.meta_ads_account_id = ''
-    org.meta_ads_account_name = ''
-    org.meta_ads_token_expires_at = None
-    org.save(update_fields=[
-        'meta_ads_access_token',
-        'meta_ads_user_id',
-        'meta_ads_account_id',
-        'meta_ads_account_name',
-        'meta_ads_token_expires_at',
-    ])
-    messages.success(request, 'Meta Ads disconnected.')
-    return redirect('tickets:meta_ads_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def mailchimp_settings(request):
-    """Show Mailchimp connection state for the current org."""
-    org = get_organization(request)
-    return render(request, 'tickets/settings_mailchimp.html', {
-        'org': org,
-        'mailchimp_connection': _get_mailchimp_connection(org),
-        'mailchimp_configured': bool(settings.MAILCHIMP_CLIENT_ID and settings.MAILCHIMP_CLIENT_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def mailchimp_connect(request):
-    """Start direct Mailchimp OAuth for report access."""
-    org = get_organization(request)
-    if not settings.MAILCHIMP_CLIENT_ID or not settings.MAILCHIMP_CLIENT_SECRET:
-        messages.error(request, 'Mailchimp OAuth is not configured. Add MAILCHIMP_CLIENT_ID and MAILCHIMP_CLIENT_SECRET.')
-        return redirect('tickets:mailchimp_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
-    state = secrets.token_urlsafe(32)
-    request.session['mailchimp_oauth_state'] = state
-    return redirect(build_authorize_url(callback_url, state))
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def mailchimp_callback(request):
-    """Persist direct Mailchimp OAuth credentials after authorization."""
-    org = get_organization(request)
-    if request.GET.get('error'):
-        messages.error(request, request.GET.get('error_description') or request.GET.get('error') or 'Mailchimp authorization was cancelled.')
-        return redirect('tickets:mailchimp_settings')
-
-    expected_state = request.session.get('mailchimp_oauth_state')
-    state = request.GET.get('state')
-    if not expected_state or not state or state != expected_state:
-        messages.error(request, 'Mailchimp authorization could not be verified. Please try connecting again.')
-        return redirect('tickets:mailchimp_settings')
-    request.session.pop('mailchimp_oauth_state', None)
-
-    code = request.GET.get('code')
-    if not code:
-        messages.error(request, 'Mailchimp did not return an authorization code. Please try connecting again.')
-        return redirect('tickets:mailchimp_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
-    try:
-        access_token = exchange_code_for_token(code, callback_url)
-        metadata = get_oauth_metadata(access_token)
-        dc = metadata.get('dc')
-        if not dc:
-            raise MailchimpAPIError('Mailchimp did not return an account data center.')
-        account_root = MailchimpClient(access_token, dc).get_account_root()
-    except MailchimpAPIError as exc:
-        messages.error(request, f'Could not verify Mailchimp connection: {exc}')
-        return redirect('tickets:mailchimp_settings')
-
-    login = metadata.get('login') or {}
-    org.mailchimp_access_token = access_token
-    org.mailchimp_dc = dc
-    org.mailchimp_account_id = str(
-        account_root.get('account_id')
-        or metadata.get('account_id')
-        or metadata.get('user_id')
-        or ''
-    )
-    org.mailchimp_account_name = str(
-        account_root.get('account_name')
-        or metadata.get('accountname')
-        or metadata.get('account_name')
-        or ''
-    )
-    org.mailchimp_login_email = str(login.get('email') or metadata.get('login_email') or account_root.get('email') or '')
-    org.save(update_fields=[
-        'mailchimp_access_token',
-        'mailchimp_dc',
-        'mailchimp_account_id',
-        'mailchimp_account_name',
-        'mailchimp_login_email',
-    ])
-
-    messages.success(request, 'Mailchimp connected.')
-    return redirect('tickets:mailchimp_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def mailchimp_disconnect(request):
-    """Disconnect Mailchimp from the current org."""
-    org = get_organization(request)
-    if _get_mailchimp_connection(org):
-        org.mailchimp_access_token = ''
-        org.mailchimp_dc = ''
-        org.mailchimp_account_id = ''
-        org.mailchimp_account_name = ''
-        org.mailchimp_login_email = ''
-        org.save(update_fields=[
-            'mailchimp_access_token',
-            'mailchimp_dc',
-            'mailchimp_account_id',
-            'mailchimp_account_name',
-            'mailchimp_login_email',
-        ])
-        messages.success(request, 'Mailchimp disconnected.')
-    else:
-        messages.info(request, 'Mailchimp was not connected.')
-    return redirect('tickets:mailchimp_settings')
 
 
-@login_required
-@require_org
-@require_admin
-def slicktext_settings(request):
-    """Show SlickText connection status and the credential form."""
-    org = get_organization(request)
-    return render(request, 'tickets/settings_slicktext.html', {
-        'org': org,
-        'slicktext_connection': _get_slicktext_connection(org),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def slicktext_save(request):
-    """Validate posted SlickText API key, fetch the brand, and persist credentials."""
-    org = get_organization(request)
-    api_key = (request.POST.get('api_key') or '').strip()
-    if not api_key:
-        messages.error(request, 'Enter your SlickText API key.')
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        brand = SlickTextClient(api_key).get_brand()
-    except SlickTextAPIError as exc:
-        messages.error(request, f'Could not verify SlickText credentials: {exc}')
-        return redirect('tickets:slicktext_settings')
-
-    brand_id = str(brand.get('brand_id') or brand.get('id') or '')
-    if not brand_id:
-        messages.error(request, 'SlickText did not return a brand ID for this API key.')
-        return redirect('tickets:slicktext_settings')
-
-    org.slicktext_api_key = api_key
-    org.slicktext_brand_id = brand_id
-    org.slicktext_brand_name = str(brand.get('name') or brand.get('legal_name') or '')
-    org.slicktext_validated_at = django_tz.now()
-    org.save(update_fields=[
-        'slicktext_api_key',
-        'slicktext_brand_id',
-        'slicktext_brand_name',
-        'slicktext_validated_at',
-    ])
-    messages.success(request, 'SlickText connected.')
-    return redirect('tickets:slicktext_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def slicktext_disconnect(request):
-    """Disconnect SlickText from the current org."""
-    org = get_organization(request)
-    if _get_slicktext_connection(org):
-        org.slicktext_api_key = ''
-        org.slicktext_brand_id = ''
-        org.slicktext_brand_name = ''
-        org.slicktext_validated_at = None
-        org.save(update_fields=[
-            'slicktext_api_key',
-            'slicktext_brand_id',
-            'slicktext_brand_name',
-            'slicktext_validated_at',
-        ])
-        messages.success(request, 'SlickText disconnected.')
-    else:
-        messages.info(request, 'SlickText was not connected.')
-    return redirect('tickets:slicktext_settings')
+
+
 
 
 @login_required
@@ -5943,6 +7859,272 @@ def org_profile(request):
     return render(request, 'tickets/settings_org_profile.html', {'form': form, 'org': org})
 
 
+@login_required
+@require_org
+@require_admin
+def settings_display_preferences(request):
+    """Toggle which optional cards appear on event pages (e.g. AI Event Summary)."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgDisplayPreferencesForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Display preferences updated.')
+            return redirect('tickets:settings_display_preferences')
+    else:
+        form = OrgDisplayPreferencesForm(instance=org)
+    return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
+def _candidate_bands_from_form(form):
+    """Build (kwargs, monetary_tuple) for classify_segment_absolute from a valid form."""
+    cd = form.cleaned_data
+    kwargs = {
+        'recency_active': cd['recency_active_days'],
+        'recency_cooling': cd['recency_cooling_days'],
+        'freq_few': cd['freq_few'],
+        'freq_many': cd['freq_many'],
+    }
+    monetary = (float(cd['monetary_mid']), float(cd['monetary_high']))
+    return kwargs, monetary
+
+
+def _preview_size_rows(sizes):
+    """Shape preview_absolute_sizes output for the template (badge color + plain blurb)."""
+    if not sizes or sizes.get('status') != 'ok':
+        return None
+    from .services.segmentation.segment_definitions import SEGMENT_DESCRIPTIONS
+    return [
+        {
+            'segment': name,
+            'count': info['count'],
+            'pct': info['pct'],
+            'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+            'description': SEGMENT_DESCRIPTIONS.get(name, ''),
+        }
+        for name, info in sizes['by_segment'].items()
+    ]
+
+
+def _annotate_order_check(rows):
+    """For the 'are your segments in the right order?' list.
+
+    rows are in value order (best group first). Each non-empty group's later spend
+    should be <= the group above it. Flag any that spent MORE than the last non-empty
+    group above them, rescale bars to this list's own max, and count the violations.
+    Returns (rows, violations).
+    """
+    max_rev = max((r['avg_future_revenue'] for r in rows if r['n']), default=0) or 1
+    violations = 0
+    prev = None  # (segment, avg) of the last non-empty group above
+    for r in rows:
+        r['bar_pct'] = max(0, round(100 * r['avg_future_revenue'] / max_rev)) if r['n'] else 0
+        r['out_of_order'] = False
+        r['above'] = None
+        if r['n']:
+            if prev is not None and r['avg_future_revenue'] > prev[1]:
+                r['out_of_order'] = True
+                r['above'] = prev[0]
+                violations += 1
+            prev = (r['segment'], r['avg_future_revenue'])
+    return rows, violations
+
+
+def _recommendations(diag, candidate, current_score=None):
+    """One-click 'apply' recommendations from data-driven better cut-offs.
+
+    Each item: label + why + apply_json (a {input_id: value} map the front-end
+    fills in, then re-runs the check). Empty when the cut-offs already look good
+    or when a suggested change would fail the same future-revenue check shown in
+    this panel.
+    """
+    recs = diag.recommended_bands(candidate)  # e.g. {'freq_many': 3, 'monetary_high': 65}
+    if not recs:
+        return []
+
+    from .services.segmentation.segment_definitions import classify_segment_absolute, SEGMENT_VALUE_ORDER
+
+    def trial_candidate(keys):
+        band_kwargs, monetary_bands = candidate
+        trial_kwargs = dict(band_kwargs)
+        mid, high = monetary_bands
+        if 'freq_many' in keys:
+            trial_kwargs['freq_many'] = recs['freq_many']
+        if 'monetary_high' in keys:
+            high = recs['monetary_high']
+        return trial_kwargs, (mid, high)
+
+    def passes_revenue_check(keys):
+        if current_score is None:
+            return True
+        result = diag._backtest(
+            absolute_fn=classify_segment_absolute,
+            bands=trial_candidate(keys),
+            value_order=SEGMENT_VALUE_ORDER,
+        )
+        score = (result.get('separation') or {}).get('spearman_future_revenue')
+        if result.get('status') != 'ok' or score is None:
+            return False
+        # Match the visible verdict margin: a recommendation should not click
+        # through into "worse than current automatic segments."
+        return score >= current_score - 0.05
+
+    out = []
+    if 'freq_many' in recs and passes_revenue_check(['freq_many']):
+        out.append({
+            'label': 'Set “frequent buyer” to {} orders'.format(recs['freq_many']),
+            'why': 'Almost nobody qualifies now, so your top segments are nearly empty.',
+            'apply_json': json.dumps({'id_freq_many': recs['freq_many']}),
+        })
+    if 'monetary_high' in recs and passes_revenue_check(['monetary_high']):
+        out.append({
+            'label': 'Set “top spender” to ${:g}'.format(recs['monetary_high']),
+            'why': 'Hardly anyone clears the current amount, so your best spenders don’t stand out.',
+            'apply_json': json.dumps({'id_monetary_high': recs['monetary_high']}),
+        })
+    if len(out) > 1 and passes_revenue_check(['freq_many', 'monetary_high']):
+        combined = {}
+        if 'freq_many' in recs:
+            combined['id_freq_many'] = recs['freq_many']
+        if 'monetary_high' in recs:
+            combined['id_monetary_high'] = recs['monetary_high']
+        out.append({
+            'label': 'Use all suggested numbers',
+            'why': '',
+            'apply_json': json.dumps(combined),
+            'primary': True,
+        })
+    return out
+
+
+def _spread_note(segment):
+    """Plain-English advice when one preview segment dominates the customer base."""
+    if not segment:
+        return None
+    if segment == 'Dormant':
+        return (
+            'Most customers are Dormant. That can be normal if many have no orders '
+            'or only one old, low-spend order. If you want to treat more older '
+            'customers as still reachable, widen the “Recently active” or '
+            '“Slipping away” day ranges.'
+        )
+    if segment in ('VIP', 'Loyal', 'Big Spender'):
+        return (
+            'Most customers fall into one top segment ({}). Raise the frequent-buyer '
+            'or top-spender thresholds so the highest-value segments stay selective.'
+        ).format(segment)
+    return (
+        'Most customers fall into one segment ({}). Adjust the cut-offs above to '
+        'spread customers only if this does not match how you would market to them.'
+    ).format(segment)
+
+
+@login_required
+@require_org
+@require_admin
+def settings_segment_tuning(request):
+    """Set absolute segment cut-offs, preview the result, and switch modes.
+
+    Actions (hidden `action` field): preview (sizes), preview_backtest (sizes +
+    separation), save (persist + recalc if absolute), reset (re-seed suggested).
+    """
+    from .services.segmentation.segment_definitions import (
+        seed_segment_bands, classify_segment_absolute, SEGMENT_VALUE_ORDER,
+    )
+    from .services.segmentation.validation import SegmentDiagnostics
+    from .tasks import recalculate_rfm_task
+
+    org = get_organization(request)
+    # Ensure monetary defaults are meaningful before the form renders.
+    seed_segment_bands(org)
+
+    context = {'org': org, 'preview_sizes': None, 'preview_current_sizes': None,
+               'backtest_rows': None, 'backtest_current_rows': None,
+               'backtest_separation': None, 'backtest_status': None,
+               'rfm_recalc_in_progress': org.rfm_recalc_in_progress}
+
+    if request.method == 'POST':
+        action = request.POST.get('action', 'save')
+        if action == 'reset':
+            seed_segment_bands(org, force=True)
+            messages.info(request, 'Cut-offs reset to the suggested values for your data.')
+            return redirect('tickets:settings_segment_tuning')
+
+        form = SegmentTuningForm(request.POST, instance=org)
+        if form.is_valid():
+            if action == 'save':
+                form.save()
+                if org.segment_mode == 'absolute':
+                    # Re-read the flag from DB — it may have flipped since page load.
+                    org.refresh_from_db(fields=['rfm_recalc_in_progress'])
+                    if not org.rfm_recalc_in_progress:
+                        recalculate_rfm_task.delay(str(org.id))
+                    messages.success(request, 'Saved. Recalculating segments with your cut-offs.')
+                else:
+                    messages.success(request, 'Cut-offs saved. Segments stay on percentile mode.')
+                return redirect('tickets:settings_segment_tuning')
+
+            elif action in ('preview', 'preview_backtest'):
+                # no save — just render the requested preview
+                candidate = _candidate_bands_from_form(form)
+                diag = SegmentDiagnostics(org)
+                context['preview_sizes'] = _preview_size_rows(diag.preview_absolute_sizes(candidate))
+                if action == 'preview_backtest':
+                    result = diag._backtest(
+                        absolute_fn=classify_segment_absolute, bands=candidate,
+                        value_order=SEGMENT_VALUE_ORDER,
+                    )
+                    context['backtest_status'] = result.get('status')
+                    if result.get('status') == 'ok':
+                        context['backtest_rows'] = _segment_health_backtest_rows(result)
+                        context['backtest_separation'] = result.get('separation')
+                    # current-rules backtest for side-by-side comparison
+                    current = diag._backtest(holdout_days=result.get('holdout_days', 180))
+                    if current.get('status') == 'ok':
+                        context['backtest_current_rows'] = _segment_health_backtest_rows(current)
+                        context['backtest_current_separation'] = current.get('separation')
+                    # Align both to the same value-ordered groups (current only feeds
+                    # the one-line verdict now), then build the single "order check".
+                    if context.get('backtest_rows') and context.get('backtest_current_rows'):
+                        context['backtest_rows'], context['backtest_current_rows'] = _align_backtest_rows(
+                            context['backtest_rows'], context['backtest_current_rows'], SEGMENT_VALUE_ORDER,
+                        )
+                        order_rows, violations = _annotate_order_check(context['backtest_rows'])
+                        context['order_rows'] = order_rows
+                        context['order_violations'] = violations
+                        cur_sep = (current.get('separation') or {}).get('spearman_future_revenue')
+                        context['recommendations'] = _recommendations(diag, candidate, cur_sep)
+                        # Over-concentration has no single safe value to apply.
+                        _spread = next((r['segment'] for r in (context.get('preview_sizes') or [])
+                                        if r['pct'] > 40), None)
+                        context['spread_note'] = _spread_note(_spread)
+                    # Plain-English verdict: is the proposed better/similar/worse?
+                    prop_sep = (result.get('separation') or {}).get('spearman_future_revenue')
+                    cur_sep = (current.get('separation') or {}).get('spearman_future_revenue')
+                    if result.get('status') == 'ok' and prop_sep is not None and cur_sep is not None:
+                        delta = round(prop_sep - cur_sep, 4)
+                        verdict = 'better' if delta > 0.05 else 'worse' if delta < -0.05 else 'similar'
+                        context['backtest_verdict'] = {
+                            'proposed': prop_sep, 'current': cur_sep,
+                            'delta': delta, 'label': verdict,
+                            'proposed_pct': max(0, round(prop_sep * 100)),
+                            'current_pct': max(0, round(cur_sep * 100)),
+                        }
+
+        # AJAX preview: return just the result partial so the page updates in
+        # place (no reload). Falls back to full page for non-AJAX posts
+        # (progressive enhancement). Fires for valid and invalid forms.
+        if (action in ('preview', 'preview_backtest')
+                and request.headers.get('x-requested-with') == 'XMLHttpRequest'):
+            context['form'] = form
+            return render(request, 'tickets/_segment_preview.html', context)
+    else:
+        form = SegmentTuningForm(instance=org)
+
+    context['form'] = form
+    return render(request, 'tickets/settings_segment_tuning.html', context)
+
+
 # Forecast Tool Views
 
 @login_required
@@ -6103,593 +8285,22 @@ def event_pricing_recommendation(request, event_id):
 # Event Expense Views
 # ---------------------------------------------------------------------------
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_meta_ads_match(request, event_id):
-    """Rank Meta campaigns that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect Meta Ads and choose an ad account before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect Meta Ads and choose an ad account before matching campaigns.')
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        client = MetaAdsClient(org.meta_ads_access_token)
-        campaigns = client.list_campaigns(org.meta_ads_account_id)
-        match_result = MetaCampaignMatcher(org).rank(event, campaigns)
-    except MetaAdsAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load Meta campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("Meta campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank Meta campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank Meta campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    campaigns_by_id = {str(campaign.get('id')): campaign for campaign in campaigns}
-    candidates = []
-    for candidate in match_result.candidates:
-        campaign = campaigns_by_id.get(candidate.campaign_id)
-        if not campaign:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        candidates.append({
-            'campaign': campaign,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'account_name': org.meta_ads_account_name,
-            'candidates': [
-                {
-                    'campaign_id': item['campaign'].get('id'),
-                    'campaign_name': item['campaign'].get('name') or item['campaign'].get('id'),
-                    'objective': item['campaign'].get('objective') or 'No objective',
-                    'start_time': _format_meta_ads_datetime(
-                        item['campaign'].get('start_time') or item['campaign'].get('created_time')
-                    ) or 'Unknown',
-                    'stop_time': _format_meta_ads_datetime(item['campaign'].get('stop_time')) or 'Not set',
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_meta_ads_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'account_name': org.meta_ads_account_name,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_apply(request, event_id):
-    """Pull campaign lifetime spend and upsert it as this event's Meta Ads expense."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-
-    def _json_error(msg, status):
-        return JsonResponse({'success': False, 'error': msg}, status=status)
-
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        if wants_json:
-            return _json_error('Connect Meta Ads and choose an ad account before applying campaign spend.', 400)
-        messages.error(request, 'Connect Meta Ads and choose an ad account before applying campaign spend.')
-        return redirect('tickets:meta_ads_settings')
-
-    campaign_id = request.POST.get('campaign_id', '').strip()
-    if not campaign_id:
-        if wants_json:
-            return _json_error('Choose a Meta campaign to apply.', 400)
-        messages.error(request, 'Choose a Meta campaign to apply.')
-        return redirect('tickets:event_meta_ads_match', event_id=event.id)
-
-    try:
-        client = MetaAdsClient(org.meta_ads_access_token)
-        campaigns = client.list_campaigns(org.meta_ads_account_id)
-        campaign = next((item for item in campaigns if str(item.get('id')) == campaign_id), None)
-        if not campaign:
-            if wants_json:
-                return _json_error('The selected Meta campaign was not found in this ad account.', 404)
-            messages.error(request, 'The selected Meta campaign was not found in this ad account.')
-            return redirect('tickets:event_meta_ads_match', event_id=event.id)
-        spend = client.get_campaign_spend(campaign_id)
-    except MetaAdsAPIError as exc:
-        if wants_json:
-            return _json_error(f'Could not pull campaign spend from Meta: {exc}', 502)
-        messages.error(request, f'Could not pull campaign spend from Meta: {exc}')
-        return redirect('tickets:event_meta_ads_match', event_id=event.id)
-
-    campaign_name = campaign.get('name') or campaign_id
-    expense, created = EventExpense.objects.get_or_create(
-        event=event,
-        source='meta_ads',
-        external_id=campaign_id,
-        deleted_at__isnull=True,
-        defaults={
-            'category': 'marketing',
-            'description': f'Meta Ads: {campaign_name}'[:300],
-            'amount': spend,
-            'expense_date': event.start_date,
-            'external_metadata': {},
-            'created_by': request.user,
-        },
-    )
-    if not created:
-        old_amount = expense.amount
-        was_confirmed = bool(expense.confirmed_at)
-        expense.category = 'marketing'
-        expense.description = f'Meta Ads: {campaign_name}'[:300]
-        expense.amount = spend
-        expense.expense_date = expense.expense_date or event.start_date
-        expense.external_id = campaign_id
-        expense.updated_by = request.user
-        expense.version += 1
-        if was_confirmed and old_amount != spend:
-            expense.api_data_changed_at = django_tz.now()
-
-    expense.external_metadata = {
-        'campaign_name': campaign_name,
-        'ad_account_id': org.meta_ads_account_id,
-        'ad_account_name': org.meta_ads_account_name,
-        'last_synced_at': django_tz.now().isoformat(),
-    }
-    expense.save()
-    _invalidate_event_list_cache(org)
-    _invalidate_marketing_cache(org)
-
-    action = 'updated' if not created else 'added'
-    success_msg = f'Meta Ads campaign spend ${spend:,.2f} {action} as a linked marketing expense.'
-
-    if wants_json:
-        linked = list(
-            EventExpense.objects.filter(
-                event=event,
-                source='meta_ads',
-                deleted_at__isnull=True,
-            ).order_by('-created_at')
-        )
-        return JsonResponse({
-            'success': True,
-            'message': success_msg,
-            'expenses': [_serialize_meta_ads_expense(item, event) for item in linked],
-        })
-
-    messages.success(request, success_msg)
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_refresh(request, event_id, expense_id):
-    """Refresh a single linked Meta Ads campaign expense."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    ajax = _wants_marketing_json(request)
-
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        msg = 'Connect Meta Ads and choose an ad account before refreshing campaign spend.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        spend = MetaAdsClient(org.meta_ads_access_token).get_campaign_spend(expense.external_id)
-    except MetaAdsAPIError as exc:
-        logger.warning(
-            "Meta Ads row refresh failed for org=%s event=%s expense=%s campaign=%s: %s",
-            org.id,
-            event.id,
-            expense.id,
-            expense.external_id,
-            exc,
-        )
-        msg = 'Could not refresh this Meta Ads campaign spend.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    old_amount = expense.amount
-    _update_meta_ads_expense_spend(expense, spend, request.user)
-    django_cache.delete(_event_stats_cache_key(event.pk))
-    if old_amount != spend:
-        _invalidate_event_list_cache(org)
-        _invalidate_marketing_cache(org)
-
-    if ajax:
-        expense.refresh_from_db()
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, f'Meta Ads campaign spend refreshed to ${spend:,.2f}.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_remove(request, event_id, expense_id):
-    """Unlink a Meta Ads campaign from an event by soft-deleting its expense."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-
-    expense.updated_by = request.user
-    expense.save(update_fields=['updated_by'])
-    expense.delete()
-    django_cache.delete(_event_stats_cache_key(event.pk))
-    _invalidate_event_list_cache(org)
-    _invalidate_marketing_cache(org)
-
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(expense.id)})
-    messages.success(request, 'Meta Ads campaign removed from this event.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_mailchimp_match(request, event_id):
-    """Rank Mailchimp campaigns that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect Mailchimp before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect Mailchimp before matching campaigns.')
-        return redirect('tickets:mailchimp_settings')
-
-    try:
-        reports = fetch_org_reports_cached(org)
-        match_result = MailchimpCampaignMatcher(org).rank(event, reports)
-    except MailchimpAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("Mailchimp campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank Mailchimp campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank Mailchimp campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    linked_ids = set(
-        EventEmailCampaign.objects.filter(
-            event=event,
-            source='mailchimp',
-            deleted_at__isnull=True,
-        ).exclude(external_id='').values_list('external_id', flat=True)
-    )
-
-    reports_by_id = {str(report.get('id')): report for report in reports}
-    candidates = []
-    for candidate in match_result.candidates:
-        report = reports_by_id.get(candidate.campaign_id)
-        if not report:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        candidates.append({
-            'report': report,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-            'is_linked': str(report.get('id')) in linked_ids,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
-            'candidates': [
-                {
-                    'campaign_id': item['report'].get('id'),
-                    'campaign_title': item['report'].get('campaign_title') or item['report'].get('id'),
-                    'subject_line': item['report'].get('subject_line') or '',
-                    'send_time': _format_meta_ads_datetime(item['report'].get('send_time')) or 'Unknown',
-                    'emails_sent': item['report'].get('emails_sent') or 0,
-                    'confidence': item['confidence'],
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                    'is_linked': item['is_linked'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_mailchimp_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_apply(request, event_id):
-    """Pull campaign report details and upsert them as this event's Mailchimp campaign results."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Connect Mailchimp before applying campaign results.'}, status=400)
-        messages.error(request, 'Connect Mailchimp before applying campaign results.')
-        return redirect('tickets:mailchimp_settings')
-
-    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
-    if not campaign_ids:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Choose at least one Mailchimp campaign to apply.'}, status=400)
-        messages.error(request, 'Choose at least one Mailchimp campaign to apply.')
-        return redirect('tickets:event_mailchimp_match', event_id=event.id)
-
-    confidences = request.POST.getlist('confidence')
-    reasonings = request.POST.getlist('reasoning')
-
-    try:
-        reports = fetch_org_reports_cached(org)
-    except MailchimpAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
-        return redirect('tickets:event_mailchimp_match', event_id=event.id)
-    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-
-    available_ids = {str(item.get('id')) for item in reports}
-    unknown_ids = [cid for cid in campaign_ids if cid not in available_ids]
-    valid_ids = [cid for cid in campaign_ids if cid in available_ids]
-    if unknown_ids and not wants_json:
-        messages.error(
-            request,
-            'These Mailchimp campaigns were not found in this account: ' + ', '.join(unknown_ids),
-        )
-
-    added_titles = []
-    updated_titles = []
-    failed_ids = []
-    for index, campaign_id in enumerate(valid_ids):
-        confidence = confidences[index] if index < len(confidences) else None
-        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
-        try:
-            report = client.get_campaign_report(campaign_id)
-            email_campaign, created = _save_mailchimp_campaign_from_report(
-                event,
-                report,
-                user=request.user,
-                match_confidence=confidence or None,
-                match_reasoning=reasoning,
-            )
-        except MailchimpAPIError as exc:
-            logger.warning(
-                "Mailchimp apply failed for org=%s event=%s campaign=%s: %s",
-                org.id, event.id, campaign_id, exc,
-            )
-            failed_ids.append(campaign_id)
-            continue
-        if created:
-            added_titles.append(email_campaign.campaign_title)
-        else:
-            updated_titles.append(email_campaign.campaign_title)
-
-    succeeded = len(added_titles) + len(updated_titles)
-    if succeeded == 1:
-        only_title = (added_titles + updated_titles)[0]
-        verb = 'added' if added_titles else 'updated'
-        success_msg = f'Mailchimp campaign "{only_title}" {verb} for this event.'
-    elif succeeded:
-        parts = []
-        if added_titles:
-            parts.append(f'added {len(added_titles)}')
-        if updated_titles:
-            parts.append(f'updated {len(updated_titles)}')
-        success_msg = f'Linked {succeeded} Mailchimp campaigns to this event ({", ".join(parts)}).'
-    else:
-        success_msg = ''
-
-    if wants_json:
-        all_linked = list(
-            EventEmailCampaign.objects.filter(
-                event=event,
-                source='mailchimp',
-                deleted_at__isnull=True,
-            ).order_by('-send_time', '-created_at')
-        )
-        return JsonResponse({
-            'success': succeeded > 0,
-            'message': success_msg,
-            'failed_ids': failed_ids,
-            'unknown_ids': unknown_ids,
-            'campaigns': [_serialize_mailchimp_campaign(c, event) for c in all_linked],
-        })
-
-    if succeeded:
-        messages.success(request, success_msg)
-
-    if failed_ids:
-        messages.error(
-            request,
-            'Could not pull results from Mailchimp for: ' + ', '.join(failed_ids),
-        )
-
-    if not succeeded and not unknown_ids and not failed_ids:
-        messages.error(request, 'No Mailchimp campaigns were applied.')
-
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_refresh_all(request, event_id):
-    """Refresh all linked Mailchimp campaign reports for an event."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        return JsonResponse({
-            'success': False,
-            'error': 'Connect Mailchimp before refreshing campaign results.',
-        }, status=400)
-
-    email_campaigns = list(
-        EventEmailCampaign.objects.filter(
-            event=event,
-            source='mailchimp',
-            deleted_at__isnull=True,
-        ).exclude(external_id='')
-    )
-    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-    had_error = False
-    refreshed_campaigns = []
-
-    for email_campaign in email_campaigns:
-        try:
-            report = client.get_campaign_report(email_campaign.external_id)
-            refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
-            refreshed_campaigns.append(refreshed)
-        except MailchimpAPIError as exc:
-            had_error = True
-            logger.warning(
-                "Mailchimp bulk refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
-                org.id,
-                event.id,
-                email_campaign.id,
-                email_campaign.external_id,
-                exc,
-            )
-            refreshed_campaigns.append(email_campaign)
-
-    refreshed_campaigns.sort(key=lambda item: (item.send_time or django_tz.datetime.min.replace(tzinfo=django_tz.utc), item.created_at), reverse=True)
-    return JsonResponse({
-        'success': True,
-        'had_error': had_error,
-        'campaigns': [
-            _serialize_mailchimp_campaign(email_campaign, event)
-            for email_campaign in refreshed_campaigns
-        ],
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_refresh(request, event_id, email_campaign_id):
-    """Refresh a single linked Mailchimp campaign report."""
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    ajax = _wants_marketing_json(request)
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        msg = 'Connect Mailchimp before refreshing campaign results.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:mailchimp_settings')
-
-    try:
-        report = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc).get_campaign_report(email_campaign.external_id)
-        refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
-    except MailchimpAPIError as exc:
-        logger.warning(
-            "Mailchimp row refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
-            org.id,
-            event.id,
-            email_campaign.id,
-            email_campaign.external_id,
-            exc,
-        )
-        msg = 'Could not refresh this Mailchimp campaign.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(refreshed)})
-    messages.success(request, f'Mailchimp campaign "{refreshed.campaign_title}" refreshed.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_remove(request, event_id, email_campaign_id):
-    """Unlink a Mailchimp campaign from an event by soft-deleting its stored results."""
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['updated_by'])
-    email_campaign.delete()
-
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(email_campaign.id)})
-    messages.success(request, 'Mailchimp campaign removed from this event.')
-    return _marketing_tab_redirect(event)
 
 
 def _parse_optional_int(raw):
@@ -6788,6 +8399,11 @@ def _serialize_ads_row(e):
         'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
         'manual_attributed_orders': e.manual_attributed_orders,
         'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
+        'api_attributed_orders': e.api_attributed_orders,
+        'api_attributed_revenue': f'{e.api_attributed_revenue:.2f}' if e.api_attributed_revenue is not None else '',
+        'cue_attributed_orders': e.cue_attributed_orders,
+        'cue_attributed_revenue': f'{e.cue_attributed_revenue:.2f}' if e.cue_attributed_revenue is not None else '',
+        'attribution_source': e.attribution_source,
         'is_confirmed': e.is_confirmed,
         'needs_review': e.needs_review,
         'status_label': _status_label(e),
@@ -6795,231 +8411,22 @@ def _serialize_ads_row(e):
     }
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
-    """Set or clear manual_clicks/manual_orders/manual_revenue on a Mailchimp campaign.
-
-    Partial update: only fields present in POST are written. Empty string clears
-    (sets to NULL → fall back to API). Missing key leaves the field unchanged.
-    """
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    int_fields = ['manual_emails_sent', 'manual_unique_opens', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
-    try:
-        for field in int_fields:
-            if field in request.POST:
-                setattr(email_campaign, field, _parse_optional_int(request.POST.get(field)))
-                update_fields.append(field)
-        if 'manual_revenue' in request.POST:
-            email_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
-            update_fields.append('manual_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-        return _marketing_tab_redirect(event)
-    email_campaign.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    email_campaign.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Updated metrics for "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = django_tz.now()
-    email_campaign.confirmed_by = request.user
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Confirmed "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_unconfirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = None
-    email_campaign.confirmed_by = None
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Removed "{email_campaign.campaign_title}" from reports.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
-    """Partial update of manual_clicks/manual_orders/manual_revenue."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    int_fields = ['manual_audience', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
-    try:
-        for field in int_fields:
-            if field in request.POST:
-                setattr(sms_campaign, field, _parse_optional_int(request.POST.get(field)))
-                update_fields.append(field)
-        if 'manual_revenue' in request.POST:
-            sms_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
-            update_fields.append('manual_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-        return _marketing_tab_redirect(event)
-    sms_campaign.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    sms_campaign.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Updated metrics for "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = django_tz.now()
-    sms_campaign.confirmed_by = request.user
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Confirmed "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_unconfirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = None
-    sms_campaign.confirmed_by = None
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Removed "{sms_campaign.name}" from reports.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_metrics_edit(request, event_id, expense_id):
-    """Partial update of manual_attributed_orders / manual_attributed_revenue."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    try:
-        if 'manual_attributed_orders' in request.POST:
-            expense.manual_attributed_orders = _parse_optional_int(request.POST.get('manual_attributed_orders'))
-            update_fields.append('manual_attributed_orders')
-        if 'manual_attributed_revenue' in request.POST:
-            expense.manual_attributed_revenue = _parse_optional_decimal(request.POST.get('manual_attributed_revenue'))
-            update_fields.append('manual_attributed_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers for attributed orders and revenue.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-        return _marketing_tab_redirect(event)
-    expense.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    expense.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Updated ad attribution.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = django_tz.now()
-    expense.confirmed_by = request.user
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Confirmed ad spend.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_unconfirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = None
-    expense.confirmed_by = None
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Removed ad spend from reports.')
-    return _marketing_tab_redirect(event)
 
 
 def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_row, label):
@@ -7051,359 +8458,62 @@ def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_r
     return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm_all(request, event_id):
-    """Confirm every unconfirmed Mailchimp campaign on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventEmailCampaign,
-        extra_filter={'source': 'mailchimp'},
-        serialize_row=_serialize_email_row,
-        label='Mailchimp campaign(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm_all(request, event_id):
-    """Confirm every unconfirmed SlickText broadcast on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventSMSCampaign,
-        extra_filter={'source': 'slicktext'},
-        serialize_row=_serialize_sms_row,
-        label='SlickText broadcast(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm_all(request, event_id):
-    """Confirm every unconfirmed Meta Ads expense on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventExpense,
-        extra_filter={'source': 'meta_ads'},
-        serialize_row=_serialize_ads_row,
-        label='Meta Ads expense(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_slicktext_match(request, event_id):
-    """Rank SlickText broadcasts that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect SlickText before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect SlickText before matching campaigns.')
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-        campaigns = client.list_campaigns()
-        match_result = SlickTextCampaignMatcher(org).rank(event, campaigns)
-    except SlickTextAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load SlickText campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load SlickText campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("SlickText campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    linked_ids = set(
-        EventSMSCampaign.objects.filter(
-            event=event,
-            source='slicktext',
-            deleted_at__isnull=True,
-        ).exclude(external_id='').values_list('external_id', flat=True)
-    )
-
-    campaigns_by_id = {str(campaign.get('campaign_id') or campaign.get('id')): campaign for campaign in campaigns}
-    candidates = []
-    for candidate in match_result.candidates:
-        campaign = campaigns_by_id.get(candidate.campaign_id)
-        if not campaign:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        external_id = str(campaign.get('campaign_id') or campaign.get('id'))
-        candidates.append({
-            'campaign': campaign,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-            'is_linked': external_id in linked_ids,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
-            'candidates': [
-                {
-                    'campaign_id': str(item['campaign'].get('campaign_id') or item['campaign'].get('id')),
-                    'name': item['campaign'].get('name') or '',
-                    'message': item['campaign'].get('body') or item['campaign'].get('message') or '',
-                    'send_time': _format_meta_ads_datetime(
-                        item['campaign'].get('finished')
-                        or item['campaign'].get('started')
-                        or item['campaign'].get('scheduled')
-                    ) or 'Unknown',
-                    'audience_size': item['campaign'].get('audience_size') or 0,
-                    'status': item['campaign'].get('status') or '',
-                    'confidence': item['confidence'],
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                    'is_linked': item['is_linked'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_slicktext_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_apply(request, event_id):
-    """Pull SlickText campaign + analytics for each chosen ID and upsert as EventSMSCampaign rows."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Connect SlickText before applying campaign results.'}, status=400)
-        messages.error(request, 'Connect SlickText before applying campaign results.')
-        return redirect('tickets:slicktext_settings')
-
-    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
-    if not campaign_ids:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Choose at least one SlickText broadcast to apply.'}, status=400)
-        messages.error(request, 'Choose at least one SlickText broadcast to apply.')
-        return redirect('tickets:event_slicktext_match', event_id=event.id)
-
-    confidences = request.POST.getlist('confidence')
-    reasonings = request.POST.getlist('reasoning')
-
-    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-    added_titles = []
-    updated_titles = []
-    failed_ids = []
-    for index, campaign_id in enumerate(campaign_ids):
-        confidence = confidences[index] if index < len(confidences) else None
-        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
-        try:
-            report = _slicktext_fetch_campaign_with_analytics(client, campaign_id)
-            sms_campaign, created = _save_slicktext_campaign_from_report(
-                event,
-                report,
-                user=request.user,
-                match_confidence=confidence or None,
-                match_reasoning=reasoning,
-            )
-        except SlickTextAPIError as exc:
-            logger.warning(
-                "SlickText apply failed for org=%s event=%s campaign=%s: %s",
-                org.id, event.id, campaign_id, exc,
-            )
-            failed_ids.append(campaign_id)
-            continue
-        if created:
-            added_titles.append(sms_campaign.name)
-        else:
-            updated_titles.append(sms_campaign.name)
-
-    succeeded = len(added_titles) + len(updated_titles)
-    if succeeded == 1:
-        only_title = (added_titles + updated_titles)[0]
-        verb = 'added' if added_titles else 'updated'
-        success_msg = f'SlickText broadcast "{only_title}" {verb} for this event.'
-    elif succeeded:
-        parts = []
-        if added_titles:
-            parts.append(f'added {len(added_titles)}')
-        if updated_titles:
-            parts.append(f'updated {len(updated_titles)}')
-        success_msg = f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).'
-    else:
-        success_msg = ''
-
-    if wants_json:
-        all_linked = list(
-            EventSMSCampaign.objects.filter(
-                event=event,
-                source='slicktext',
-                deleted_at__isnull=True,
-            ).order_by('-send_time', '-created_at')
-        )
-        return JsonResponse({
-            'success': succeeded > 0,
-            'message': success_msg,
-            'added_count': len(added_titles),
-            'updated_count': len(updated_titles),
-            'failed_ids': failed_ids,
-            'campaigns': [_serialize_slicktext_campaign(item, event) for item in all_linked],
-        })
-
-    if succeeded:
-        messages.success(request, success_msg)
-
-    if failed_ids:
-        messages.error(
-            request,
-            'Could not pull results from SlickText for: ' + ', '.join(failed_ids),
-        )
-
-    if not succeeded and not failed_ids:
-        messages.error(request, 'No SlickText broadcasts were applied.')
-
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_refresh_all(request, event_id):
-    """Refresh all linked SlickText campaign analytics for an event."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        return JsonResponse({
-            'success': False,
-            'error': 'Connect SlickText before refreshing campaign results.',
-        }, status=400)
-
-    sms_campaigns = list(
-        EventSMSCampaign.objects.filter(
-            event=event,
-            source='slicktext',
-            deleted_at__isnull=True,
-        ).exclude(external_id='')
-    )
-    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-    had_error = False
-    refreshed = []
-
-    for sms_campaign in sms_campaigns:
-        try:
-            report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
-            refreshed_row, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
-            refreshed.append(refreshed_row)
-        except SlickTextAPIError as exc:
-            had_error = True
-            logger.warning(
-                "SlickText bulk refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
-                org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
-            )
-            refreshed.append(sms_campaign)
-
-    refreshed.sort(
-        key=lambda item: (item.send_time or django_tz.datetime.min.replace(tzinfo=django_tz.utc), item.created_at),
-        reverse=True,
-    )
-    return JsonResponse({
-        'success': True,
-        'had_error': had_error,
-        'campaigns': [_serialize_slicktext_campaign(item, event) for item in refreshed],
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_refresh(request, event_id, sms_campaign_id):
-    """Refresh a single linked SlickText campaign."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    ajax = _wants_marketing_json(request)
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        msg = 'Connect SlickText before refreshing campaign results.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-        report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
-        refreshed, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
-    except SlickTextAPIError as exc:
-        logger.warning(
-            "SlickText row refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
-            org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
-        )
-        msg = 'Could not refresh this SlickText broadcast.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(refreshed)})
-    messages.success(request, f'SlickText broadcast "{refreshed.name}" refreshed.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_remove(request, event_id, sms_campaign_id):
-    """Unlink a SlickText broadcast from an event by soft-deleting its stored results."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
 
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['updated_by'])
-    sms_campaign.delete()
 
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(sms_campaign.id)})
-    messages.success(request, 'SlickText broadcast removed from this event.')
-    return _marketing_tab_redirect(event)
+def _expense_ajax_payload(event, expense):
+    """Build the JSON response body for an inline (AJAX) expense create.
+
+    Reuses _compute_event_stats() so the returned totals and category breakdown
+    match exactly what a full event_detail render would show. The expense-change
+    signal deletes the stats cache on save(), so this recomputes fresh.
+    """
+    stats = _compute_event_stats(event)
+    total_expenses = stats['total_expenses']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    category_labels = dict(EventExpense.CATEGORY_CHOICES)
+    categories = [
+        {
+            'label': category_labels.get(row['category'], row['category']),
+            'total_display': f"{row['total']:,.2f}",
+        }
+        for row in stats['expenses_by_category']
+    ]
+    return {
+        'ok': True,
+        'expense': {
+            'id': str(expense.id),
+            'category_display': expense.get_category_display(),
+            'description': expense.description,
+            'amount_display': f"{expense.amount:,.2f}",
+            'expense_date_display': (
+                expense.expense_date.strftime('%b %d, %Y') if expense.expense_date else ''
+            ),
+            'edit_url': reverse('tickets:expense_edit', args=[event.id, expense.id]),
+            'delete_url': reverse('tickets:expense_delete', args=[event.id, expense.id]),
+        },
+        'totals': {
+            'total_expenses_display': f"{total_expenses:,.2f}",
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+        'categories': categories,
+    }
 
 
 @login_required
@@ -7411,11 +8521,17 @@ def event_slicktext_remove(request, event_id, sms_campaign_id):
 @require_admin
 @require_http_methods(["GET", "POST"])
 def expense_create(request, event_id):
-    """Add a new expense to an event."""
+    """Add a new expense to an event.
+
+    Supports both a full-page flow (renders expense_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Expenses table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventExpenseForm(request.POST)
         if form.is_valid():
             expense = form.save(commit=False)
@@ -7424,8 +8540,12 @@ def expense_create(request, event_id):
             expense.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_expense_ajax_payload(event, expense))
             messages.success(request, f'Expense "${expense.description}" added.')
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventExpenseForm(initial={'expense_date': event.start_date})
 
@@ -7583,15 +8703,59 @@ def income_source_delete(request, source_id):
 # Event Additional Income Views
 # ---------------------------------------------------------------------------
 
+def _income_ajax_payload(event, income):
+    """Build the JSON response body for an inline (AJAX) additional-income create.
+
+    Reuses _compute_event_stats() so the returned revenue/profit figures match a
+    full event_detail render. The income-change signal refreshes stats on commit;
+    delete the cache key first so this recomputes deterministically inline.
+    """
+    django_cache.delete(_event_stats_cache_key(event.pk))
+    stats = _compute_event_stats(event)
+    total_revenue = stats['total_revenue']
+    net_ticket_revenue = stats['net_ticket_revenue']
+    total_additional_income = stats['total_additional_income']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    return {
+        'ok': True,
+        'income': {
+            'id': str(income.id),
+            'source_name': income.income_source.name,
+            'amount_display': f"{income.amount:,.2f}",
+            'income_date_display': (
+                income.income_date.strftime('%b %d, %Y') if income.income_date else ''
+            ),
+            'edit_url': reverse('tickets:event_income_edit', args=[event.id, income.id]),
+            'delete_url': reverse('tickets:event_income_delete', args=[event.id, income.id]),
+        },
+        'totals': {
+            'total_revenue_display': f"{total_revenue:,.2f}",
+            'net_ticket_revenue_display': f"{net_ticket_revenue:,.2f}",
+            'total_additional_income_display': f"{total_additional_income:,.2f}",
+            'has_additional_income': total_additional_income > 0,
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+    }
+
+
 @login_required
 @require_org
 @require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_create(request, event_id):
-    """Add additional income to an event."""
+    """Add additional income to an event.
+
+    Supports a full-page flow (renders event_income_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Additional Income table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventIncomeForm(request.POST, organization=org)
         if form.is_valid():
             income = form.save(commit=False)
@@ -7600,8 +8764,12 @@ def event_income_create(request, event_id):
             income.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_income_ajax_payload(event, income))
             messages.success(request, f"Income '{income.income_source.name}' added.")
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventIncomeForm(organization=org)
     return render(request, 'tickets/event_income_form.html', {
@@ -7668,6 +8836,16 @@ def event_income_delete(request, event_id, income_id):
     })
 
 
+def _bucket_margin(bucket):
+    """Profit margin % for a chart bucket, or None when net revenue is non-positive.
+
+    Uses net revenue (revenue - fees) as the denominator to stay consistent with
+    the per-event and summary margin figures.
+    """
+    net = bucket['net_revenue']
+    return (bucket['profit'] / net * 100) if net > 0 else None
+
+
 @login_required
 @require_org
 @require_host
@@ -7695,10 +8873,8 @@ def profitability_overview(request):
                 ),
                 Decimal('0.00'),
             ),
-            paid_ticket_sum=F('cached_paid_ticket_sum'),
-            paid_ticket_count=F('cached_paid_ticket_count'),
         )
-        .select_related('venue')
+        .select_related('venue', 'market')
         .order_by('-start_date')
     )
 
@@ -7718,8 +8894,6 @@ def profitability_overview(request):
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
     summary_fees = Decimal('0.00')
-    summary_paid_ticket_sum = Decimal('0.00')
-    summary_paid_ticket_count = 0
     event_rows = []
     for e in events:
         total_revenue = e.computed_total_revenue
@@ -7739,32 +8913,47 @@ def profitability_overview(request):
         summary_revenue += total_revenue
         summary_expenses += e.total_expenses
         summary_fees += fees
-        summary_paid_ticket_sum += e.paid_ticket_sum
-        summary_paid_ticket_count += e.paid_ticket_count
 
     summary_net_revenue = summary_revenue - summary_fees
     summary_profit = summary_net_revenue - summary_expenses
     summary_margin = (summary_profit / summary_net_revenue * 100) if summary_net_revenue > 0 else None
 
-    # Market rollup by venue city (sorted high → low for chart)
+    # Market rollup by assigned market (sorted high → low for chart)
     markets: dict = {}
     for row in event_rows:
-        city = (row['event'].venue.city if row['event'].venue else None) or 'Unknown'
-        m = markets.setdefault(city, {
-            'city': city, 'revenue': Decimal('0.00'),
+        event_market = row['event'].market
+        market_label = event_market.name if event_market else NO_MARKET_LABEL
+        m = markets.setdefault(market_label, {
+            'market_id': str(event_market.id) if event_market else '',
+            'market_name': market_label,
+            'market_label': market_label,
+            'city': market_label,
+            'revenue': Decimal('0.00'),
             'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
+            'net_revenue': Decimal('0.00'),
             'event_count': 0,
         })
         m['revenue'] += row['revenue']
         m['expenses'] += row['expenses']
         m['profit'] += row['profit']
+        m['net_revenue'] += row['net_revenue']
         m['event_count'] += 1
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
-    # Market chart data - sorted high → low by profit
+    # Market chart data - same array shape as the other granularities so the chart can
+    # render Revenue vs Expenses / Profit / Margin % grouped by market. Includes every
+    # assigned market (plus "No market") sorted high → low by profit as the initial order;
+    # the client re-sorts on demand. Cast Decimals to float/None so json.dumps can
+    # serialize them.
     market_chart_data = {
-        'labels': [m['city'] for m in market_rows],
+        'labels': [m['market_label'] for m in market_rows],
+        'revenue': [float(m['revenue']) for m in market_rows],
+        'expenses': [float(m['expenses']) for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
+        'margin': [
+            float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
+            for m in market_rows
+        ],
     }
 
     # Monthly aggregation for chart - bucket events by calendar month, ordered earliest → most recent
@@ -7772,16 +8961,18 @@ def profitability_overview(request):
     month_buckets_profit = {}
     for r in chart_events:
         key = r['event'].start_date.strftime('%Y-%m')
-        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0})
+        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0})
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     monthly_profit_chart = sorted(month_buckets_profit.values(), key=lambda x: x['month'])
     chart_data = {
         'labels': [m['month'] for m in monthly_profit_chart],
         'revenue': [m['revenue'] for m in monthly_profit_chart],
         'expenses': [m['expenses'] for m in monthly_profit_chart],
         'profit': [m['profit'] for m in monthly_profit_chart],
+        'margin': [_bucket_margin(m) for m in monthly_profit_chart],
     }
 
     # Quarterly aggregation for chart - bucket events by calendar quarter
@@ -7793,17 +8984,19 @@ def profitability_overview(request):
         label = f'Q{q} {d.year}'
         m = quarter_buckets_profit.setdefault(sort_key, {
             'label': label, 'sort_key': sort_key,
-            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0,
+            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0,
         })
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     quarterly_profit_chart = sorted(quarter_buckets_profit.values(), key=lambda x: x['sort_key'])
     quarter_chart_data = {
         'labels': [m['label'] for m in quarterly_profit_chart],
         'revenue': [m['revenue'] for m in quarterly_profit_chart],
         'expenses': [m['expenses'] for m in quarterly_profit_chart],
         'profit': [m['profit'] for m in quarterly_profit_chart],
+        'margin': [_bucket_margin(m) for m in quarterly_profit_chart],
     }
 
     # Per-event chart data - ordered earliest → most recent
@@ -7816,13 +9009,16 @@ def profitability_overview(request):
         'revenue': [float(r['revenue']) for r in event_chart_events],
         'expenses': [float(r['expenses']) for r in event_chart_events],
         'profit': [float(r['profit']) for r in event_chart_events],
+        'margin': [
+            float(r['margin']) if r['margin'] is not None else None
+            for r in event_chart_events
+        ],
     }
 
     context = {
         'event_rows': event_rows,
         'summary_revenue': summary_revenue,
         'summary_expenses': summary_expenses,
-        'summary_fees': summary_fees,
         'summary_net_revenue': summary_net_revenue,
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
@@ -7830,9 +9026,6 @@ def profitability_overview(request):
         'event_chart_data_json': json.dumps(event_chart_data),
         'quarter_chart_data_json': json.dumps(quarter_chart_data),
         'market_chart_data_json': json.dumps(market_chart_data),
-        'summary_paid_ticket_sum': float(summary_paid_ticket_sum),
-        'summary_paid_ticket_count': summary_paid_ticket_count,
-        'show_fee_simulator': request.user.is_superuser,
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',
@@ -8075,28 +9268,257 @@ def _get_survey_questions_for_event(event):
     # 1. Event-specific questions
     event_questions = SurveyQuestion.objects.filter(
         event=event, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
     if event_questions.exists():
         return event_questions
 
     # 2. Organization defaults
     org_questions = SurveyQuestion.objects.filter(
         organization=event.organization, event__isnull=True, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
     if org_questions.exists():
         return org_questions
 
     # 3. System defaults (no event, no org)
     return SurveyQuestion.objects.filter(
         event__isnull=True, organization__isnull=True, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
+
+
+# _resolve_effective_questions is an alias for the public resolver, named for the
+# builder/freeze code paths where "effective survey" reads more clearly.
+_resolve_effective_questions = _get_survey_questions_for_event
+
+
+def _copy_question(src, **overrides):
+    """Deep-copy a SurveyQuestion (and its options) into a new row.
+
+    Reused by: clone-system-defaults-to-org, customize-for-event, and the
+    send-time freeze. Pass overrides like event=..., organization=... to set the
+    new scope.
+    """
+    fields = {
+        'question_text': src.question_text,
+        'question_type': src.question_type,
+        'position': src.position,
+        'is_required': src.is_required,
+        'is_active': src.is_active,
+        'event': src.event,
+        'organization': src.organization,
+    }
+    fields.update(overrides)
+    new_q = SurveyQuestion.objects.create(**fields)
+    options = [
+        SurveyQuestionOption(question=new_q, label=o.label, position=o.position)
+        for o in src.options.all()
+    ]
+    if options:
+        SurveyQuestionOption.objects.bulk_create(options)
+    return new_q
+
+
+def _clone_effective_to_event(event):
+    """Freeze the effective survey into immutable event-scoped rows.
+
+    Clones the FULL resolved set (event > org > system) into event scope so the
+    event owns a stable snapshot. No-op if the event already has its own active
+    questions. Returns True if anything was cloned.
+    """
+    if SurveyQuestion.objects.filter(event=event, is_active=True).exists():
+        return False
+    source = list(_resolve_effective_questions(event))
+    with transaction.atomic():
+        for src in source:
+            _copy_question(src, event=event, organization=event.organization)
+    return bool(source)
+
+
+def _survey_locked(event):
+    """An event's survey is locked once any invitation has been created for it."""
+    return SurveyInvitation.objects.filter(event=event).exists()
+
+
+def _parse_survey_answer(question, post_data):
+    """Parse + validate one submitted answer for `question` from POST data.
+
+    Returns (answer_data, error). answer_data is a dict with the scalar fields
+    and (for choice questions) 'selected_option_ids'. error is a message string
+    or None. Pure and unit-testable; the public form loop calls this per question.
+    """
+    field_name = f"question_{question.id}"
+
+    if question.question_type in SurveyQuestion.CHOICE_TYPES:
+        valid_ids = {str(o.id) for o in question.options.all()}
+        if question.question_type == 'single_select':
+            raw = (post_data.get(field_name) or '').strip()
+            selected = [raw] if raw else []
+        else:
+            selected = [v for v in post_data.getlist(field_name) if v]
+        if question.is_required and not selected:
+            return None, "This field is required."
+        if any(v not in valid_ids for v in selected):
+            return None, "Invalid selection."
+        return {
+            'question': question, 'star_rating': None, 'nps_score': None,
+            'text_answer': '', 'selected_option_ids': selected,
+        }, None
+
+    value = (post_data.get(field_name) or '').strip()
+    if question.is_required and not value:
+        return None, "This field is required."
+    if not value:
+        return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': ''}, None
+
+    if question.question_type == 'star_rating':
+        try:
+            rating = int(value)
+            if not (1 <= rating <= 5):
+                raise ValueError
+        except (ValueError, TypeError):
+            return None, "Please select a rating between 1 and 5."
+        return {'question': question, 'star_rating': rating, 'nps_score': None, 'text_answer': ''}, None
+
+    if question.question_type == 'nps':
+        try:
+            score = int(value)
+            if not (0 <= score <= 10):
+                raise ValueError
+        except (ValueError, TypeError):
+            return None, "Please select a score between 0 and 10."
+        return {'question': question, 'star_rating': None, 'nps_score': score, 'text_answer': ''}, None
+
+    return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
+
+
+def _is_sendable_email(email):
+    """True if `email` is a deliverable address. Filters out blanks and junk like
+    the Apple 'Hide My Email' placeholder that can slip in via CSV import."""
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    if not email:
+        return False
+    try:
+        validate_email(email)
+    except ValidationError:
+        return False
+    return True
+
+
+def _survey_recipients(event, org):
+    """Attendees with a ticket order for `event`, a usable email, and NO survey
+    invitation yet. Single source of truth for the count modal and send_survey.
+
+    Customers whose email is blank or unparseable are dropped in Python: a survey
+    invitation with no deliverable address would only fail at send time."""
+    existing_customer_ids = SurveyInvitation.objects.filter(
+        event=event
+    ).values_list('customer_id', flat=True)
+    candidates = Customer.objects.filter(
+        ticket_orders__event=event, organization=org
+    ).distinct().exclude(id__in=existing_customer_ids)
+    return [c for c in candidates if _is_sendable_email(c.email)]
+
+
+def _event_tz(event):
+    """ZoneInfo for the event's timezone, falling back to Pacific on bad data."""
+    try:
+        return ZoneInfo(event.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo('America/Los_Angeles')
+
+
+def _compute_survey_send_at(event, offset_type, offset_value, time_of_day, anchor='end'):
+    """Absolute UTC datetime to send the survey, from an offset relative to the
+    event's start or end. Raises ValueError with a user-facing message on bad input.
+
+    anchor 'end' (default) -> measured from event end; 'start' -> from event start
+    offset_type 'hours' -> anchor + N hours
+    offset_type 'days'  -> N days after the anchor date, at time_of_day (event tz)
+    """
+    try:
+        value = int(offset_value)
+    except (TypeError, ValueError):
+        raise ValueError("Enter a whole number for the offset.")
+    if value < 0:
+        raise ValueError("The offset can't be negative.")
+
+    anchor_dt = (event.start_datetime() if anchor == 'start'
+                 else event.end_datetime())  # aware, in the event's timezone
+
+    if offset_type == 'hours':
+        send_local = anchor_dt + timedelta(hours=value)
+    elif offset_type == 'days':
+        if not isinstance(time_of_day, time):
+            raise ValueError("Pick a time of day to send.")
+        send_local = datetime.combine(
+            anchor_dt.date() + timedelta(days=value), time_of_day, tzinfo=anchor_dt.tzinfo,
+        )
+    else:
+        raise ValueError("Choose how to schedule the survey.")
+
+    return send_local.astimezone(ZoneInfo('UTC'))
+
+
+def _format_survey_send_time(event, dt_utc):
+    """Human-readable send time in the event's timezone, e.g. 'Jun 27, 2026 at 6:00 PM PDT'."""
+    local = dt_utc.astimezone(_event_tz(event))
+    return local.strftime('%b %d, %Y at %-I:%M %p %Z')
+
+
+@login_required
+@require_org
+@require_host
+def survey_recipient_count(request, event_id):
+    """Count of attendees who would receive the survey if sent now. GET, JSON."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    return JsonResponse({'count': len(_survey_recipients(event, org))})
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_preview(request, event_id):
+    """Preview the absolute send time for a relative survey-send offset. GET, JSON.
+
+    Powers the live "Survey will send: …" line in the send modal so the host sees
+    exactly what the scheduled POST would compute.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    time_of_day = parse_time(request.GET.get('time_of_day') or '')
+    try:
+        send_at = _compute_survey_send_at(
+            event,
+            request.GET.get('offset_type'),
+            request.GET.get('offset_value'),
+            time_of_day,
+            request.GET.get('anchor') or 'end',
+        )
+    except ValueError as exc:
+        return JsonResponse({'valid': False, 'error': str(exc)})
+
+    if send_at <= django_tz.now():
+        return JsonResponse({
+            'valid': False,
+            'error': 'That works out to a time in the past — pick a larger offset.',
+        })
+    return JsonResponse({'valid': True, 'display': _format_survey_send_time(event, send_at)})
 
 
 @login_required
 @require_org
 @require_host
 def send_survey(request, event_id):
-    """Create survey invitations and dispatch email task. POST only."""
+    """Send the survey to attendees immediately. POST only.
+
+    This is the manual "send now" path. Scheduled delivery is handled
+    automatically by the survey scheduler (see the send_due_survey_invitations
+    management command) for events with an auto-send schedule, so this view only
+    ever sends right away — used to override the schedule and send early, or to
+    send for events with no schedule configured.
+    """
     if request.method != 'POST':
         return redirect('tickets:event_detail', event_id=event_id)
 
@@ -8104,40 +9526,75 @@ def send_survey(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     # Get attendees who don't already have an invitation for this event
-    existing_customer_ids = SurveyInvitation.objects.filter(
-        event=event
-    ).values_list('customer_id', flat=True)
+    attendees = _survey_recipients(event, org)
 
-    attendees = Customer.objects.filter(
-        ticket_orders__event=event, organization=org
-    ).distinct().exclude(id__in=existing_customer_ids)
-
-    if not attendees.exists():
+    if not attendees:
         messages.info(request, "All attendees have already been sent a survey for this event.")
         return redirect('tickets:event_detail', event_id=event_id)
 
-    # Create invitations
-    invitations = []
-    for customer in attendees:
-        invitations.append(SurveyInvitation(
+    # Freeze the survey: clone the effective question set into immutable
+    # event-scoped rows so answers reference a stable snapshot. No-op if the
+    # event already owns questions (e.g. it was customized or already sent).
+    _clone_effective_to_event(event)
+
+    # Create invitations (scheduled_send_at=None → send immediately).
+    invitations = [
+        SurveyInvitation(
             event=event,
             customer=customer,
             organization=org,
             email=customer.email,
-        ))
+            scheduled_send_at=None,
+        )
+        for customer in attendees
+    ]
     SurveyInvitation.objects.bulk_create(invitations)
     # bulk_create bypasses post_save signals — invalidate manually
     django_cache.delete(_event_stats_cache_key(event.id))
     _invalidate_event_upload_stats_cache(event.id)
 
-    # Dispatch Celery task
     from .tasks import send_survey_emails_task
     send_survey_emails_task.delay(str(event_id), str(org.id))
-
     messages.success(
         request,
         f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
     )
+    return redirect('tickets:event_detail', event_id=event_id)
+
+
+@login_required
+@require_org
+@require_host
+def cancel_scheduled_survey(request, event_id):
+    """Cancel a scheduled (not-yet-sent) survey send. POST only.
+
+    Deletes the pending scheduled invitations, which also unlocks the survey
+    builder and restores the recipient pool so the host can reschedule or edit.
+    """
+    if request.method != 'POST':
+        return redirect('tickets:event_detail', event_id=event_id)
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    deleted, _ = SurveyInvitation.objects.filter(
+        event=event,
+        organization=org,
+        sent_at__isnull=True,
+        scheduled_send_at__isnull=False,
+    ).delete()
+    # Opt the event out of auto-send so the scheduler doesn't immediately re-arm
+    # the invitations the host just canceled.
+    if not event.survey_auto_send_opted_out:
+        event.survey_auto_send_opted_out = True
+        event.save(update_fields=['survey_auto_send_opted_out'])
+    django_cache.delete(_event_stats_cache_key(event.id))
+    _invalidate_event_upload_stats_cache(event.id)
+
+    if deleted:
+        messages.success(request, "Scheduled survey send canceled.")
+    else:
+        messages.info(request, "There was no scheduled survey send to cancel.")
     return redirect('tickets:event_detail', event_id=event_id)
 
 
@@ -8156,38 +9613,14 @@ def survey_form(request, token):
     if request.method == 'POST':
         errors = {}
 
-        # Validate answers
+        # Validate answers (per-question parse helper handles every type)
         answers_data = []
         for question in questions:
-            field_name = f"question_{question.id}"
-            value = request.POST.get(field_name, '').strip()
-
-            if question.is_required and not value:
-                errors[field_name] = "This field is required."
-                continue
-
-            if not value:
-                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': ''})
-                continue
-
-            if question.question_type == 'star_rating':
-                try:
-                    rating = int(value)
-                    if not (1 <= rating <= 5):
-                        raise ValueError
-                    answers_data.append({'question': question, 'star_rating': rating, 'nps_score': None, 'text_answer': ''})
-                except (ValueError, TypeError):
-                    errors[field_name] = "Please select a rating between 1 and 5."
-            elif question.question_type == 'nps':
-                try:
-                    score = int(value)
-                    if not (0 <= score <= 10):
-                        raise ValueError
-                    answers_data.append({'question': question, 'star_rating': None, 'nps_score': score, 'text_answer': ''})
-                except (ValueError, TypeError):
-                    errors[field_name] = "Please select a score between 0 and 10."
+            data, error = _parse_survey_answer(question, request.POST)
+            if error:
+                errors[f"question_{question.id}"] = error
             else:
-                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value})
+                answers_data.append(data)
 
         if not errors:
             with transaction.atomic():
@@ -8197,16 +9630,28 @@ def survey_form(request, token):
                     customer=invitation.customer,
                     organization=invitation.organization,
                 )
-                answer_objects = []
+                # Choice answers carry an M2M (through-model), so create each
+                # answer individually + full_clean() rather than bulk_create.
                 for data in answers_data:
-                    answer_objects.append(SurveyAnswer(
+                    answer = SurveyAnswer(
                         response=response,
                         question=data['question'],
                         star_rating=data['star_rating'],
                         nps_score=data['nps_score'],
                         text_answer=data['text_answer'],
-                    ))
-                SurveyAnswer.objects.bulk_create(answer_objects)
+                    )
+                    answer.full_clean(exclude=['selected_options'])
+                    answer.save()
+                    option_ids = data.get('selected_option_ids') or []
+                    if option_ids:
+                        SurveyAnswerOption.objects.bulk_create([
+                            SurveyAnswerOption(
+                                answer=answer,
+                                option_id=oid,
+                                question=data['question'],
+                            )
+                            for oid in option_ids
+                        ])
 
                 invitation.completed_at = django_tz.now()
                 invitation.save(update_fields=['completed_at'])
@@ -8229,6 +9674,623 @@ def survey_form(request, token):
 def survey_thank_you(request):
     """Public thank-you page after survey submission."""
     return render(request, 'tickets/survey/survey_thank_you.html')
+
+
+# ---------------------------------------------------------------------------
+# Survey builder (organizer-facing)
+# ---------------------------------------------------------------------------
+
+def _survey_scope(request, event_id):
+    """Resolve (org, event_or_None). Event is org-scoped → 404 cross-org."""
+    org = get_organization(request)
+    event = None
+    if event_id:
+        event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    return org, event
+
+
+def _scope_base_qs(org, event):
+    """Unfiltered question queryset for the scope (org template vs event)."""
+    if event:
+        return SurveyQuestion.objects.filter(event=event)
+    return SurveyQuestion.objects.filter(organization=org, event__isnull=True)
+
+
+def _builder_redirect(event):
+    if event:
+        return redirect('tickets:event_survey_builder', event_id=event.id)
+    return redirect('tickets:survey_builder')
+
+
+def _builder_url_names(event):
+    """URL names + base args for the active scope (org template vs event)."""
+    if event:
+        return ('tickets:event_survey_question_save', 'tickets:event_survey_question_delete',
+                'tickets:event_survey_reorder', [event.id])
+    return ('tickets:survey_question_save', 'tickets:survey_question_delete',
+            'tickets:survey_reorder', [])
+
+
+def _decorate_builder_urls(questions, event):
+    """Attach per-question save/delete (AJAX) URLs for the inline builder."""
+    save_name, del_name, _reorder, args = _builder_url_names(event)
+    for q in questions:
+        q.save_url = reverse(save_name, args=args + [q.id])
+        q.delete_url = reverse(del_name, args=args + [q.id])
+    return questions
+
+
+def _question_dict(q, event):
+    """JSON representation of a saved question for the inline builder."""
+    save_name, del_name, _reorder, args = _builder_url_names(event)
+    return {
+        'id': str(q.id),
+        'text': q.question_text,
+        'type': q.question_type,
+        'type_display': q.get_question_type_display(),
+        'required': q.is_required,
+        'position': q.position,
+        'options': [{'id': str(o.id), 'label': o.label} for o in q.options.all()],
+        'save_url': reverse(save_name, args=args + [q.id]),
+        'delete_url': reverse(del_name, args=args + [q.id]),
+    }
+
+
+def _validate_choice_options(qtype, option_labels):
+    """Choice questions require ≥1 option. Returns error str or None."""
+    if qtype in SurveyQuestion.CHOICE_TYPES and not option_labels:
+        return "Choice questions need at least one option."
+    return None
+
+
+def _validate_single_metric(base_qs, qtype, exclude_id=None):
+    """Enforce ≤ 1 active NPS and ≤ 1 active star question per survey."""
+    if qtype in ('nps', 'star_rating'):
+        existing = base_qs.filter(question_type=qtype, is_active=True)
+        if exclude_id:
+            existing = existing.exclude(id=exclude_id)
+        if existing.exists():
+            label = 'NPS' if qtype == 'nps' else 'star rating'
+            return f"A survey can only have one {label} question."
+    return None
+
+
+@login_required
+@require_org
+@require_host
+def survey_builder(request, event_id=None):
+    """List + inline-manage survey questions for the org template or one event."""
+    org, event = _survey_scope(request, event_id)
+    locked = bool(event) and _survey_locked(event)
+
+    questions = list(
+        _scope_base_qs(org, event)
+        .filter(is_active=True)
+        .order_by('position')
+        .prefetch_related('options')
+    )
+    _decorate_builder_urls(questions, event)
+
+    save_name, _del, reorder_name, args = _builder_url_names(event)
+    context = {
+        'event': event,
+        'questions': questions,
+        'questions_json': [_question_dict(q, event) for q in questions],
+        'locked': locked,
+        'is_org_template': event is None,
+        'question_types': SurveyQuestion.QUESTION_TYPE_CHOICES,
+        'choice_types': list(SurveyQuestion.CHOICE_TYPES),
+        'create_save_url': reverse(save_name, args=args),
+        'reorder_url': reverse(reorder_name, args=args),
+        'preview_url': reverse('tickets:event_survey_preview', args=args) if event
+                       else reverse('tickets:survey_preview'),
+        'survey_email_subject': event.survey_email_subject if event else org.survey_email_subject,
+        'survey_subject_inherited': (
+            ((org.survey_email_subject or '').strip() or DEFAULT_SURVEY_SUBJECT)
+            if event else DEFAULT_SURVEY_SUBJECT
+        ),
+        'survey_subject_save_url': (
+            reverse('tickets:event_survey_email_subject_save', args=[event.id]) if event
+            else reverse('tickets:survey_email_subject_save')
+        ),
+        # Org-wide reply-to (sender identity). Org scope only; no per-event override.
+        'survey_reply_to_email': org.survey_reply_to_email,
+        'survey_send_test_url': (
+            reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
+            else reverse('tickets:survey_send_test_email')
+        ),
+        # Default send schedule (org default / per-event override), mirroring subject.
+        'survey_send_offset_type': (event if event else org).survey_send_offset_type,
+        'survey_send_offset_value': (event if event else org).survey_send_offset_value,
+        'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
+        'survey_send_anchor': (event if event else org).survey_send_anchor or 'end',
+        'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
+        # Event scope: whether this event has its own schedule (vs inheriting the default).
+        'survey_schedule_overridden': bool(event and event.survey_send_offset_type),
+        'survey_schedule_inherited': _describe_survey_schedule(
+            {'offset_type': org.survey_send_offset_type,
+             'offset_value': org.survey_send_offset_value,
+             'time_of_day': org.survey_send_time_of_day,
+             'anchor': org.survey_send_anchor or 'end'} if event else None
+        ),
+        'survey_schedule_save_url': (
+            reverse('tickets:event_survey_schedule_save', args=[event.id]) if event
+            else reverse('tickets:survey_schedule_save')
+        ),
+    }
+    if event and not questions:
+        context['effective_preview'] = list(_resolve_effective_questions(event))
+    if event is None and not questions:
+        context['system_defaults_available'] = SurveyQuestion.objects.filter(
+            event__isnull=True, organization__isnull=True, is_active=True
+        ).exists()
+    return render(request, 'tickets/survey/builder.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def survey_question_save(request, event_id=None, question_id=None):
+    """JSON create-or-update of a survey question + its options (inline builder)."""
+    from django.db.models import Max
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    org, event = _survey_scope(request, event_id)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey has been sent and is locked.']}, status=403)
+
+    try:
+        data = json.loads(request.body or '{}')
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'ok': False, 'errors': ['Invalid request.']}, status=400)
+
+    text = (data.get('question_text') or '').strip()
+    qtype = data.get('question_type')
+    required = bool(data.get('is_required'))
+    labels = []
+    for o in (data.get('options') or []):
+        label = (o.get('label') if isinstance(o, dict) else o) or ''
+        label = str(label).strip()
+        if label:
+            labels.append(label)
+
+    base_qs = _scope_base_qs(org, event)
+    question = get_object_or_404(base_qs, id=question_id) if question_id else None
+
+    errors = []
+    if not text:
+        errors.append('Question text is required.')
+    if qtype not in {c[0] for c in SurveyQuestion.QUESTION_TYPE_CHOICES}:
+        errors.append('Choose a question type.')
+    if not errors:
+        err = (_validate_choice_options(qtype, labels)
+               or _validate_single_metric(base_qs, qtype, exclude_id=question.id if question else None))
+        if err:
+            errors.append(err)
+    if errors:
+        return JsonResponse({'ok': False, 'errors': errors}, status=422)
+
+    with transaction.atomic():
+        if question is None:
+            question = SurveyQuestion(
+                event=event, organization=org,
+                position=(base_qs.aggregate(m=Max('position'))['m'] or 0) + 1,
+            )
+        question.question_text = text
+        question.question_type = qtype
+        question.is_required = required
+        question.save()
+        # Replace options wholesale (editable questions never have answers).
+        question.options.all().delete()
+        if qtype in SurveyQuestion.CHOICE_TYPES:
+            SurveyQuestionOption.objects.bulk_create([
+                SurveyQuestionOption(question=question, label=label, position=i)
+                for i, label in enumerate(labels)
+            ])
+
+    question = base_qs.prefetch_related('options').get(id=question.id)
+    return JsonResponse({'ok': True, 'question': _question_dict(question, event)})
+
+
+@login_required
+@require_org
+@require_host
+def survey_question_delete(request, question_id, event_id=None):
+    """JSON delete. Soft-deactivate if it somehow has answers; block if locked."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey is locked.']}, status=403)
+    question = get_object_or_404(_scope_base_qs(org, event), id=question_id)
+    if SurveyAnswer.objects.filter(question=question).exists():
+        question.is_active = False
+        question.save(update_fields=['is_active'])
+    else:
+        question.delete()
+    return JsonResponse({'ok': True})
+
+
+@login_required
+@require_org
+@require_host
+def survey_reorder(request, event_id=None):
+    """JSON up/down: swap a question's position with its neighbour."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey is locked.']}, status=403)
+    try:
+        data = json.loads(request.body or '{}')
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'ok': False, 'errors': ['Invalid request.']}, status=400)
+
+    base_qs = list(_scope_base_qs(org, event).filter(is_active=True).order_by('position'))
+    qid = data.get('question_id')
+    direction = data.get('direction')
+    idx = next((i for i, q in enumerate(base_qs) if str(q.id) == str(qid)), None)
+    if idx is not None:
+        swap = idx - 1 if direction == 'up' else idx + 1 if direction == 'down' else None
+        if swap is not None and 0 <= swap < len(base_qs):
+            a, b = base_qs[idx], base_qs[swap]
+            a.position, b.position = b.position, a.position
+            SurveyQuestion.objects.bulk_update([a, b], ['position'])
+    return JsonResponse({'ok': True})
+
+
+class _PreviewOption:
+    """Stand-in mimicking SurveyQuestionOption for rendering survey_form.html."""
+    def __init__(self, q_idx, opt_idx, label):
+        self.id = f"q{q_idx}o{opt_idx}"
+        self.label = label
+
+
+class _PreviewOptionManager:
+    def __init__(self, options):
+        self._options = options
+
+    def all(self):
+        return self._options
+
+
+class _PreviewQuestion:
+    """Stand-in mimicking SurveyQuestion for rendering the survey preview."""
+    def __init__(self, idx, text, qtype, required, labels):
+        self.id = f"q{idx}"
+        self.question_text = text
+        self.question_type = qtype
+        self.is_required = required
+        self.options = _PreviewOptionManager(
+            [_PreviewOption(idx, j, lbl) for j, lbl in enumerate(labels)]
+        )
+
+
+def _preview_questions_from_drafts(drafts):
+    """Build preview question stand-ins from draft dicts (live edit) — skips blanks."""
+    out = []
+    for i, d in enumerate(drafts or []):
+        text = (d.get('question_text') or '').strip()
+        if not text:
+            continue
+        labels = []
+        for o in (d.get('options') or []):
+            label = (o.get('label') if isinstance(o, dict) else o) or ''
+            label = str(label).strip()
+            if label:
+                labels.append(label)
+        out.append(_PreviewQuestion(i, text, d.get('question_type') or 'text', bool(d.get('is_required')), labels))
+    return out
+
+
+def _preview_questions_from_saved(questions):
+    """Build preview question stand-ins from saved SurveyQuestion rows."""
+    return [
+        _PreviewQuestion(
+            i, q.question_text, q.question_type, q.is_required,
+            [o.label for o in q.options.all()],
+        )
+        for i, q in enumerate(questions)
+    ]
+
+
+def _preview_invitation(event):
+    """A fake invitation object so survey_form.html renders its header."""
+    from types import SimpleNamespace
+    if event:
+        return SimpleNamespace(event=event)
+    return SimpleNamespace(event=SimpleNamespace(
+        name="Your event",
+        start_date=django_tz.now().date(),
+        venue=SimpleNamespace(name="Your venue", city="Your city"),
+    ))
+
+
+@login_required
+@require_org
+@require_host
+def survey_preview(request, event_id=None):
+    """Render the exact public survey page for the builder's live preview.
+
+    GET → from the scope's saved questions (iframe default src, also no-JS path).
+    POST (JSON draft) → from the in-progress edits (iframe srcdoc).
+    """
+    org, event = _survey_scope(request, event_id)
+
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body or '{}')
+        except (json.JSONDecodeError, ValueError):
+            return JsonResponse({'error': 'Invalid request.'}, status=400)
+        questions = _preview_questions_from_drafts(data.get('questions'))
+    else:
+        if event:
+            saved = list(
+                _scope_base_qs(org, event).filter(is_active=True)
+                .order_by('position').prefetch_related('options')
+            ) or list(_resolve_effective_questions(event))
+        else:
+            saved = list(
+                _scope_base_qs(org, None).filter(is_active=True)
+                .order_by('position').prefetch_related('options')
+            )
+        questions = _preview_questions_from_saved(saved)
+
+    return render(request, 'tickets/survey/survey_form.html', {
+        'invitation': _preview_invitation(event),
+        'questions': questions,
+        'errors': {},
+        'preview': True,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def event_survey_customize(request, event_id):
+    """Clone the effective survey into editable event-scoped rows. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be customized.")
+        return _builder_redirect(event)
+    if _clone_effective_to_event(event):
+        messages.success(request, "You can now customize this event's survey.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_email_subject_save(request, event_id=None):
+    """Save the survey email subject for the org template or one event. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+    subject = (request.POST.get('email_subject') or '').strip()[:255]
+    if event:
+        event.survey_email_subject = subject
+        event.save(update_fields=['survey_email_subject'])
+    else:
+        org.survey_email_subject = subject
+        org.save(update_fields=['survey_email_subject'])
+    messages.success(request, "Survey email subject saved.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_reply_to_save(request):
+    """Save the org-wide survey reply-to email. Org scope only, POST only.
+
+    Blank clears the override (surveys then send as Cue with no reply-to)."""
+    org = get_organization(request)
+    if request.method != 'POST':
+        return _builder_redirect(None)
+    reply_to = (request.POST.get('reply_to_email') or '').strip()
+    if reply_to:
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(reply_to)
+        except ValidationError:
+            messages.error(request, "Enter a valid reply-to email address.")
+            return _builder_redirect(None)
+    org.survey_reply_to_email = reply_to
+    org.save(update_fields=['survey_reply_to_email'])
+    messages.success(request, "Survey reply-to address saved.")
+    return _builder_redirect(None)
+
+
+def _describe_survey_schedule(schedule):
+    """Human-readable description of a resolved survey schedule dict (or None).
+
+    e.g. "2 days after the event ends at 9:00 AM", "3 hours after the event ends",
+    or "Send manually" when no automatic schedule is configured.
+    """
+    if not schedule or not (schedule.get('offset_type') or '').strip():
+        return "Send manually"
+    value = schedule.get('offset_value')
+    if value is None:
+        return "Send manually"
+    anchor_word = 'starts' if schedule.get('anchor') == 'start' else 'ends'
+    if schedule['offset_type'] == 'hours':
+        unit = 'hour' if value == 1 else 'hours'
+        return f"{value} {unit} after the event {anchor_word}"
+    unit = 'day' if value == 1 else 'days'
+    tod = schedule.get('time_of_day')
+    when = tod.strftime('%-I:%M %p') if tod else '9:00 AM'
+    return f"{value} {unit} after the event {anchor_word} at {when}"
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_save(request, event_id=None):
+    """Save the default survey send schedule for the org template or one event.
+
+    Mirrors survey_email_subject_save: an org-level default with a per-event
+    override. A blank offset_type clears the schedule (= inherit / send now).
+    POST only.
+    """
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+
+    offset_type = (request.POST.get('offset_type') or '').strip()
+    target = event if event else org
+
+    schedule_fields = [
+        'survey_send_offset_type', 'survey_send_offset_value',
+        'survey_send_time_of_day', 'survey_send_anchor',
+    ]
+
+    # Re-saving an event's schedule re-enables auto-send if a prior cancel had
+    # opted it out (the org template has no opt-out flag).
+    save_fields = list(schedule_fields)
+    if event:
+        event.survey_auto_send_opted_out = False
+        save_fields.append('survey_auto_send_opted_out')
+
+    if offset_type not in ('hours', 'days'):
+        # Clear the schedule -> send immediately (event) / no org default.
+        target.survey_send_offset_type = ''
+        target.survey_send_offset_value = None
+        target.survey_send_time_of_day = None
+        target.survey_send_anchor = ''
+        target.save(update_fields=save_fields)
+        messages.success(request, "Survey send time saved.")
+        return _builder_redirect(event)
+
+    try:
+        value = int(request.POST.get('offset_value'))
+        if value < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a whole number for the send-time offset.")
+        return _builder_redirect(event)
+
+    time_of_day = None
+    if offset_type == 'days':
+        time_of_day = parse_time(request.POST.get('time_of_day') or '')
+        if time_of_day is None:
+            messages.error(request, "Pick a time of day to send.")
+            return _builder_redirect(event)
+
+    anchor = 'start' if request.POST.get('anchor') == 'start' else 'end'
+    target.survey_send_offset_type = offset_type
+    target.survey_send_offset_value = value
+    target.survey_send_time_of_day = time_of_day
+    target.survey_send_anchor = anchor
+    target.save(update_fields=save_fields)
+    messages.success(request, "Survey send time saved.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_send_test_email(request, event_id=None):
+    """Send a one-off test survey email to a chosen address. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+
+    recipient = (request.POST.get('test_email') or '').strip()
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    try:
+        validate_email(recipient)
+    except ValidationError:
+        messages.error(request, "Enter a valid email address to send a test to.")
+        return _builder_redirect(event)
+
+    # Org-scope test has no event — render against a throwaway sample.
+    target = event or Event(
+        organization=org, name='Your Event', start_date=django_tz.now().date()
+    )
+    site_url = settings.SITE_URL.rstrip('/')
+    # Test has no invitation; point the button at the organizer survey preview
+    # (same page the builder's live preview uses) instead of a dead token URL.
+    preview_path = (reverse('tickets:event_survey_preview', args=[event.id]) if event
+                    else reverse('tickets:survey_preview'))
+    survey_url = f"{site_url}{preview_path}"
+
+    from .tasks import build_survey_email, survey_sender_fields
+    from django.core.mail import EmailMultiAlternatives
+    subject, text_body, html_body = build_survey_email(target, survey_url)
+    from_email, reply_to = survey_sender_fields(org)
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject, body=text_body, from_email=from_email,
+            to=[recipient], reply_to=reply_to,
+        )
+        msg.attach_alternative(html_body, "text/html")
+        msg.send()
+        messages.success(request, f"Test survey email sent to {recipient}.")
+    except Exception:
+        logger.exception("Failed to send test survey email to %s", recipient)
+        messages.error(request, "Couldn't send the test email. Check email settings and try again.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def event_survey_reset(request, event_id):
+    """Remove event-scoped questions so the event falls back to the org default. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be reset.")
+        return _builder_redirect(event)
+    SurveyQuestion.objects.filter(event=event).delete()
+    messages.success(request, "Reverted to the organization's default survey.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_hub(request):
+    """Top-level Surveys landing: events with survey activity + links to builders."""
+    org = get_organization(request)
+
+    def _per_event_count(model):
+        # Isolated per-row subquery (avoids join inflation across the multiple
+        # related tables we count here). See CLAUDE.md / event_list pattern.
+        return Coalesce(Subquery(
+            model.objects.filter(event=OuterRef('pk')).values('event')
+            .annotate(c=Count('id')).values('c')[:1],
+            output_field=models.IntegerField(),
+        ), 0)
+
+    events = (
+        Event.objects.filter(organization=org)
+        .select_related('venue')
+        .annotate(
+            # Total responses = internal (SurveyResponse) + external (Typeform CSV).
+            response_count=_per_event_count(SurveyResponse) + _per_event_count(ExternalSurveyResponse),
+            invitation_count=_per_event_count(SurveyInvitation),
+        )
+        .order_by('-start_date', '-start_time')[:50]
+    )
+    org_question_count = SurveyQuestion.objects.filter(
+        organization=org, event__isnull=True, is_active=True
+    ).count()
+    return render(request, 'tickets/survey/hub.html', {
+        'events': events,
+        'org_question_count': org_question_count,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -8472,6 +10534,7 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'price': str(tt.price),
         'quantity_limit': tt.quantity_limit if tt.quantity_limit is not None else '',
         'max_per_customer': tt.max_per_customer if tt.max_per_customer is not None else '',
+        'low_stock_threshold': tt.low_stock_threshold if tt.low_stock_threshold is not None else '',
         'order': tt.order,
         'sale_start': fmt_dt(tt.sale_start),
         'sale_end': fmt_dt(tt.sale_end),
@@ -8481,6 +10544,92 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'unlocks_after_id': str(tt.unlocks_after_id) if tt.unlocks_after_id else '',
         'waitlist_enabled': tt.waitlist_enabled,
     })
+
+
+@login_required
+@require_org
+@require_organizer
+def saleable_ticket_type_orders(request, event_id, ticket_type_id):
+    """List the orders that contain a given direct-ticketing ticket type.
+
+    Reached from the Ticket Allocation card on event_detail. Orders are matched
+    by ticket-type *name* (Ticket.ticket_type is the denormalized name string,
+    not a FK), so two ticket types sharing a name on one event collapse together
+    — tracked in TODOS.md for a future key-based filter.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ticket_type = get_object_or_404(
+        SaleableTicketType.objects.filter(event=event), id=ticket_type_id
+    )
+
+    # Mirror the orders annotation pattern used by event_detail so the table
+    # renders identically (customer, status, gross total, ticket counts).
+    _platform_fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    orders_qs = event.ticket_orders.filter(
+        tickets__ticket_type=ticket_type.name
+    ).select_related(
+        'customer', 'uploaded_file'
+    ).annotate(
+        tickets_count=Count('tickets'),
+        type_count=Count('tickets', filter=Q(tickets__ticket_type=ticket_type.name)),
+        gross_total=ExpressionWrapper(
+            F('total_amount') - Cast(
+                Coalesce(_platform_fee_subq, 0),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ) * Decimal('0.01'),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ),
+    ).distinct().order_by('-order_date')
+
+    paginator = Paginator(orders_qs, 100)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'tickets/saleable_ticket_type_orders.html', {
+        'event': event,
+        'ticket_type': ticket_type,
+        'page_obj': page_obj,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def saleable_ticket_type_reorder(request, event_id):
+    """Persist a new display order for an event's ticket types.
+
+    Accepts JSON {"order": ["<uuid>", "<uuid>", ...]}. Writes `order` = index
+    for each matching ticket type belonging to this event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+        ids = payload.get('order') or []
+        if not isinstance(ids, list):
+            raise ValueError('order must be a list')
+    except (ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Invalid payload'}, status=400)
+
+    tts = {str(tt.id): tt for tt in SaleableTicketType.objects.filter(event=event)}
+    to_update = []
+    for index, raw_id in enumerate(ids):
+        tt = tts.get(str(raw_id))
+        if tt is None:
+            continue
+        if tt.order != index:
+            tt.order = index
+            to_update.append(tt)
+    if to_update:
+        SaleableTicketType.objects.bulk_update(to_update, ['order'], batch_size=100)
+        _invalidate_event_list_cache(org)
+
+    return JsonResponse({'success': True, 'updated': len(to_update)})
 
 
 @login_required
@@ -8610,6 +10759,12 @@ def event_cancel(request, event_id):
         if session is None or session.status != StripeCheckoutSession.Status.COMPLETED:
             continue
 
+        if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+            # In-person charges live on the connected account; the platform
+            # key can't refund them. Count into the manual-refund warning.
+            failed_count += 1
+            continue
+
         try:
             stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
         except stripe_lib.error.StripeError as e:
@@ -8631,6 +10786,12 @@ def event_cancel(request, event_id):
                     )
             affected_customer_ids.add(order.customer_id)
             refunded_count += 1
+            # Loyalty points clawback — only orders that actually get
+            # refunded_at (Stripe-session orders), matching LTV behavior.
+            try:
+                revoke_points_for_order(order, description='Event cancelled')
+            except Exception:
+                logger.exception("Points revoke failed for cancelled order %s", order.id)
 
     for customer_id in affected_customer_ids:
         try:
@@ -8882,6 +11043,63 @@ def _build_public_event_preview_context(event, *, suffix):
     }
 
 
+UTM_PARAM_KEYS = (
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_id', 'utm_content', 'utm_term',
+)
+
+
+def _extract_utm_params(request):
+    """Pull non-empty UTM params, fbclid, and referrer from a landing request."""
+    params = {}
+    for key in UTM_PARAM_KEYS:
+        value = (request.GET.get(key) or '').strip()
+        if value:
+            params[key] = value[:200]
+    fbclid = (request.GET.get('fbclid') or '').strip()
+    if fbclid:
+        params['fbclid'] = fbclid[:255]
+    referrer = (request.META.get('HTTP_REFERER') or '').strip()
+    if referrer:
+        params['referrer'] = referrer[:500]
+    return params
+
+
+def _event_social_proof(event):
+    """Build the public-page social proof: up to 6 distinct confirmed attendees + total count."""
+    _preview_orders = (
+        TicketOrder.objects
+        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
+        .select_related('customer')
+        .order_by('-order_date')
+    )
+    _seen = set()
+    attendee_preview = []
+    for _order in _preview_orders[:50]:
+        if _order.customer_id not in _seen:
+            _seen.add(_order.customer_id)
+            _name = _order.customer.name or ''
+            _parts = _name.split()
+            if len(_parts) >= 2:
+                _initials = (_parts[0][0] + _parts[-1][0]).upper()
+            elif _parts:
+                _initials = _parts[0][:2].upper()
+            else:
+                _initials = '?'
+            attendee_preview.append({
+                'initials': _initials,
+                'first_name': _parts[0] if _parts else '',
+            })
+            if len(attendee_preview) >= 6:
+                break
+
+    attendee_count = Ticket.objects.filter(
+        ticket_order__event=event,
+        ticket_order__refunded_at__isnull=True,
+        ticket_order__is_in_person=False,
+    ).count()
+    return attendee_preview, attendee_count
+
+
 def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
@@ -8893,14 +11111,26 @@ def public_event_buy(request, public_id):
     if eff == EVENT_STATUS_DRAFT:
         raise Http404()
     if eff == EVENT_STATUS_ENDED:
-        return render(
-            request,
-            'tickets/buy/sales_ended.html',
-            {
-                'event': event,
-                **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
-            },
-        )
+        attendee_preview, attendee_count = _event_social_proof(event)
+        return render(request, 'tickets/buy/public_event_buy.html', {
+            'event': event,
+            'sales_ended': True,
+            'form': None,
+            'available_pairs': [],
+            'locked_pairs': [],
+            'coming_soon_types': [],
+            'waitlisted_sold_out_types': [],
+            'waitlist_join_forms': {},
+            'already_on_waitlist': set(),
+            'all_sold_out': False,
+            'min_ticket_price': None,
+            'view_event_id': '',
+            'attendee_preview': attendee_preview,
+            'attendee_count': attendee_count,
+            'wl_held_tt_id': None,
+            'user_is_authenticated': request.user.is_authenticated,
+            **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
+        })
     if eff == EVENT_STATUS_CANCELLED:
         return render(
             request,
@@ -9000,6 +11230,12 @@ def public_event_buy(request, public_id):
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref
+        utm_params = _extract_utm_params(request)
+        if utm_params:
+            # Last-non-empty wins within the session (standard last-click).
+            stored = dict(request.session.get(f'utm_{event.id}') or {})
+            stored.update(utm_params)
+            request.session[f'utm_{event.id}'] = stored
         form = PublicTicketPurchaseForm(all_types, per_ticket_remaining=per_ticket_remaining)
 
     all_bound_fields = list(form)
@@ -9031,37 +11267,7 @@ def public_event_buy(request, public_id):
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
     # Social proof: up to 6 distinct confirmed attendees + total ticket count
-    _preview_orders = (
-        TicketOrder.objects
-        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
-        .select_related('customer')
-        .order_by('-order_date')
-    )
-    _seen = set()
-    attendee_preview = []
-    for _order in _preview_orders[:50]:
-        if _order.customer_id not in _seen:
-            _seen.add(_order.customer_id)
-            _name = _order.customer.name or ''
-            _parts = _name.split()
-            if len(_parts) >= 2:
-                _initials = (_parts[0][0] + _parts[-1][0]).upper()
-            elif _parts:
-                _initials = _parts[0][:2].upper()
-            else:
-                _initials = '?'
-            attendee_preview.append({
-                'initials': _initials,
-                'first_name': _parts[0] if _parts else '',
-            })
-            if len(attendee_preview) >= 6:
-                break
-
-    attendee_count = Ticket.objects.filter(
-        ticket_order__event=event,
-        ticket_order__refunded_at__isnull=True,
-        ticket_order__is_in_person=False,
-    ).count()
+    attendee_preview, attendee_count = _event_social_proof(event)
 
     # Sold-out ticket types that have waitlist enabled (for the "sold out" section)
     if wl_feature_on:
@@ -9278,9 +11484,16 @@ def promo_code_delete(request, event_id, promo_code_id):
 # ---------------------------------------------------------------------------
 
 def track_link_redirect(request, token):
-    """Public redirect that records a click and forwards to the event buy page."""
+    """Public redirect that records a click and forwards to the ticket page.
+
+    Off-site (external ticket page) when the link has a target_url; otherwise the event's
+    Cue buy page. Clicks are counted either way; the buy-page path also stashes the ref so
+    a resulting checkout attributes back to this link.
+    """
     link = get_object_or_404(TrackingLink.objects.select_related('event'), token=token)
     TrackingLink.objects.filter(pk=link.pk).update(click_count=models.F('click_count') + 1)
+    if link.target_url:
+        return redirect(link.target_url)
     request.session[f'tracking_ref_{link.event_id}'] = token
     return redirect(f"/e/{link.event.public_id}/?ref={token}")
 
@@ -9388,11 +11601,9 @@ def checkout_payment(request, public_id):
 
         with transaction.atomic():
             org = event.organization
-            customer, _ = Customer.objects.get_or_create(
-                email=buyer_email,
-                organization=org,
-                defaults={'name': buyer_name},
-            )
+            customer, customer_created = get_or_create_customer_for_purchase(org, email=buyer_email, name=buyer_name)
+            if customer_created:
+                fire_customer_created(customer)
             link_customer_to_buyer(customer, buyer_email)
             sms_opt_in = request.POST.get('sms_opt_in') == '1'
             if sms_opt_in and not customer.sms_opt_in:
@@ -9418,6 +11629,7 @@ def checkout_payment(request, public_id):
                 total_amount=Decimal('0.00'),
                 promo_code=promo_code_obj,
                 discount_amount=discount_amount_val,
+                attribution=request.session.get(f'utm_{event.id}') or {},
             )
             if promo_code_obj:
                 PromoCode.objects.filter(pk=promo_code_obj.pk).update(times_used=F('times_used') + 1)
@@ -9449,8 +11661,16 @@ def checkout_payment(request, public_id):
                     for _ in range(qty)
                 ])
             customer.update_lifetime_value()
+            try:
+                award_points_for_order(order)
+            except Exception:
+                logger.exception("Points award failed for order %s", order.id)
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            fire_order_created(order)
+
+        if order.attribution:
+            _recompute_utm_attribution_for_event(org, event)
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
@@ -9616,6 +11836,23 @@ def create_payment_intent(request, public_id):
     fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents)
     charge_cents = discounted_subtotal_cents  # Display price is fee-inclusive; buyer pays display total
 
+    # Destination charge: organizer net rides transfer_data into the connected
+    # account at sale time. Fall back to a plain platform charge when the org
+    # isn't onboarded (funds join the legacy pool, swept later by the true-up
+    # command) or when the fee consumes the whole charge — Stripe rejects a
+    # zero/negative transfer_data.amount.
+    org_for_charge = event.organization
+    transfer_amount_cents = charge_cents - fee_cents
+    use_destination = bool(
+        org_for_charge.stripe_onboarding_complete
+        and org_for_charge.stripe_account_id
+        and transfer_amount_cents > 0
+    )
+    charge_flow = (
+        StripeCheckoutSession.ChargeFlow.DESTINATION if use_destination
+        else StripeCheckoutSession.ChargeFlow.PLATFORM
+    )
+
     profile_pk = None
     stripe_customer_id = None
     payment_method_id = use_saved_pm or None
@@ -9654,6 +11891,11 @@ def create_payment_intent(request, public_id):
                 'currency': django_settings.STRIPE_CURRENCY,
                 'metadata': md,
             }
+            if use_destination:
+                kw['transfer_data'] = {
+                    'destination': org_for_charge.stripe_account_id,
+                    'amount': transfer_amount_cents,
+                }
             if stripe_customer_id:
                 kw['customer'] = stripe_customer_id
             if save_card and stripe_customer_id:
@@ -9726,11 +11968,13 @@ def create_payment_intent(request, public_id):
         line_items_snapshot=cart,
         amount_total_cents=charge_cents,
         platform_fee_cents=fee_cents,
+        charge_flow=charge_flow,
         promo_code_id=promo_code_id,
         discount_cents=discount_cents,
         fb_browser_data=fb_browser_data,
         tracking_link=tracking_link_obj,
         sms_opt_in=sms_opt_in,
+        attribution=request.session.get(f'utm_{event.id}') or {},
     )
 
     return JsonResponse({
@@ -9918,11 +12162,122 @@ def stripe_webhook(request):
 
     event_type = event['type']
     if event_type == 'payment_intent.succeeded':
-        _fulfill_payment_intent(event['data']['object'])
+        pi = event['data']['object']
+        # SMS-wallet top-up PIs carry metadata.kind == 'sms_credits' and have no
+        # StripeCheckoutSession row; route them to the wallet handler, not ticketing.
+        pi_meta = _stripe_value(pi, 'metadata', {}) or {}
+        if _stripe_value(pi_meta, 'kind') == 'sms_credits':
+            _fulfill_sms_credit_payment_intent(pi)
+        else:
+            _fulfill_payment_intent(pi)
     elif event_type == 'payment_intent.payment_failed':
         _fail_payment_intent(event['data']['object'])
+    elif event_type == 'checkout.session.completed':
+        _fulfill_sms_credit_checkout(event['data']['object'])
+    elif event_type == 'charge.refunded':
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+def _stripe_value(obj, key, default=None):
+    """Read a field from either a live Stripe StripeObject or a plain dict.
+
+    A StripeObject is NOT a dict and has no .get() — attribute access on a missing
+    key raises (its __getattr__ turns `.get` into a key lookup). Tests pass plain
+    dicts; the live webhook passes StripeObjects.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _save_org_card_from_pm(org_id, pm_id):
+    """Persist a saved card's brand/last4/exp onto the Organization, best-effort.
+
+    Wrapped by the caller so a card-save failure never blocks crediting. Mirrors the
+    per-user save block in _fulfill_payment_intent, org-scoped."""
+    if not (org_id and pm_id):
+        return
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    pm = stripe_lib.PaymentMethod.retrieve(pm_id)
+    card = getattr(pm, 'card', None) or {}
+    Organization.objects.filter(id=org_id).update(
+        stripe_pm_id=pm_id,
+        stripe_pm_brand=card.get('brand', '') if isinstance(card, dict) else getattr(card, 'brand', ''),
+        stripe_pm_last4=card.get('last4', '') if isinstance(card, dict) else getattr(card, 'last4', ''),
+        stripe_pm_exp_month=card.get('exp_month') if isinstance(card, dict) else getattr(card, 'exp_month', None),
+        stripe_pm_exp_year=card.get('exp_year') if isinstance(card, dict) else getattr(card, 'exp_year', None),
+    )
+    logger.info("Saved org card PaymentMethod %s for org %s", pm_id, org_id)
+
+
+def _fulfill_sms_credit_checkout(session):
+    """Credit an org's prepaid SMS wallet after a paid credits Checkout Session.
+
+    Idempotent: the wallet service keys on the Checkout Session id, so webhook
+    retries (or a success-page double-fire) can't double-credit. Ignores any
+    Checkout Session that isn't one of ours (metadata.kind == 'sms_credits').
+
+    Does NOT swallow exceptions — the webhook relies on a non-200 to make Stripe
+    retry on transient failure (safe because crediting is idempotent). The
+    success-page caller wraps this in its own try/except so the user's page
+    still loads. Credits Stripe's settled amount_total as the source of truth so
+    taxes/discounts can never desync cash-received from credits-granted.
+    """
+    from tickets.services.sms_credits import credit
+
+    metadata = _stripe_value(session, 'metadata', {}) or {}
+    if _stripe_value(metadata, 'kind') != 'sms_credits':
+        return
+    if _stripe_value(session, 'payment_status') != 'paid':
+        return
+    org_id = _stripe_value(metadata, 'organization_id')
+    credit_cents = int(_stripe_value(session, 'amount_total')
+                       or _stripe_value(metadata, 'credit_cents') or 0)
+    if not org_id or credit_cents <= 0:
+        return
+    credit(org_id, credit_cents,
+           stripe_checkout_session_id=_stripe_value(session, 'id'),
+           description='Stripe top-up')
+
+
+def _fulfill_sms_credit_payment_intent(payment_intent):
+    """Handle a paid SMS-wallet top-up PaymentIntent (one-click off-session, or the
+    PI behind a save-card Checkout).
+
+    - ALWAYS save the card brand/last4 onto the org (best-effort; failures here must
+      not block crediting).
+    - Credit ONLY for the one-click flow. The save-card Checkout fires BOTH this event
+      AND checkout.session.completed; those credit under different ids (pi.id vs
+      session.id), so to avoid double-crediting, the Checkout flow is credited solely
+      by _fulfill_sms_credit_checkout. The 'flow' metadata marker disambiguates.
+
+    Fail-loud on credit() (lets Stripe retry transient DB errors — safe, idempotent).
+    """
+    from tickets.services.sms_credits import credit
+
+    metadata = _stripe_value(payment_intent, 'metadata', {}) or {}
+    if _stripe_value(metadata, 'kind') != 'sms_credits':
+        return
+    org_id = _stripe_value(metadata, 'organization_id')
+    pm_id = _stripe_value(payment_intent, 'payment_method')
+    try:
+        _save_org_card_from_pm(org_id, pm_id)
+    except Exception as e:
+        logger.error("Failed to save org card for org %s: %s", org_id, e)
+
+    if _stripe_value(metadata, 'flow') == 'checkout':
+        return  # credited by _fulfill_sms_credit_checkout to avoid double-credit
+    credit_cents = int(_stripe_value(payment_intent, 'amount_received')
+                       or _stripe_value(metadata, 'credit_cents') or 0)
+    if not org_id or credit_cents <= 0:
+        return
+    credit(org_id, credit_cents,
+           stripe_checkout_session_id=_stripe_value(payment_intent, 'id'),
+           description='Stripe top-up')
 
 
 @csrf_exempt
@@ -9948,8 +12303,40 @@ def stripe_connect_webhook(request):
     event_type = event['type']
     if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
         _handle_stripe_payout_event(event)
+    elif event_type == 'charge.refunded':
+        # Direct (in-person) charges live on connected accounts, so their
+        # refund events arrive here, not on the platform endpoint.
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+# Stripe payout status → local Payout status. 'pending' matters for
+# organizer-initiated payouts discovered via webhook before dispatch.
+_STRIPE_PAYOUT_STATUS_MAP = {
+    'pending':    Payout.Status.PENDING,
+    'in_transit': Payout.Status.IN_TRANSIT,
+    'paid':       Payout.Status.COMPLETED,
+    'failed':     Payout.Status.FAILED,
+    'canceled':   Payout.Status.FAILED,
+}
+
+
+def _apply_stripe_payout_status(payout, stripe_status, stripe_payout_id=None):
+    """Apply a Stripe payout's status (and optionally its po_ id) to a local
+    Payout row. The single translation point — webhook, initiate_payout, and
+    recovery must never carry their own copies of this mapping."""
+    update_fields = []
+    if stripe_payout_id and not payout.stripe_payout_id:
+        payout.stripe_payout_id = stripe_payout_id
+        update_fields.append('stripe_payout_id')
+    new_status = _STRIPE_PAYOUT_STATUS_MAP.get(stripe_status)
+    if new_status and payout.status != new_status:
+        payout.status = new_status
+        update_fields.append('status')
+    if update_fields:
+        payout.save(update_fields=update_fields)
+    return update_fields
 
 
 def _handle_stripe_payout_event(event):
@@ -9958,10 +12345,12 @@ def _handle_stripe_payout_event(event):
 
     Stripe fires these on the connected account, so the event includes an
     'account' field with the Express account ID. We use that to find the org
-    and then reconcile by Stripe payout ID first, with best-effort fallback
-    to metadata or the oldest open payout of the same amount.
+    and reconcile by Stripe payout ID first, then by our payout_id metadata
+    (covers the race where payout.created beats initiate_payout's save).
+    Anything still unmatched is an organizer-initiated payout (Express
+    Dashboard) — record it as a new Payout row so history stays truthful.
 
-    payout.created  → confirm/store stripe_payout_id
+    payout.created  → confirm/store stripe_payout_id (or record organizer payout)
     payout.updated  → advance to IN_TRANSIT when Stripe dispatches to bank
     payout.paid     → advance to COMPLETED (funds arrived at bank)
     payout.failed   → advance to FAILED
@@ -10004,43 +12393,38 @@ def _handle_stripe_payout_event(event):
             .first()
         )
 
-    if not payout and stripe_payout_amount is not None:
-        payout_amount = Decimal(str(stripe_payout_amount)) / 100
-        payout = (
-            Payout.objects
-            .filter(
-                organization=org,
-                amount=payout_amount,
-                stripe_payout_id__isnull=True,
-                status__in=[Payout.Status.PENDING, Payout.Status.IN_TRANSIT],
-            )
-            .order_by('created_at')
-            .first()
-        )
-
     if not payout:
-        logger.info("No matching Payout record for Stripe payout %s (org %s)", stripe_payout_id, org.id)
-        return
+        # Organizer-initiated payout from the Express Dashboard: no local row
+        # exists, so create one. get_or_create on the unique po_ id absorbs
+        # duplicate webhook delivery.
+        if not stripe_payout_id or stripe_payout_amount is None:
+            logger.info(
+                "Ignoring unmatched Stripe payout without id/amount (org %s): %s",
+                org.id, stripe_payout_id,
+            )
+            return
+        payout, created = Payout.objects.get_or_create(
+            stripe_payout_id=stripe_payout_id,
+            defaults={
+                'organization': org,
+                'amount': Decimal(str(stripe_payout_amount)) / 100,
+                'status': _STRIPE_PAYOUT_STATUS_MAP.get(stripe_payout_status, Payout.Status.PENDING),
+                'origin': Payout.Origin.STRIPE_DASHBOARD,
+                'initiated_by': None,
+                'notes': 'Initiated via Stripe',
+            },
+        )
+        if created:
+            logger.info(
+                "Recorded organizer-initiated Stripe payout %s for org %s (%s)",
+                stripe_payout_id, org.id, stripe_payout_status,
+            )
+            _bust_connected_balance_cache(org)
+            return
+        # Lost a race with a concurrent delivery — fall through to status sync.
 
-    update_fields = []
-
-    if not payout.stripe_payout_id and stripe_payout_id:
-        payout.stripe_payout_id = stripe_payout_id
-        update_fields.append('stripe_payout_id')
-
-    status_map = {
-        'in_transit': Payout.Status.IN_TRANSIT,
-        'paid':       Payout.Status.COMPLETED,
-        'failed':     Payout.Status.FAILED,
-        'canceled':   Payout.Status.FAILED,
-    }
-    new_status = status_map.get(stripe_payout_status)
-    if new_status and payout.status != new_status:
-        payout.status = new_status
-        update_fields.append('status')
-
+    update_fields = _apply_stripe_payout_status(payout, stripe_payout_status, stripe_payout_id)
     if update_fields:
-        payout.save(update_fields=update_fields)
         logger.info(
             "Payout %s advanced to %s via Stripe payout %s",
             payout.id, payout.status, stripe_payout_id,
@@ -10089,11 +12473,9 @@ def _fulfill_payment_intent(payment_intent):
         email = session_obj.buyer_email
         name = session_obj.buyer_name or email
 
-        customer, _ = Customer.objects.get_or_create(
-            email=email.lower(),
-            organization=org,
-            defaults={'name': name},
-        )
+        customer, customer_created = get_or_create_customer_for_purchase(org, email=email, name=name)
+        if customer_created:
+            fire_customer_created(customer)
         link_customer_to_buyer(customer, email)
         if session_obj.sms_opt_in and not customer.sms_opt_in:
             customer.sms_opt_in = True
@@ -10131,6 +12513,7 @@ def _fulfill_payment_intent(payment_intent):
             total_amount=Decimal(str(session_obj.amount_total_cents)) / 100,
             promo_code_id=session_obj.promo_code_id,
             discount_amount=Decimal(str(session_obj.discount_cents)) / 100 if session_obj.discount_cents else None,
+            attribution=session_obj.attribution or {},
         )
         if session_obj.promo_code_id:
             PromoCode.objects.filter(pk=session_obj.promo_code_id).update(times_used=F('times_used') + 1)
@@ -10182,6 +12565,13 @@ def _fulfill_payment_intent(payment_intent):
             ])
 
         customer.update_lifetime_value()
+        # Loyalty points: swallow failures — an order must never fail because
+        # points hiccuped. The service's internal atomic() is a savepoint, and
+        # misses are self-healing via the idempotent backfill sweep.
+        try:
+            award_points_for_order(order)
+        except Exception:
+            logger.exception("Points award failed for order %s", order.id)
 
         session_obj.status = StripeCheckoutSession.Status.COMPLETED
         session_obj.ticket_order = order
@@ -10208,8 +12598,12 @@ def _fulfill_payment_intent(payment_intent):
 
         _invalidate_marketing_cache(org)
 
+        if order.attribution:
+            _recompute_utm_attribution_for_event(org, event)
+
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
+        fire_order_created(order)
 
         pixel_id = event.facebook_pixel_id
         capi_token = getattr(org, 'meta_capi_access_token', '')
@@ -10272,14 +12666,28 @@ def _fulfill_payment_intent(payment_intent):
                 latest_charge_id,
                 expand=['balance_transaction'],
             )
+            session_updates = {}
             bt = charge.balance_transaction
             if bt and getattr(bt, 'available_on', None):
                 import datetime as _dt
-                available_on_dt = _dt.datetime.fromtimestamp(bt.available_on, tz=_dt.timezone.utc)
-                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(
-                    available_on=available_on_dt,
+                session_updates['available_on'] = _dt.datetime.fromtimestamp(
+                    bt.available_on, tz=_dt.timezone.utc,
                 )
-                logger.info("Set available_on=%s for PaymentIntent %s", available_on_dt, pi_id)
+            # Destination charges carry a transfer (tr_xxx). Trust the charge,
+            # not the session flag: a PENDING session created before the
+            # destination-charge deploy fulfills here with no transfer and
+            # correctly stays in the legacy platform pool.
+            transfer_id = getattr(charge, 'transfer', None)
+            if transfer_id and isinstance(transfer_id, str):
+                transfer = stripe_lib_bt.Transfer.retrieve(transfer_id)
+                session_updates.update(
+                    stripe_transfer_id=transfer_id,
+                    transfer_cents=int(transfer.amount),
+                    charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+                )
+            if session_updates:
+                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(**session_updates)
+                logger.info("Recorded settlement/transfer state for PaymentIntent %s: %s", pi_id, session_updates)
         except Exception:
             logger.exception("Could not fetch balance_transaction for charge %s (PI %s)", latest_charge_id, pi_id)
 
@@ -10293,6 +12701,223 @@ def _fail_payment_intent(payment_intent):
             status=StripeCheckoutSession.Status.PENDING,
         ).update(status=StripeCheckoutSession.Status.CANCELED)
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
+
+
+def _find_session_for_payment_intent(pi_id):
+    """Locate the StripeCheckoutSession for a charge's PaymentIntent id.
+
+    Direct lookup first: PI-flow rows store the pi_… id in both id fields.
+    Legacy rows from the pre-April-2026 Stripe Checkout flow store only the
+    cs_… Checkout Session id and have a blank stripe_payment_intent_id, so
+    fall back to resolving the Checkout Session id from Stripe and matching
+    on that. Read-only; returns None when the charge isn't ours (e.g. SMS
+    top-ups, which have no session row).
+    """
+    session = StripeCheckoutSession.objects.filter(
+        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
+    ).select_related('ticket_order', 'organization').first()
+    if session is not None:
+        return session
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        listing = stripe_lib.checkout.Session.list(payment_intent=pi_id, limit=1)
+    except stripe_lib.error.StripeError:
+        logger.exception("Could not resolve Checkout Session for PaymentIntent %s", pi_id)
+        return None
+    data = listing.get('data', []) if isinstance(listing, dict) else getattr(listing, 'data', [])
+    if not data:
+        return None
+    cs_id = _stripe_value(data[0], 'id')
+    if not cs_id:
+        return None
+    return StripeCheckoutSession.objects.filter(
+        stripe_session_id=cs_id,
+    ).select_related('ticket_order', 'organization').first()
+
+
+def _reverse_transfer_for_refund(charge, session=None):
+    """Claw back the organizer's share of a refunded destination charge.
+
+    Stripe is the authority on both sides of the math: the cumulative
+    ``charge.amount_refunded`` sets the target, and ``Transfer.amount_reversed``
+    says how much has already been clawed back — so a stale or missing local
+    row can never cause an over-reversal, and webhook retries replay the same
+    cumulative target through the same idempotency key as no-ops.
+
+    Works without a session row (event hard-deletes CASCADE sessions away;
+    the refund webhook may also beat fulfillment's transfer capture): the
+    transfer id comes from the charge payload itself. Charges with no
+    transfer (platform, direct, SMS top-ups) no-op.
+
+    Refund semantics: a partial refund of R reverses exactly R (organizer
+    bears it 1:1) until the transfer is exhausted; a full refund reverses the
+    whole transfer, so the platform funds the fee portion of the buyer's
+    refund — the fee-waiver-on-full-refund economics the ledger math in
+    _aggregate_session_cents assumes.
+
+    Failures log loudly and return — order/session state sync must proceed;
+    the charge.refunded retry or backfill_refund_state converges later.
+    """
+    transfer_id = None
+    if session is not None and session.stripe_transfer_id:
+        transfer_id = session.stripe_transfer_id
+    if not transfer_id:
+        payload_transfer = _stripe_value(charge, 'transfer')
+        if payload_transfer and isinstance(payload_transfer, str):
+            transfer_id = payload_transfer
+    if not transfer_id:
+        return
+
+    refunded_cents = int(_stripe_value(charge, 'amount_refunded') or 0)
+    if refunded_cents <= 0:
+        return
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        transfer = stripe_lib.Transfer.retrieve(transfer_id)
+        target_cents = min(refunded_cents, int(transfer.amount))
+        delta_cents = target_cents - int(transfer.amount_reversed or 0)
+        if delta_cents > 0:
+            stripe_lib.Transfer.create_reversal(
+                transfer_id,
+                amount=delta_cents,
+                idempotency_key=f'trrev-{transfer_id}-{target_cents}',
+                metadata={
+                    'reason': 'refund_clawback',
+                    'payment_intent': str(_stripe_value(charge, 'payment_intent') or ''),
+                },
+            )
+            logger.info(
+                "Reversed %s cents of transfer %s for refund (cumulative target %s)",
+                delta_cents, transfer_id, target_cents,
+            )
+    except stripe_lib.error.StripeError:
+        logger.exception("Transfer reversal failed for %s — state sync continues, backfill will converge", transfer_id)
+        return
+
+    if session is not None:
+        session_updates = {'transfer_reversed_cents': target_cents}
+        if not session.stripe_transfer_id:
+            # Recovered from the charge payload before fulfillment stored it.
+            session_updates.update(
+                stripe_transfer_id=transfer_id,
+                transfer_cents=int(transfer.amount),
+                charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+            )
+        StripeCheckoutSession.objects.filter(pk=session.pk).update(**session_updates)
+
+
+def _sync_charge_refund(charge):
+    """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
+
+    Without this, refunds issued from the Stripe dashboard reduce the platform
+    balance while the DB keeps counting the session as COMPLETED — the Finance
+    page figures drift apart.
+
+    Idempotent: charge.amount_refunded is CUMULATIVE, so retries and the echo
+    webhook after an app-initiated refund (refund_order writes the same state
+    first) become no-ops. Inventory restore and waitlist notifications fire
+    only on the transition into REFUNDED.
+
+    The transfer clawback runs BEFORE the state no-op guard: the echo webhook
+    after an app-initiated refund is exactly when the reversal must happen
+    (refund_order only writes local state), and the reversal carries its own
+    Stripe-side idempotency.
+    """
+    pi_id = _stripe_value(charge, 'payment_intent')
+    if not pi_id:
+        return
+    session = _find_session_for_payment_intent(pi_id)
+    if session is None:
+        # SMS top-up, a charge that isn't ours, or a session lost to an event
+        # hard-delete. The clawback must still happen for destination charges —
+        # everything it needs lives on Stripe (D1 session-less fallback).
+        _reverse_transfer_for_refund(charge, session=None)
+        return
+    if not session.stripe_payment_intent_id:
+        # Legacy Checkout-flow row matched via the cs_… fallback: persist the
+        # pi id so future lookups (webhook, refund_order guards) are direct.
+        session.stripe_payment_intent_id = pi_id
+        session.save(update_fields=['stripe_payment_intent_id'])
+    if session.status not in (
+        StripeCheckoutSession.Status.COMPLETED,
+        StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        StripeCheckoutSession.Status.REFUNDED,
+    ):
+        return
+
+    _reverse_transfer_for_refund(charge, session=session)
+
+    order = session.ticket_order
+    refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
+    fully_refunded = bool(_stripe_value(charge, 'refunded'))
+    target_status = (
+        StripeCheckoutSession.Status.REFUNDED if fully_refunded
+        else StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+    )
+
+    # No-op guard: covers webhook retries and app-initiated refunds whose
+    # state refund_order already wrote before this event arrived.
+    if session.status == target_status and (
+        order is None or order.refunded_amount >= refunded_total
+    ):
+        return
+
+    became_full = fully_refunded and session.status != StripeCheckoutSession.Status.REFUNDED
+    with transaction.atomic():
+        if order is not None:
+            order.refunded_amount = max(order.refunded_amount, refunded_total)
+            update_fields = ['refunded_amount']
+            if fully_refunded and order.refunded_at is None:
+                order.refunded_at = django_tz.now()
+                update_fields.append('refunded_at')
+            order.save(update_fields=update_fields)
+
+        session.status = target_status
+        session.save(update_fields=['status'])
+
+        if became_full:
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
+
+        if order is not None and order.customer_id:
+            try:
+                order.customer.update_lifetime_value()
+            except Customer.DoesNotExist:
+                pass
+
+        _invalidate_event_list_cache(session.organization)
+        _invalidate_marketing_cache(session.organization)
+
+    # Bust the cached balances so the Finance page reflects the refund (and
+    # any clawback) immediately instead of after the 60s TTL.
+    django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    _bust_connected_balance_cache(session.organization)
+    logger.info(
+        "Synced charge.refunded for session %s (refunded=%s, full=%s)",
+        session.stripe_session_id, refunded_total, fully_refunded,
+    )
+
+    if became_full:
+        from tickets.tasks import notify_next_waitlist_entry
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+                if tt:
+                    notify_next_waitlist_entry.delay(tt_id)
+
 
 # ---------------------------------------------------------------------------
 # Attendee Auth Views (public - no login required)
@@ -10368,6 +12993,214 @@ def attendee_verify_otp_view(request, org_slug):
         'org': org,
         "masked_phone": f"***{phone[-4:]}",
     })
+
+
+# ---------------------------------------------------------------------------
+# Public "subscribe to an organizer" flow (accountless Customer + SMS consent).
+# Design doc: audience-subscribe-page. Email-keyed identity (merges with
+# checkout/CSV), provable SMSConsentRecord ledger, suppression-aware,
+# fail-closed rate limit, single minimal template across all steps.
+# ---------------------------------------------------------------------------
+
+SUBSCRIBE_OTP_PURPOSE = 'subscribe'
+
+
+def _subscribe_client_ip(request):
+    """Proxy-safe client IP (Render sits behind a proxy → REMOTE_ADDR is the proxy).
+    Returns '' when the resolved value isn't a valid IP (prevents inet save errors)."""
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', ''))
+    ip = (xff or '').split(',')[0].strip()
+    try:
+        from django.core.validators import validate_ipv46_address
+        validate_ipv46_address(ip)
+        return ip
+    except Exception:
+        return ''
+
+
+def _subscribe_consent_text(org):
+    """The exact SMS-consent disclosure shown on the page AND frozen on the record."""
+    return (
+        f"I agree to receive recurring automated marketing text messages from "
+        f"{org.name} at the number provided. Consent is not a condition of purchase. "
+        f"Message frequency varies. Msg & data rates may apply. Reply STOP to opt out, "
+        f"HELP for help."
+    )
+
+
+def _subscribe_rate_ok(org, ip, phone):
+    """Per-IP AND per-phone limiter for the OTP send. FAIL CLOSED (design F8): a
+    public endpoint that spends real money on each send must not fail open, so a
+    cache-backend outage denies rather than allows."""
+    try:
+        ip_key = f"subscribe_rl_ip:{org.id}:{ip}"
+        ph_key = f"subscribe_rl_ph:{org.id}:{phone}"
+        ip_n = django_cache.get(ip_key, 0) or 0
+        ph_n = django_cache.get(ph_key, 0) or 0
+        if ip_n >= 15 or ph_n >= 3:
+            return False
+        django_cache.set(ip_key, ip_n + 1, 3600)
+        django_cache.set(ph_key, ph_n + 1, 3600)
+        return True
+    except Exception:
+        return False  # fail closed
+
+
+def _subscribe_render(request, org, step, **extra):
+    ctx = {'org': org, 'step': step, 'consent_text': _subscribe_consent_text(org)}
+    ctx.update(extra)
+    return render(request, 'tickets/subscribe.html', ctx)
+
+
+def subscribe_view(request, org_slug):
+    """Public. Step 1: capture phone + SMS consent (+ optional market), send the OTP."""
+    from .sms import otp_start
+    org = get_object_or_404(Organization, slug=org_slug)
+    if not org.sms_marketing_enabled:
+        return _subscribe_render(request, org, step='unavailable')
+
+    if request.method != 'POST':
+        return _subscribe_render(request, org, step='form',
+                                 form=SubscribeForm(organization=org))
+
+    form = SubscribeForm(request.POST, organization=org)
+    if not form.is_valid():
+        return _subscribe_render(request, org, step='form', form=form)
+
+    phone = form.cleaned_data['phone']
+    # '' when the org isn't segmenting by market (the field is popped). When shown, the
+    # ChoiceField restricts the value to this org's markets; verify re-checks existence.
+    market_id = form.cleaned_data.get('market', '')
+    ip = _subscribe_client_ip(request)
+
+    if not _subscribe_rate_ok(org, ip, phone):
+        return _subscribe_render(
+            request, org, step='form', form=form,
+            send_error="You've tried a few times. Please wait a bit and try again.",
+        )
+
+    if not otp_start(request, phone, purpose=SUBSCRIBE_OTP_PURPOSE):
+        # start swallows all errors to False (bad number OR Twilio down) — generic retry.
+        return _subscribe_render(
+            request, org, step='form', form=form,
+            send_error="We couldn't send a code to that number. Check it and try again.",
+        )
+
+    # OTP sent — only now write the pending record (keeps failed sends out of the ledger).
+    # email/name are left blank: the subscribe page no longer collects them.
+    record = SMSConsentRecord.objects.create(
+        organization=org, phone=phone, email='', name='',
+        consent_given=True, consent_text=_subscribe_consent_text(org),
+        consent_url=request.path, ip_address=ip or None,
+        user_agent=request.META.get('HTTP_USER_AGENT', '')[:2000],
+        source=SMSConsentRecord.Source.SUBSCRIBE_PAGE,
+    )
+    request.session['subscribe_flow'] = {
+        'org_id': str(org.id), 'record_id': str(record.id), 'phone': phone,
+        'market_id': market_id,
+    }
+    return _subscribe_render(request, org, step='code', masked_phone=phone[-4:])
+
+
+def subscribe_verify_view(request, org_slug):
+    """Public. Step 2: verify the OTP → upsert Customer (email-keyed), mark consent
+    verified, reconcile suppression, show success."""
+    from .sms import otp_start, otp_check, otp_clear, resolve_sms_sender_number
+    from django.db import transaction
+    org = get_object_or_404(Organization, slug=org_slug)
+
+    flow = request.session.get('subscribe_flow')
+    if not flow or flow.get('org_id') != str(org.id):
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(organization=org),
+                                 send_error='Your session expired. Please start again.')
+    masked = flow['phone'][-4:]
+
+    if request.method != 'POST':
+        return _subscribe_render(request, org, step='code', masked_phone=masked)
+
+    if request.POST.get('resend'):
+        # Re-send the code — same fail-closed limiter so resend can't be abused.
+        if not _subscribe_rate_ok(org, _subscribe_client_ip(request), flow['phone']):
+            return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                     code_error='Too many code requests. Please wait a bit.')
+        otp_start(request, flow['phone'], purpose=SUBSCRIBE_OTP_PURPOSE)
+        return _subscribe_render(request, org, step='code', masked_phone=masked, resent=True)
+
+    form = OTPVerificationForm(request.POST)
+    if not form.is_valid():
+        return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                 code_error='Enter the 6-digit code we texted you.')
+
+    ok, phone = otp_check(request, form.cleaned_data['otp_code'], purpose=SUBSCRIBE_OTP_PURPOSE)
+    if not ok or not phone:
+        return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                 code_error="That code didn't match. Try again or resend.")
+
+    record = SMSConsentRecord.objects.filter(id=flow['record_id'], organization=org).first()
+    if record is None:
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(organization=org),
+                                 send_error='Your session expired. Please start again.')
+
+    with transaction.atomic():
+        # Phone-keyed identity — the subscribe page collects no email. Merge into an
+        # existing customer that already has this phone (e.g. a prior checkout), else
+        # create a fresh phone-only subscriber. A later purchase/import reconciles by
+        # phone and can backfill an email onto this row.
+        customer_created = False
+        customer = (Customer.objects.filter(organization=org, phone=phone)
+                    .exclude(phone='').first())
+        if customer is None:
+            try:
+                with transaction.atomic():
+                    customer = Customer.objects.create(
+                        organization=org, email='', name='', phone=phone,
+                        acquisition_source=Customer.AcquisitionSource.SUBSCRIBE_FORM,
+                    )
+                customer_created = True
+            except IntegrityError:
+                customer = (Customer.objects.filter(organization=org, phone=phone)
+                            .exclude(phone='').first())
+                if customer is None:
+                    raise
+        if not customer.phone:
+            customer.phone = phone
+        customer.sms_opt_in = True
+        customer.sms_opt_in_date = django_tz.now()
+        update_fields = ['phone', 'sms_opt_in', 'sms_opt_in_date', 'updated_at']
+        # Seed home_market from the tagged link (?m=). Last tagged signup wins so a
+        # subscriber re-joining via a different city's link updates their market.
+        # Re-check existence to avoid an FK violation if the market was deleted mid-flow.
+        market_id = flow.get('market_id') or ''
+        if market_id and Market.objects.filter(organization=org, id=market_id).exists():
+            customer.home_market_id = market_id
+            update_fields.append('home_market')
+        customer.save(update_fields=update_fields)
+
+        # Suppression reconciliation.
+        # Per-org unsubscribe: fresh express consent overrides it → delete.
+        PhoneSuppression.objects.filter(
+            phone=phone, organization=org,
+            reason__in=[PhoneSuppression.Reason.MANUAL, PhoneSuppression.Reason.BOUNCE],
+        ).delete()
+        # Global Twilio STOP: cannot clear server-side → consented but unreachable.
+        pending_start = PhoneSuppression.objects.filter(
+            phone=phone, organization__isnull=True,
+        ).exists()
+
+        record.customer = customer
+        record.verified_at = django_tz.now()
+        record.pending_start = pending_start
+        record.save(update_fields=['customer', 'verified_at', 'pending_start', 'updated_at'])
+
+        if customer_created:
+            fire_customer_created(customer)
+
+    otp_clear(request, purpose=SUBSCRIBE_OTP_PURPOSE)
+    request.session.pop('subscribe_flow', None)
+
+    start_number = resolve_sms_sender_number() if pending_start else ''
+    return _subscribe_render(request, org, step='done',
+                             pending_start=pending_start, start_number=start_number)
 
 
 def phone_login_view(request):
@@ -10532,10 +13365,15 @@ def my_ticket_detail(request, order_id):
         id=order_id,
         customer__email=request.user.email,
     )
-    qr_code = generate_qr_b64(order.order_number) if not order.refunded_at else ''
+    ticket_qrs = []
+    if not order.refunded_at:
+        ticket_qrs = [
+            {'ticket': t, 'qr_b64': generate_qr_b64(ticket_qr_payload(t))}
+            for t in order.tickets.all()
+        ]
     return render(request, 'tickets/ticket_detail.html', {
         'order': order,
-        'qr_code': qr_code,
+        'ticket_qrs': ticket_qrs,
     })
 
 
@@ -10630,18 +13468,63 @@ def org_switch(request):
 
 _MIN_PAYOUT = Decimal('1.00')
 
+# Sessions that still hold organizer revenue. Fully REFUNDED sessions are
+# excluded: under the per-session clamp in _aggregate_session_cents they would
+# contribute exactly 0 (refunded == amount), so exclusion is pure query
+# efficiency and preserves the existing fee-waiver semantic on full refunds.
+_BALANCE_SESSION_STATUSES = (
+    StripeCheckoutSession.Status.COMPLETED,
+    StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+)
 
-def _compute_available_balance(org):
-    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org."""
-    completed_sessions = StripeCheckoutSession.objects.filter(
-        organization=org, status=StripeCheckoutSession.Status.COMPLETED,
-    )
-    agg = completed_sessions.aggregate(
+
+def _aggregate_session_cents(sessions):
+    """Return (total_charged_cents, total_fees_cents, refund_adjustment_cents)
+    over a StripeCheckoutSession queryset (caller pre-filters org/status/settlement).
+
+    refund_adjustment is per-session min(refunded, max(0, amount - fee)), so
+    (charged - fees - adjustment) == sum of max(0, amount - fee - refunded):
+    a partial refund reduces the organizer net by exactly the refunded amount,
+    and a session fully refunded through successive partials nets to 0 (the
+    platform fee is waived, matching the full-refund semantic).
+
+    The clamp runs in Python with exact Decimal math — refunded_amount is a
+    Decimal in dollars on the related order while session amounts are integer
+    cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+
+    Direct (in-person) sessions intentionally get the same treatment with no
+    fee-waiver special case: Stripe keeps the application fee when an
+    in-person charge is refunded from the organizer's dashboard, so a fully
+    refunded direct session displaying as 0 is the documented policy.
+    """
+    agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
         total_fees=Coalesce(Sum('platform_fee_cents'), 0),
     )
-    stripe_revenue = Decimal(str(agg['total_charged'])) / 100
-    platform_fees = Decimal(str(agg['total_fees'])) / 100
+    adjustment = 0
+    partial_rows = sessions.filter(
+        status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+    ).values_list(
+        'amount_total_cents', 'platform_fee_cents', 'ticket_order__refunded_amount',
+    )
+    for amount_cents, fee_cents, refunded in partial_rows:
+        refunded_cents = int(((refunded or Decimal('0')) * 100).to_integral_value())
+        adjustment += min(refunded_cents, max(0, amount_cents - fee_cents))
+    return agg['total_charged'], agg['total_fees'], adjustment
+
+
+def _compute_available_balance(org):
+    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org.
+
+    stripe_revenue is NET OF REFUNDS: partially refunded sessions count their
+    remaining (unrefunded) amount, fully refunded sessions count nothing.
+    """
+    sessions = StripeCheckoutSession.objects.filter(
+        organization=org, status__in=_BALANCE_SESSION_STATUSES,
+    )
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(sessions)
+    stripe_revenue = Decimal(charged_cents - refund_adj_cents) / 100
+    platform_fees = Decimal(fee_cents) / 100
 
     # Deduct all non-failed payouts — PENDING and IN_TRANSIT are already committed
     # to the connected account, so they must not be available for re-request.
@@ -10692,38 +13575,94 @@ def _get_stripe_platform_available_cents(use_cache=False):
         return None
 
 
-def _compute_settled_payout_balance(org):
+def _compute_legacy_settled_balance(org, clamp=True):
     """
-    Return the amount available for payout for this org, in dollars.
+    Return the settled, still-platform-held organizer balance, in dollars.
 
-    Counts sessions whose funds have an explicit available_on <= now, plus
-    sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent).
-    Subtracts completed payouts.
+    LEGACY POOL ONLY: counts platform-flow sessions (pre-destination-charge
+    money that landed on the platform account) whose funds have settled —
+    explicit available_on <= now, or available_on=NULL for payments that
+    pre-date that field. Partially refunded sessions count net of their
+    refunded amount. Subtracts the payouts that drew platform funds
+    (origin legacy_transfer/migration), so the migrate_legacy_balances
+    true-up can re-run safely: each run moves exactly the not-yet-moved
+    remainder.
+
+    Destination/direct sessions never enter this number — their money lives
+    in the connected account, whose Stripe balance is the source of truth.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
-        status=StripeCheckoutSession.Status.COMPLETED,
+        status__in=_BALANCE_SESSION_STATUSES,
+        charge_flow=StripeCheckoutSession.ChargeFlow.PLATFORM,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
 
-    agg = settled_sessions.aggregate(
-        total_charged=Coalesce(Sum('amount_total_cents'), 0),
-        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
-    )
-    settled_organizer_cents = agg['total_charged'] - agg['total_fees']
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(settled_sessions)
+    settled_organizer_cents = charged_cents - fee_cents - refund_adj_cents
 
     paid_out = Payout.objects.filter(
         organization=org,
+        origin__in=[Payout.Origin.LEGACY_TRANSFER, Payout.Origin.MIGRATION],
     ).exclude(status=Payout.Status.FAILED).aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
     )['total']
 
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
+    if not clamp:
+        # Raw value for the true-up dry-run: negative means a legacy refund
+        # landed after its funds were already trued-up (platform absorbed it).
+        return settled
     return max(Decimal('0.00'), settled)
+
+
+_CONNECTED_BALANCE_CACHE_TTL = 60
+
+
+def _connected_balance_cache_key(org):
+    return f'stripe_connected_balance:{org.pk}'
+
+
+def _bust_connected_balance_cache(org):
+    django_cache.delete(_connected_balance_cache_key(org))
+
+
+def _get_connected_balance_cents(org, use_cache=True):
+    """
+    Return (available_cents, pending_cents) for the org's connected Stripe
+    account, or (None, None) on error / no account. This is the source of
+    truth for "Ready to Withdraw" (available) and "Settling" (pending).
+    """
+    if not org.stripe_account_id:
+        return (None, None)
+    cache_key = _connected_balance_cache_key(org)
+    if use_cache:
+        cached = django_cache.get(cache_key)
+        if cached is not None:
+            return tuple(cached)
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        balance = stripe_lib.Balance.retrieve(stripe_account=org.stripe_account_id)
+        currency = django_settings.STRIPE_CURRENCY.lower()
+        available = sum(
+            entry.amount for entry in balance.available
+            if entry.currency.lower() == currency
+        )
+        pending = sum(
+            entry.amount for entry in balance.pending
+            if entry.currency.lower() == currency
+        )
+        django_cache.set(cache_key, (available, pending), _CONNECTED_BALANCE_CACHE_TTL)
+        return (available, pending)
+    except Exception:
+        logger.exception("Could not retrieve connected Stripe balance for org %s", org.id)
+        return (None, None)
 
 
 def _extract_bank_account(acct):
@@ -10892,19 +13831,15 @@ def finance_overview(request):
             logger.exception("Could not retrieve Stripe account state for org %s", org.id)
 
     if org.stripe_onboarding_complete and org.stripe_account_id:
-        db_settled = _compute_settled_payout_balance(org)
-        stripe_actual_cents = _get_stripe_platform_available_cents(use_cache=True)
-        if stripe_actual_cents is not None:
-            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-            if stripe_actual < db_settled:
-                logger.warning(
-                    "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
-                    org.id, db_settled, stripe_actual, db_settled - stripe_actual,
-                )
-            stripe_available = min(db_settled, stripe_actual)
-        else:
-            stripe_available = db_settled
-        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+        # The connected account balance IS the organizer's money now:
+        # available = withdrawable, pending = settling. Clamp at zero for
+        # display — available can go negative after a refund clawback that
+        # follows a withdrawal. On Stripe API failure render unknowns (None)
+        # rather than misrepresenting platform-pool figures as withdrawable.
+        available_cents, pending_cents = _get_connected_balance_cents(org)
+        if available_cents is not None:
+            stripe_available = max(Decimal('0.00'), Decimal(str(available_cents)) / 100)
+            settling_balance = max(Decimal('0.00'), Decimal(str(pending_cents)) / 100)
 
     legacy_pending_payouts = Payout.objects.filter(
         organization=org,
@@ -11176,6 +14111,12 @@ def stripe_connect_return(request):
             stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
             _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
             if stripe_state['payouts_ready']:
+                # Manual schedule from day one so the balance accumulates for
+                # organizer-initiated withdrawals instead of auto-sweeping.
+                try:
+                    _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
+                except stripe_lib.error.StripeError:
+                    logger.exception("Could not set manual payout schedule for %s", org.stripe_account_id)
                 messages.success(request, 'Bank account connected successfully. You can now request payouts.')
             else:
                 messages.warning(
@@ -11304,92 +14245,53 @@ def initiate_payout(request):
         messages.error(request, f'Minimum payout is ${_MIN_PAYOUT:.2f}.')
         return redirect('tickets:finance_overview')
 
-    _, _, _, available_balance = _compute_available_balance(org)
-    if amount > available_balance:
-        messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
+    # The connected account balance is the only gate that matters now: the
+    # organizer's money already lives there (destination charges + true-up).
+    available_cents, _pending_cents = _get_connected_balance_cents(org, use_cache=False)
+    if available_cents is None:
+        messages.error(request, 'Could not check your Stripe balance. Please try again.')
         return redirect('tickets:finance_overview')
-
-    stripe_available = _compute_settled_payout_balance(org)
-    if amount > stripe_available:
+    available = Decimal(str(available_cents)) / 100
+    if amount > available:
         messages.error(
             request,
-            f'Only ${stripe_available:.2f} has settled and is available to pay out. '
+            f'Payout amount exceeds your available balance (${max(available, Decimal("0.00")):.2f}). '
             f'Funds from recent sales typically settle within 2\u20137 business days.',
         )
         return redirect('tickets:finance_overview')
-
-    stripe_actual_cents = _get_stripe_platform_available_cents()
-    if stripe_actual_cents is not None:
-        stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-        if amount > stripe_actual:
-            messages.error(
-                request,
-                f'Your Stripe balance has ${stripe_actual:.2f} available right now. '
-                f'Funds from recent sales typically settle within 2\u20137 business days.',
-            )
-            return redirect('tickets:finance_overview')
 
     notes = request.POST.get('notes', '').strip()[:500]
     payout = Payout.objects.create(
         organization=org,
         amount=amount,
         status=Payout.Status.PENDING,
+        origin=Payout.Origin.CUE,
         initiated_by=request.user,
         notes=notes,
     )
 
     try:
         _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
-        transfer = stripe_lib.Transfer.create(
-            amount=int(amount * 100),
-            currency=django_settings.STRIPE_CURRENCY,
-            destination=org.stripe_account_id,
-            description=f'Payout to {org.name}',
-            metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
-        )
-        payout.stripe_transfer_id = transfer.id
-        payout.save(update_fields=['stripe_transfer_id'])
-
+        # No Transfer step anymore — the money is already in the connected
+        # account. The idempotency key makes a timeout retry return the
+        # original payout instead of withdrawing twice.
         stripe_payout = stripe_lib.Payout.create(
             amount=int(amount * 100),
             currency=django_settings.STRIPE_CURRENCY,
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
             stripe_account=org.stripe_account_id,
+            idempotency_key=f'payout-{payout.id}',
         )
-        payout.stripe_payout_id = stripe_payout.id
-        payout_status_map = {
-            'in_transit': Payout.Status.IN_TRANSIT,
-            'paid': Payout.Status.COMPLETED,
-            'failed': Payout.Status.FAILED,
-            'canceled': Payout.Status.FAILED,
-        }
-        update_fields = ['stripe_payout_id']
-        new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-        if new_status and payout.status != new_status:
-            payout.status = new_status
-            update_fields.append('status')
-        payout.save(update_fields=update_fields)
+        _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
         messages.success(request, f'Payout of ${amount:.2f} processing. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
-        transfer = locals().get('transfer')
-        if transfer is not None:
-            try:
-                stripe_lib.Transfer.create_reversal(
-                    transfer.id,
-                    metadata={'org_id': str(org.id), 'payout_id': str(payout.id), 'reason': 'payout_create_failed'},
-                )
-            except stripe_lib.error.StripeError:
-                logger.exception("Could not reverse transfer %s after payout failure for payout %s", transfer.id, payout.id)
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'
         payout.notes = (payout.notes + error_note)[:500]
-        update_fields = ['status', 'notes']
-        if transfer is not None and payout.stripe_transfer_id != transfer.id:
-            payout.stripe_transfer_id = transfer.id
-            update_fields.append('stripe_transfer_id')
-        payout.save(update_fields=update_fields)
+        payout.save(update_fields=['status', 'notes'])
         messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
 
+    _bust_connected_balance_cache(org)
     return redirect('tickets:finance_overview')
 
 
@@ -11441,20 +14343,9 @@ def recover_pending_payouts(request):
                 currency=django_settings.STRIPE_CURRENCY,
                 metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
                 stripe_account=org.stripe_account_id,
+                idempotency_key=f'payout-{payout.id}',
             )
-            payout.stripe_payout_id = stripe_payout.id
-            payout_status_map = {
-                'in_transit': Payout.Status.IN_TRANSIT,
-                'paid': Payout.Status.COMPLETED,
-                'failed': Payout.Status.FAILED,
-                'canceled': Payout.Status.FAILED,
-            }
-            update_fields = ['stripe_payout_id']
-            new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-            if new_status and payout.status != new_status:
-                payout.status = new_status
-                update_fields.append('status')
-            payout.save(update_fields=update_fields)
+            _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
             recovered += 1
         except stripe_lib.error.StripeError as e:
             error_note = f' [Recovery failed: {str(e)[:400]}]'
@@ -11480,8 +14371,51 @@ def recover_pending_payouts(request):
 @require_org
 def survey_upload_list(request):
     org = get_organization(request)
-    uploads = ExternalSurveyUpload.objects.filter(organization=org).order_by('-uploaded_at')
-    return render(request, 'tickets/survey_upload_list.html', {'uploads': uploads})
+
+    external_uploads = ExternalSurveyUpload.objects.filter(
+        organization=org
+    ).order_by('-uploaded_at')
+
+    # Native Cue surveys are stored per-response; group them by event so each
+    # event with responses becomes a single row in the unified list.
+    native_rows = (
+        SurveyResponse.objects.filter(organization=org)
+        .values('event_id', 'event__name')
+        .annotate(response_count=Count('id'), last_response=Max('submitted_at'))
+        .order_by('-last_response')
+    )
+
+    # Native and external surveys share one interface, distinguished by a source
+    # label. Build a combined, newest-first list the template renders as one table.
+    sources = []
+    for upload in external_uploads:
+        sources.append({
+            'kind': 'external',
+            'label': 'External upload',
+            'name': upload.filename,
+            'date': upload.uploaded_at,
+            'response_count': upload.row_count,
+            'status': upload.status,
+            'upload_id': upload.id,
+        })
+    for row in native_rows:
+        sources.append({
+            'kind': 'native',
+            'label': 'Cue survey',
+            'name': row['event__name'] or 'Survey',
+            'date': row['last_response'],
+            'response_count': row['response_count'],
+            'status': 'active',
+            'event_id': row['event_id'],
+        })
+    sources.sort(key=lambda s: s['date'], reverse=True)
+
+    has_external = any(s['kind'] == 'external' for s in sources)
+
+    return render(request, 'tickets/survey_upload_list.html', {
+        'sources': sources,
+        'has_external': has_external,
+    })
 
 
 @login_required
@@ -11608,26 +14542,67 @@ def survey_event_link(request, upload_id):
 @require_org
 def survey_analytics(request):
     org = get_organization(request)
+    market_filter = request.GET.get('market', '').strip() or None
     city_filter = request.GET.get('city', '').strip() or None
 
+    def _parse_event_date(raw):
+        raw = (raw or '').strip()
+        try:
+            return datetime.strptime(raw, '%Y-%m-%d').date() if raw else None
+        except ValueError:
+            return None
+
+    event_from_str = request.GET.get('event_from', '').strip()
+    event_to_str = request.GET.get('event_to', '').strip()
+    event_from = _parse_event_date(event_from_str)
+    event_to = _parse_event_date(event_to_str)
+
     from .services.external_survey.analytics import ExternalSurveyAnalytics
-    stats = ExternalSurveyAnalytics(organization=org).calculate(city=city_filter)
+    from .services.external_survey.analytics import NO_MARKET_VALUE
+    stats = ExternalSurveyAnalytics(organization=org).calculate(
+        market=market_filter, city=city_filter, event_from=event_from, event_to=event_to,
+    )
 
     feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
-    if city_filter:
-        feedback_qs = feedback_qs.filter(event__venue__city=city_filter)
-    feedback_qs = feedback_qs.select_related('event', 'event__venue').order_by('-responded_at')
+    if market_filter == NO_MARKET_VALUE:
+        feedback_qs = feedback_qs.filter(event__market__isnull=True)
+    elif market_filter:
+        try:
+            _uuid.UUID(str(market_filter))
+        except (TypeError, ValueError):
+            feedback_qs = feedback_qs.none()
+        else:
+            feedback_qs = feedback_qs.filter(event__market_id=market_filter)
+    elif city_filter:
+        feedback_qs = feedback_qs.filter(Q(event__market__name=city_filter) | Q(event__market__geography_value=city_filter))
+    if event_from:
+        feedback_qs = feedback_qs.filter(event__start_date__gte=event_from)
+    if event_to:
+        feedback_qs = feedback_qs.filter(event__start_date__lte=event_to)
+    feedback_qs = feedback_qs.select_related('event', 'event__venue', 'event__market').order_by('-responded_at')
     paginator = Paginator(feedback_qs, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
 
-    distinct_cities = sorted(set(
-        c for c in ExternalSurveyResponse.objects.filter(organization=org)
-        .filter(event__isnull=False, event__venue__isnull=False)
-        .exclude(event__venue__city='')
-        .values_list('event__venue__city', flat=True)
-        .distinct()
-        if c
-    ))
+    market_rows = (
+        ExternalSurveyResponse.objects.filter(organization=org, event__isnull=False)
+        .values('event__market_id', 'event__market__name')
+        .annotate(total=Count('id'))
+        .order_by('event__market__name')
+    )
+    distinct_cities = [
+        {
+            'value': str(row['event__market_id']) if row['event__market_id'] else NO_MARKET_VALUE,
+            'label': row['event__market__name'] or NO_MARKET_LABEL,
+        }
+        for row in market_rows
+    ]
+    selected_market_label = ''
+    for row in distinct_cities:
+        if row['value'] == market_filter:
+            selected_market_label = row['label']
+            break
+    if city_filter and not selected_market_label:
+        selected_market_label = city_filter
 
     # Subscriptions that are syncing rows but have no field_map saved — those
     # rows show up in the DB but contribute nothing to the totals here because
@@ -11645,8 +14620,12 @@ def survey_analytics(request):
 
     return render(request, 'tickets/survey_analytics.html', {
         'stats': stats,
-        'city_filter': city_filter,
+        'city_filter': selected_market_label,
+        'market_filter': market_filter or '',
+        'event_from': event_from_str,
+        'event_to': event_to_str,
         'distinct_cities': distinct_cities,
+        'no_market_value': NO_MARKET_VALUE,
         'page_obj': page_obj,
         'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
         'rating_counts': [r['count'] for r in stats['rating_breakdown']],
@@ -11656,87 +14635,10 @@ def survey_analytics(request):
 
 # ── Typeform integration ────────────────────────────────────────────────────
 
-@login_required
-@require_org
-@require_admin
-def typeform_settings(request):
-    """Show Typeform connection status, current form subscriptions, and sync controls."""
-    org = get_organization(request)
-    subscriptions = (
-        TypeformFormSubscription.objects
-        .filter(organization=org)
-        .order_by('-is_active', '-created_at')
-    )
-    return render(request, 'tickets/typeform_settings.html', {
-        'org': org,
-        'is_connected': bool(org.typeform_access_token),
-        'subscriptions': subscriptions,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_connect(request):
-    """Validate the posted Personal Access Token, save it, and stash the account email."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    token = (request.POST.get('access_token') or '').strip()
-    if not token:
-        messages.error(request, 'Paste a Typeform Personal Access Token.')
-        return redirect('tickets:typeform_settings')
-
-    try:
-        me = TypeformClient(access_token=token).validate_token()
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not verify Typeform credentials: {exc}')
-        return redirect('tickets:typeform_settings')
-
-    org.typeform_access_token = token
-    org.typeform_account_email = (me.get('email') or '')[:254]
-    org.typeform_validated_at = django_tz.now()
-    org.save(update_fields=[
-        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
-    ])
-    messages.success(request, 'Typeform connected.')
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_disconnect(request):
-    """Disconnect Typeform: delete all webhooks and clear org credentials."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    if not org.typeform_access_token:
-        messages.info(request, 'Typeform was not connected.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-    for sub in TypeformFormSubscription.objects.filter(organization=org, is_active=True):
-        try:
-            client.delete_webhook(sub.form_id, tag=tag)
-        except TypeformAPIError as exc:
-            logger.warning('Failed to delete Typeform webhook for sub %s: %s', sub.id, exc)
-        sub.is_active = False
-        sub.webhook_id = ''
-        sub.last_sync_error = ''
-        sub.save(update_fields=['is_active', 'webhook_id', 'last_sync_error'])
-
-    org.typeform_access_token = ''
-    org.typeform_account_email = ''
-    org.typeform_validated_at = None
-    org.save(update_fields=[
-        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
-    ])
-    messages.success(request, 'Typeform disconnected.')
-    return redirect('tickets:typeform_settings')
 
 
 def _typeform_webhook_url(request, sub_id) -> str:
@@ -11771,361 +14673,14 @@ def _refresh_subscription_questions(subscription, definition):
         subscription.save(update_fields=['questions'])
 
 
-@login_required
-@require_org
-@require_admin
-def typeform_form_picker(request):
-    """List Typeform forms; let the org check which to subscribe (creates webhooks)."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    if not org.typeform_access_token:
-        messages.error(request, 'Connect Typeform first.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    try:
-        forms = client.list_forms()
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not load Typeform forms: {exc}')
-        return redirect('tickets:typeform_settings')
-
-    existing = {s.form_id: s for s in TypeformFormSubscription.objects.filter(organization=org)}
-
-    if request.method == 'POST':
-        selected_form_ids = set(request.POST.getlist('form_ids'))
-        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-
-        forms_by_id = {f.get('id'): f for f in forms if f.get('id')}
-        created = 0
-        for form_id in selected_form_ids:
-            form_meta = forms_by_id.get(form_id)
-            if not form_meta:
-                continue
-            sub = existing.get(form_id)
-            if sub is None:
-                upload = ExternalSurveyUpload.objects.create(
-                    organization=org,
-                    filename=f'Typeform: {form_meta.get("title") or form_id}',
-                    status=ExternalSurveyUpload.Status.COMPLETED,
-                )
-                sub = TypeformFormSubscription.objects.create(
-                    organization=org,
-                    form_id=form_id,
-                    form_title=(form_meta.get('title') or '')[:255],
-                    upload=upload,
-                )
-            else:
-                # Re-activating a previously deactivated subscription. Clear any stale
-                # last_sync_error from a prior (possibly expired) token so the row
-                # doesn't show a misleading red error line after reconnect.
-                sub.is_active = True
-                sub.form_title = (form_meta.get('title') or sub.form_title)[:255]
-                sub.last_sync_error = ''
-                sub.save(update_fields=['is_active', 'form_title', 'last_sync_error'])
-
-            # Snapshot the form's questions so we can render them on Surveys pages
-            # without re-fetching the definition on every read. Best-effort: a
-            # Typeform hiccup here just means we keep the existing snapshot.
-            try:
-                definition = client.get_form(form_id)
-                _refresh_subscription_questions(sub, definition)
-            except TypeformAPIError as exc:
-                logger.warning(
-                    'Could not snapshot questions for sub %s: %s', sub.id, exc,
-                )
-                definition = None
-
-            # Seed a starting field_map from the form definition so structured
-            # columns (nps_score, overall_rating, text_feedback, …) populate on
-            # first sync without the user having to visit the mapping editor.
-            # Only when never configured before (None) — an explicit `{}` save
-            # means "ignore everything" and must be preserved.
-            if definition and sub.field_map is None:
-                from .services.typeform.field_mapping import auto_field_map
-                suggested = auto_field_map(definition)
-                if suggested:
-                    sub.field_map = suggested
-                    sub.save(update_fields=['field_map'])
-
-            webhook_url = _typeform_webhook_url(request, sub.id)
-            if not _is_publicly_reachable(webhook_url):
-                messages.warning(
-                    request,
-                    f'Form "{sub.form_title}" subscribed without a webhook: {webhook_url} is not '
-                    'publicly reachable. Use "Sync recent" to pull responses manually, or set '
-                    'TYPEFORM_WEBHOOK_BASE_URL to a public tunnel (e.g. ngrok) and re-pick.',
-                )
-            else:
-                try:
-                    webhook = client.create_webhook(
-                        form_id=form_id,
-                        url=webhook_url,
-                        secret=sub.webhook_secret,
-                        tag=tag,
-                    )
-                    sub.webhook_id = str(webhook.get('id') or '')[:64]
-                    sub.save(update_fields=['webhook_id'])
-                except TypeformAPIError as exc:
-                    messages.warning(
-                        request,
-                        f'Form "{sub.form_title}" subscribed but webhook registration failed: {exc}',
-                    )
-            created += 1
-
-        # Deactivate any previously-active subscriptions that the org just unchecked.
-        for sub in existing.values():
-            if sub.is_active and sub.form_id not in selected_form_ids:
-                try:
-                    client.delete_webhook(sub.form_id, tag=tag)
-                except TypeformAPIError:
-                    pass
-                sub.is_active = False
-                sub.webhook_id = ''
-                sub.save(update_fields=['is_active', 'webhook_id'])
-
-        messages.success(request, f'Subscribed to {created} Typeform form(s).')
-        return redirect('tickets:typeform_settings')
-
-    rows = []
-    for form in forms:
-        sub = existing.get(form.get('id'))
-        rows.append({
-            'id': form.get('id'),
-            'title': form.get('title') or form.get('id'),
-            'last_updated_at': form.get('last_updated_at'),
-            'is_subscribed': bool(sub and sub.is_active),
-        })
-    return render(request, 'tickets/typeform_form_picker.html', {
-        'forms': rows,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_form_sync(request, sub_id):
-    """Trigger an on-demand pull of recent responses for one subscription."""
-    from .tasks import sync_typeform_form_task
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-    sync_typeform_form_task.delay(str(subscription.id))
-    messages.success(request, f'Syncing "{subscription.form_title}" — new responses will appear shortly.')
-
-    next_url = (request.POST.get('next') or '').strip()
-    if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-        return redirect(next_url)
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_form_unsubscribe(request, sub_id):
-    """Delete the webhook and deactivate one form subscription."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-    if org.typeform_access_token:
-        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-        try:
-            TypeformClient(access_token=org.typeform_access_token).delete_webhook(
-                subscription.form_id, tag=tag,
-            )
-        except TypeformAPIError as exc:
-            logger.warning('Failed to delete webhook for sub %s: %s', subscription.id, exc)
-    subscription.is_active = False
-    subscription.webhook_id = ''
-    subscription.save(update_fields=['is_active', 'webhook_id'])
-    messages.success(request, f'Unsubscribed from "{subscription.form_title}".')
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-def typeform_form_mapping(request, sub_id):
-    """Per-form field mapping editor: pick which Typeform question feeds which
-    ExternalSurveyResponse column. New ingests use the saved map; existing rows
-    can be re-projected by ticking the backfill checkbox.
-    """
-    from collections import OrderedDict
-
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-    from .services.typeform.field_mapping import (
-        TARGET_FIELDS, apply_field_map, auto_field_map, flatten_form_fields,
-    )
-
-    SAMPLE_RESPONSE_LIMIT = 50
-    SAMPLE_VALUES_PER_FIELD = 3
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-
-    if not org.typeform_access_token:
-        messages.error(request, 'Connect Typeform first to edit field mappings.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    try:
-        definition = client.get_form(subscription.form_id)
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not load form definition: {exc}')
-        definition = {'fields': []}
-    else:
-        # Refresh the persisted question snapshot used to display titles on the
-        # Surveys tab without re-fetching the definition on every render.
-        _refresh_subscription_questions(subscription, definition)
-
-    flat_fields = flatten_form_fields(definition)
-
-    if request.method == 'POST':
-        new_map: dict = {}
-        for field in flat_fields:
-            key = field.get('ref') or field.get('id')
-            if not key:
-                continue
-            value = (request.POST.get(f'map_{key}') or '').strip()
-            if value and value in TARGET_FIELDS:
-                new_map[key] = value
-        subscription.field_map = new_map
-        subscription.save(update_fields=['field_map'])
-
-        backfilled = 0
-        if request.POST.get('backfill') == '1' and subscription.upload_id:
-            from .services.typeform.ingest import apply_field_map_to_subscription
-            backfilled, affected_event_ids = apply_field_map_to_subscription(
-                subscription, new_map, limit=500,
-            )
-            for eid in affected_event_ids:
-                django_cache.delete(_event_stats_cache_key(eid))
-                _invalidate_event_upload_stats_cache(eid)
-
-        msg = f'Field mapping saved ({len(new_map)} field(s)).'
-        if backfilled:
-            msg += f' Re-applied to {backfilled} existing response(s).'
-        messages.success(request, msg)
-        return redirect('tickets:typeform_form_mapping', sub_id=subscription.id)
-
-    # Collect up to 3 distinct sample values per question, scanning the most
-    # recent 50 ingested responses for this form. Lets the user map deterministically.
-    samples_by_key: dict[str, list[str]] = {}
-    if subscription.upload_id:
-        recent_raws = (
-            ExternalSurveyResponse.objects
-            .filter(organization=org, upload_id=subscription.upload_id)
-            .exclude(typeform_response_id='')
-            .order_by('-responded_at')
-            .values_list('raw_answers', flat=True)[:SAMPLE_RESPONSE_LIMIT]
-        )
-        seen: dict[str, OrderedDict] = {}
-        for raw in recent_raws:
-            for ans in raw or []:
-                if not isinstance(ans, dict):
-                    continue
-                key = ans.get('ref') or ans.get('id')
-                if not key:
-                    continue
-                value = ans.get('value')
-                if value in (None, '', []):
-                    continue
-                text = (
-                    ', '.join(str(v) for v in value)
-                    if isinstance(value, list) else str(value)
-                ).strip()
-                if not text:
-                    continue
-                bucket = seen.setdefault(key, OrderedDict())
-                if text not in bucket and len(bucket) < SAMPLE_VALUES_PER_FIELD:
-                    bucket[text] = None
-        samples_by_key = {k: list(v.keys()) for k, v in seen.items()}
-
-    # `field_map is None` means the subscription has never been saved through this
-    # editor — only then do we pre-fill the dropdowns with auto-detect suggestions.
-    # An empty `{}` is a deliberate "everything Ignored" save and must be respected
-    # on reload (no auto-detect bleed-through).
-    if subscription.field_map is None:
-        current_map = auto_field_map(definition)
-    else:
-        current_map = subscription.field_map
-    fields = []
-    for field in flat_fields:
-        key = field.get('ref') or field.get('id')
-        if not key:
-            continue
-        fields.append({
-            'key': key,
-            'title': field.get('title') or '(untitled)',
-            'group_title': field.get('group_title') or '',
-            'type': field.get('type'),
-            'mapped_to': current_map.get(key, ''),
-            'samples': samples_by_key.get(key, []),
-        })
-
-    return render(request, 'tickets/typeform_form_mapping.html', {
-        'subscription': subscription,
-        'fields': fields,
-        'target_fields': TARGET_FIELDS,
-        'has_saved_mapping': subscription.field_map is not None,
-    })
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
-def typeform_webhook(request, sub_id):
-    """Receive Typeform webhook deliveries: verify HMAC, ingest one response, queue LLM match."""
-    import base64
-    import hashlib
-    import hmac as hmac_mod
-
-    from .services.typeform.ingest import ingest_response
-    from .tasks import match_survey_response_to_event_task
-
-    try:
-        subscription = TypeformFormSubscription.objects.select_related('organization').get(
-            id=sub_id, is_active=True,
-        )
-    except (TypeformFormSubscription.DoesNotExist, ValueError, Http404):
-        return HttpResponse(status=404)
-
-    signature_header = request.headers.get('Typeform-Signature', '')
-    if not signature_header.startswith('sha256='):
-        return HttpResponse('Invalid signature header', status=401)
-    posted_b64 = signature_header[len('sha256='):]
-
-    raw_body = request.body
-    digest = hmac_mod.new(
-        subscription.webhook_secret.encode('utf-8'),
-        raw_body, hashlib.sha256,
-    ).digest()
-    expected_b64 = base64.b64encode(digest).decode('ascii')
-    if not hmac_mod.compare_digest(posted_b64, expected_b64):
-        return HttpResponse('Bad signature', status=401)
-
-    try:
-        payload = json.loads(raw_body.decode('utf-8'))
-    except (ValueError, UnicodeDecodeError):
-        return HttpResponseBadRequest('Invalid JSON')
-
-    form_response = payload.get('form_response')
-    if not form_response:
-        return HttpResponseBadRequest('Missing form_response')
-
-    response, created = ingest_response(subscription, form_response)
-    if response and created:
-        match_survey_response_to_event_task.delay(str(response.id))
-
-    return JsonResponse({'ok': True, 'created': bool(created)})
 
 
 def _survey_candidate_dict(response, candidate, subscription=None):
@@ -12158,10 +14713,21 @@ def _survey_candidate_dict(response, candidate, subscription=None):
             'type': str(ans.get('type') or ''),
             'value': ans.get('value'),
         })
+    # Full answer set for the expandable per-row detail panel (every Q/A pair).
+    answers = []
+    for ans in raw:
+        if not isinstance(ans, dict):
+            continue
+        answers.append({
+            'title': str(ans.get('title') or '')[:200],
+            'type': str(ans.get('type') or ''),
+            'value': ans.get('value'),
+        })
     return {
         'response_id': str(response.id),
         'responded_at': response.responded_at.isoformat() if response.responded_at else None,
         'preview_answers': preview,
+        'answers': answers,
         'confidence': confidence,
         'confidence_pct': pct,
         'confidence_class': confidence_class,
@@ -12312,7 +14878,7 @@ def event_survey_apply(request, event_id):
 
     if linked_count:
         messages.success(request, f'Linked {linked_count} survey response(s).')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
 @login_required
@@ -12331,7 +14897,113 @@ def event_survey_unlink(request, event_id):
             django_cache.delete(_event_stats_cache_key(str(event.id)))
             _invalidate_event_upload_stats_cache(str(event.id))
             messages.success(request, 'Survey response unlinked.')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
+
+
+@login_required
+@require_org
+def event_survey_response_detail(request, event_id, kind, response_id):
+    """JSON: full question/answer breakdown for a single survey response.
+
+    Powers the "Individual Responses" row-click modal on the event Surveys
+    tab. ``kind`` is 'internal' (a Cue SurveyResponse) or 'external' (a
+    Typeform/CSV ExternalSurveyResponse).
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    meta = {'source': '', 'date': '', 'respondent': ''}
+    items = []
+
+    if kind == 'internal':
+        resp = get_object_or_404(
+            SurveyResponse.objects
+            .filter(event=event, organization=org)
+            .select_related('customer')
+            .prefetch_related('answers__question', 'answers__selected_options'),
+            id=response_id,
+        )
+        meta['source'] = 'Cue survey'
+        if resp.submitted_at:
+            meta['date'] = resp.submitted_at.strftime('%b %-d, %Y · %-I:%M %p')
+        if resp.customer:
+            meta['respondent'] = resp.customer.email or resp.customer.name or ''
+        for ans in resp.answers.all():
+            q = ans.question
+            if q and q.question_type in SurveyQuestion.CHOICE_TYPES:
+                value = ', '.join(o.label for o in ans.selected_options.all())
+                atype = q.question_type
+            elif ans.star_rating is not None:
+                value, atype = f"{ans.star_rating} / 5 stars", 'star_rating'
+            elif ans.nps_score is not None:
+                value, atype = f"{ans.nps_score} / 10", 'nps'
+            else:
+                value, atype = (ans.text_answer or ''), 'text'
+            items.append({
+                'question': q.question_text if q else '',
+                'answer': value,
+                'type': atype,
+            })
+    elif kind == 'external':
+        resp = get_object_or_404(
+            ExternalSurveyResponse.objects.filter(event=event, organization=org),
+            id=response_id,
+        )
+        meta['source'] = 'Typeform' if resp.typeform_response_id else 'External upload'
+        if resp.responded_at:
+            meta['date'] = resp.responded_at.strftime('%b %-d, %Y · %-I:%M %p')
+        meta['respondent'] = resp.email or ''
+        # Repopulate answer titles from the form's cached question snapshot —
+        # raw_answers often carries empty titles (see TypeformFormSubscription).
+        questions_snapshot = []
+        if resp.upload_id:
+            sub = (
+                TypeformFormSubscription.objects
+                .filter(organization=org, upload_id=resp.upload_id)
+                .first()
+            )
+            if sub:
+                questions_snapshot = sub.questions
+        from .services.typeform.helpers import enrich_answers_with_titles
+        for ans in enrich_answers_with_titles(resp.raw_answers, questions_snapshot):
+            if not isinstance(ans, dict):
+                continue
+            value = ans.get('value')
+            if isinstance(value, (list, tuple)):
+                value = ', '.join(str(v) for v in value)
+            elif value is None:
+                value = ''
+            else:
+                value = str(value)
+            items.append({
+                'question': (ans.get('title') or '').strip() or '(untitled)',
+                'answer': value,
+                'type': ans.get('type') or '',
+            })
+        if not items:
+            # Fallback for CSV-uploaded rows without raw_answers: rebuild the
+            # Q&A list from the parsed structured columns.
+            structured = [
+                ('Overall rating', resp.overall_rating),
+                ('NPS score', resp.nps_score),
+                ('City', resp.city),
+                ('What they enjoyed', ', '.join(resp.enjoyed) if resp.enjoyed else ''),
+                ('Genres', ', '.join(resp.genres) if resp.genres else ''),
+                ('Suggested improvements', ', '.join(resp.improvements) if resp.improvements else ''),
+                ('Crowd vibe', resp.crowd_vibe),
+                ('Venue feel', resp.venue_feel),
+                ('Pre-event info', resp.pre_event_info),
+                ('How they found out', resp.found_out_how),
+                ('Feedback', resp.text_feedback),
+            ]
+            for label, val in structured:
+                if val in (None, '', []):
+                    continue
+                items.append({'question': label, 'answer': str(val), 'type': ''})
+    else:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+
+    return JsonResponse({'meta': meta, 'items': items})
 
 
 # ── Error handlers ──────────────────────────────────────────────────────────

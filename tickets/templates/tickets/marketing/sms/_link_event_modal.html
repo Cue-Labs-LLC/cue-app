@@ -1,0 +1,119 @@
+{% comment %}
+Reusable "link campaign to event" modal + searchable picker.
+Requires `link_events` (list of {id, name}) in the template context.
+Trigger buttons open it via data-bs-toggle="modal" data-bs-target="#linkEventModal"
+and carry: data-campaign-pk, data-campaign-name, data-current-event, data-next.
+{% endcomment %}
+<div class="modal fade" id="linkEventModal" tabindex="-1" aria-labelledby="linkEventModalLabel" aria-hidden="true"
+     data-link-url-template="{% url 'tickets:sms_campaign_link_event' pk='00000000-0000-0000-0000-000000000000' %}">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="linkEventForm" method="post">
+        {% csrf_token %}
+        <input type="hidden" name="event" id="linkEventValue">
+        <input type="hidden" name="next" id="linkEventNext">
+        <div class="modal-header">
+          <h5 class="modal-title" id="linkEventModalLabel">Link to event</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small mb-2" id="linkEventCampaignName"></p>
+          <div class="le-search mb-2">
+            <i class="bi bi-search"></i>
+            <input type="search" id="linkEventSearch" class="form-control" placeholder="Search events" aria-label="Search events" autocomplete="off">
+          </div>
+          <div class="le-list" role="listbox">
+            <button type="button" class="le-option le-option--none" data-le-event="">
+              <i class="bi bi-slash-circle"></i>
+              <span class="le-option-name">No event (unlink)</span>
+            </button>
+            {% for ev in link_events %}
+            <button type="button" class="le-option" data-le-event="{{ ev.id }}" data-le-name="{{ ev.name|lower }}">
+              <i class="bi bi-ticket-perforated"></i>
+              <span class="le-option-name">{{ ev.name }}</span>
+              {% if ev.start_date %}<span class="le-option-date">{{ ev.start_date|date:"M d, Y" }}</span>{% endif %}
+              <i class="bi bi-check-lg le-option-check"></i>
+            </button>
+            {% endfor %}
+            <div class="le-empty text-muted small px-2 py-2" id="linkEventEmpty" hidden>No events match.</div>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<style>
+  #linkEventModal .le-search { position: relative; }
+  #linkEventModal .le-search .bi-search { position: absolute; left: .6rem; top: 50%; transform: translateY(-50%); color: var(--bs-secondary-color, #6c757d); pointer-events: none; }
+  #linkEventModal .le-search input { padding-left: 2rem; }
+  #linkEventModal .le-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--bs-border-color); border-radius: .5rem; padding: .25rem; }
+  #linkEventModal .le-option { display: flex; align-items: center; gap: .5rem; width: 100%; text-align: left; background: transparent; border: 0; border-radius: .375rem; padding: .5rem .6rem; color: inherit; cursor: pointer; }
+  #linkEventModal .le-option:hover { background: var(--bs-tertiary-bg, rgba(0,0,0,.05)); }
+  #linkEventModal .le-option .le-option-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #linkEventModal .le-option .le-option-date { flex: 0 0 auto; font-size: .8125rem; color: var(--bs-secondary-color, #6c757d); white-space: nowrap; }
+  #linkEventModal .le-option .le-option-check { display: none; color: var(--bs-success, #198754); }
+  #linkEventModal .le-option.is-current { background: var(--bs-tertiary-bg, rgba(0,0,0,.05)); font-weight: 600; }
+  #linkEventModal .le-option.is-current .le-option-check { display: inline; }
+  #linkEventModal .le-option--none { color: var(--bs-secondary-color, #6c757d); }
+</style>
+
+<script>
+(function () {
+  var modalEl = document.getElementById('linkEventModal');
+  if (!modalEl) return;
+  var form = document.getElementById('linkEventForm');
+  var valueInput = document.getElementById('linkEventValue');
+  var nextInput = document.getElementById('linkEventNext');
+  var searchInput = document.getElementById('linkEventSearch');
+  var nameLabel = document.getElementById('linkEventCampaignName');
+  var emptyEl = document.getElementById('linkEventEmpty');
+  var urlTemplate = modalEl.getAttribute('data-link-url-template');
+  var PLACEHOLDER = '00000000-0000-0000-0000-000000000000';
+  var options = Array.prototype.slice.call(modalEl.querySelectorAll('.le-option'));
+
+  modalEl.addEventListener('show.bs.modal', function (e) {
+    var trigger = e.relatedTarget;
+    if (!trigger) return;
+    var pk = trigger.getAttribute('data-campaign-pk') || '';
+    var name = trigger.getAttribute('data-campaign-name') || '';
+    var current = trigger.getAttribute('data-current-event') || '';
+    var next = trigger.getAttribute('data-next') || '';
+
+    form.action = urlTemplate.replace(PLACEHOLDER, pk);
+    nextInput.value = next;
+    nameLabel.textContent = name ? ('Campaign: ' + name) : '';
+
+    // Highlight the currently-linked event (if any).
+    options.forEach(function (opt) {
+      opt.classList.toggle('is-current', (opt.getAttribute('data-le-event') || '') === current && current !== '');
+    });
+
+    // Reset the filter.
+    searchInput.value = '';
+    options.forEach(function (opt) { opt.style.display = ''; });
+    if (emptyEl) emptyEl.hidden = true;
+  });
+
+  modalEl.addEventListener('shown.bs.modal', function () { searchInput.focus(); });
+
+  searchInput.addEventListener('input', function () {
+    var q = searchInput.value.trim().toLowerCase();
+    var shown = 0;
+    options.forEach(function (opt) {
+      if (opt.classList.contains('le-option--none')) { opt.style.display = q ? 'none' : ''; return; }
+      var match = !q || (opt.getAttribute('data-le-name') || '').indexOf(q) !== -1;
+      opt.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    if (emptyEl) emptyEl.hidden = shown !== 0;
+  });
+
+  options.forEach(function (opt) {
+    opt.addEventListener('click', function () {
+      valueInput.value = opt.getAttribute('data-le-event') || '';
+      form.submit();
+    });
+  });
+})();
+</script>

@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import authenticate
 from django.core.cache import cache as django_cache
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, DecimalField, F, IntegerField, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
@@ -37,13 +38,19 @@ from .models import (
     ReceiptSend,
     SaleableTicketType,
     ScannerSession,
+    StripeCheckoutSession,
     TapToPayTermsAcceptance,
     Ticket,
     TicketOrder,
     TICKETING_TYPE_DIRECT,
     UserProfile,
 )
-from .utils import next_order_number, link_customer_to_buyer
+from .utils import (
+    next_order_number,
+    link_customer_to_buyer,
+    extract_fee_from_display_cents,
+    TICKET_QR_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -962,6 +969,9 @@ def _ensure_organization_for_user(user):
         profile.role = UserProfile.Role.ORGANIZER
         profile.org_role = UserProfile.OrgRole.OWNER
         profile.save(update_fields=['organization', 'role', 'org_role'])
+    # Seed trial SMS credits after the org is committed (idempotent + non-fatal).
+    from .services.org_onboarding import initialize_new_organization
+    initialize_new_organization(org)
     return org
 
 
@@ -1253,9 +1263,12 @@ def organizer_checkin(request):
                 'checked_in_count': checked_in_count,
             }, status=200)
 
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = request.user
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event_id=event_id,
@@ -1411,6 +1424,10 @@ def _create_terminal_payment_intent(event, line_items):
     """Validate ticket-type inventory and create a card-present PaymentIntent
     on the merchant's Stripe Connect account.
 
+    This is a DIRECT charge: the connected account is the merchant and pays
+    Stripe's processing fees; Cue's platform fee rides application_fee_amount
+    (same display-price-inclusive formula as online checkout).
+
     Returns (payload, status). On success, payload is the response body and
     status is 201. On failure, payload is an {'error': ...} dict and status
     is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
@@ -1454,8 +1471,10 @@ def _create_terminal_payment_intent(event, line_items):
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
+    fee_cents = extract_fee_from_display_cents(amount_cents)
+
     try:
-        pi = stripe_lib.PaymentIntent.create(
+        pi_kwargs = dict(
             amount=amount_cents,
             currency=django_settings.STRIPE_CURRENCY,
             payment_method_types=['card_present'],
@@ -1463,6 +1482,9 @@ def _create_terminal_payment_intent(event, line_items):
             stripe_account=org.stripe_account_id,
             metadata={'event_id': str(event.pk), 'org_id': str(org.pk)},
         )
+        if fee_cents > 0:
+            pi_kwargs['application_fee_amount'] = fee_cents
+        pi = stripe_lib.PaymentIntent.create(**pi_kwargs)
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe terminal PaymentIntent error: %s", exc)
         return {'error': str(exc)}, 502
@@ -1514,9 +1536,16 @@ def stripe_terminal_payment_intent(request):
 def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, line_items, checked_in_by):
     """Verify Stripe PaymentIntent succeeded and create the in-person TicketOrder.
 
+    Idempotent on the PaymentIntent id: a retried request (flaky venue wifi)
+    short-circuits to the already-created order before touching orders,
+    tickets, or inventory. The Stripe-confirmed amount is the money that
+    actually moved — client-supplied prices are validated against it and the
+    order/ledger amounts derive from the PI, not the request payload.
+
     Returns (payload, status). On success, payload is the response body and
-    status is 201. On failure, payload is an {'error': ...} dict and status
-    is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
+    status is 201 (or 200 for an idempotent replay). On failure, payload is
+    an {'error': ...} dict and status is 400 (validation), 403 (Connect not
+    set up), or 502 (Stripe).
 
     checked_in_by may be None for scanner-PIN sessions (no Cue account).
     """
@@ -1528,6 +1557,23 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     org = event.organization
     if not org.stripe_account_id:
         return {'error': 'This merchant has not connected a Stripe account yet.'}, 403
+
+    existing = (
+        StripeCheckoutSession.objects
+        .filter(stripe_session_id=payment_intent_id)
+        .select_related('ticket_order')
+        .first()
+    )
+    if existing is not None:
+        order = existing.ticket_order
+        if order is None:
+            return {'error': 'This payment was already processed.'}, 400
+        return {
+            'order_number': order.order_number,
+            'order_id': str(order.pk),
+            'total_amount': str(order.total_amount),
+            'ticket_count': order.tickets.count(),
+        }, 200
 
     try:
         pi = stripe_lib.PaymentIntent.retrieve(
@@ -1541,31 +1587,44 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     if pi.status != 'succeeded':
         return {'error': f'PaymentIntent status is {pi.status!r}, expected succeeded'}, 400
 
-    total_amount = Decimal('0.00')
     resolved = []
+    expected_cents = 0
     for item in line_items:
         tt_id = item.get('ticket_type_id', '')
         qty = int(item.get('quantity', 1))
         item_name = item.get('name', '')
-        try:
-            item_price = Decimal(str(item.get('price', '0')))
-        except InvalidOperation:
-            return {'error': f'Invalid price for item {item_name}'}, 400
 
         try:
             tt = SaleableTicketType.objects.get(id=tt_id, event=event)
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found'}, 400
 
-        total_amount += item_price * qty
-        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': item_price})
+        # Server price, not the client payload — the PI was created from
+        # tt.price, and tickets/orders must record the money that moved.
+        expected_cents += int((tt.price * qty * 100).to_integral_value())
+        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': tt.price})
+
+    charged_cents = int(getattr(pi, 'amount_received', 0) or 0)
+    if charged_cents != expected_cents:
+        logger.warning(
+            "In-person finalize amount mismatch for PI %s: charged=%s expected=%s (stale client prices?)",
+            payment_intent_id, charged_cents, expected_cents,
+        )
+        return {'error': 'Charged amount does not match current ticket prices. Refresh prices and retry.'}, 400
+    total_amount = (Decimal(charged_cents) / 100).quantize(Decimal('0.01'))
 
     now = timezone.now()
-    customer, _ = Customer.objects.get_or_create(
+    customer, customer_created = Customer.objects.get_or_create(
         email=buyer_email,
         organization=org,
-        defaults={'name': buyer_name or buyer_email},
+        defaults={
+            'name': buyer_name or buyer_email,
+            'acquisition_source': Customer.AcquisitionSource.TICKET_PURCHASE,
+        },
     )
+    if customer_created:
+        from .services.webhooks import fire_customer_created
+        fire_customer_created(customer)
     link_customer_to_buyer(customer, buyer_email)
 
     with transaction.atomic():
@@ -1598,7 +1657,46 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
             )
             ticket_count += item['qty']
 
+        # Ledger row: in-person sales count toward the Sales figure and carry
+        # the platform fee Stripe withheld via application_fee_amount.
+        # get_or_create on the unique PI id absorbs a create race between two
+        # concurrent retries.
+        StripeCheckoutSession.objects.get_or_create(
+            stripe_session_id=payment_intent_id,
+            defaults={
+                'event': event,
+                'organization': org,
+                'stripe_payment_intent_id': payment_intent_id,
+                'buyer_email': buyer_email,
+                'buyer_name': buyer_name or '',
+                'status': StripeCheckoutSession.Status.COMPLETED,
+                'charge_flow': StripeCheckoutSession.ChargeFlow.DIRECT,
+                'line_items_snapshot': [
+                    {
+                        'saleable_ticket_type_id': str(item['tt_id']),
+                        'name': item['name'],
+                        'price': str(item['price']),
+                        'quantity': item['qty'],
+                    }
+                    for item in resolved
+                ],
+                'amount_total_cents': charged_cents,
+                'platform_fee_cents': int(getattr(pi, 'application_fee_amount', 0) or 0),
+                'ticket_order': order,
+                'fulfilled_at': now,
+            },
+        )
+
+        from .services.webhooks import fire_order_created
+        fire_order_created(order)
+
     customer.update_lifetime_value()
+    # Loyalty points: swallow failures — the sale must never fail on points.
+    try:
+        from .services.loyalty import award_points_for_order
+        award_points_for_order(order)
+    except Exception:
+        logger.exception("Points award failed for in-person order %s", order.id)
     _invalidate_event_list_cache(org)
 
     return {
@@ -1713,6 +1811,81 @@ def scanner_event(request):
     })
 
 
+def _scanner_checkin_ticket(event, org, ticket_id):
+    """Check in a single ticket (per-ticket QR scan), admitting one attendee.
+
+    Marks the individual ticket's scanned_at, and only flips the order's
+    checked_in_at once every ticket in the order has been scanned — keeping
+    order-level state consistent with the whole-order admit path.
+
+    Returns the same response keys the scanner app already consumes, plus the
+    scanned ticket_type and the number of tickets still unscanned in the order.
+    """
+    order_checked_in_count = lambda: TicketOrder.objects.filter(
+        event=event, customer__organization=org, checked_in_at__isnull=False
+    ).count()
+
+    with transaction.atomic():
+        try:
+            ticket = (
+                Ticket.objects
+                .select_for_update()
+                .filter(
+                    id=ticket_id,
+                    ticket_order__customer__organization=org,
+                    ticket_order__event=event,
+                )
+                .select_related('ticket_order', 'ticket_order__customer')
+                .first()
+            )
+        except (ValueError, ValidationError):
+            # Malformed UUID — treat as an unknown ticket.
+            return Response({'error': 'Ticket not found'}, status=404)
+        if ticket is None:
+            return Response({'error': 'Ticket not found'}, status=404)
+
+        order = ticket.ticket_order
+        if order.refunded_at is not None:
+            return Response({
+                'status': 'refunded',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'ticket_type': ticket.ticket_type,
+            })
+        if ticket.scanned_at is not None:
+            return Response({
+                'status': 'already_checked_in',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'checked_in_at': ticket.scanned_at.isoformat(),
+                'ticket_type': ticket.ticket_type,
+                'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'tickets_remaining': order.tickets.filter(scanned_at__isnull=True).count(),
+                'checked_in_count': order_checked_in_count(),
+            })
+
+        now = timezone.now()
+        ticket.scanned_at = now
+        ticket.save(update_fields=['scanned_at'])
+        # Once every ticket in the order is scanned, mark the order checked in too.
+        tickets_remaining = order.tickets.filter(scanned_at__isnull=True).count()
+        if tickets_remaining == 0 and order.checked_in_at is None:
+            order.checked_in_at = now
+            order.checked_in_by = None  # no Cue account for scanner guests
+            order.save(update_fields=['checked_in_at', 'checked_in_by'])
+
+    return Response({
+        'status': 'checked_in',
+        'order_number': order.order_number,
+        'customer_name': order.customer.name,
+        'checked_in_at': now.isoformat(),
+        'ticket_type': ticket.ticket_type,
+        'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'tickets_remaining': tickets_remaining,
+        'checked_in_count': order_checked_in_count(),
+    })
+
+
 @api_view(['POST'])
 @authentication_classes([ScannerSessionAuthentication])
 @permission_classes([IsScannerAuthenticated])
@@ -1745,6 +1918,13 @@ def scanner_checkin(request):
     if event_id and str(event.pk) != event_id:
         return Response({'error': 'Event mismatch'}, status=403)
 
+    # Per-ticket QR codes (TKT-<ticket-uuid>) admit a single attendee per scan.
+    # Legacy order-number codes fall through to the whole-order path below.
+    if order_number.startswith(TICKET_QR_PREFIX):
+        return _scanner_checkin_ticket(
+            event, org, order_number[len(TICKET_QR_PREFIX):]
+        )
+
     with transaction.atomic():
         order = (
             TicketOrder.objects
@@ -1774,9 +1954,12 @@ def scanner_checkin(request):
                 'ticket_types': [t.ticket_type for t in order.tickets.all()],
                 'checked_in_count': checked_in_count,
             })
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = None  # no Cue account for scanner guests
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event=event, customer__organization=org, checked_in_at__isnull=False

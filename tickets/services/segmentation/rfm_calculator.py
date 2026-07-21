@@ -19,7 +19,12 @@ from django.db.models import Count
 from django.utils import timezone
 
 from tickets.models import Customer
-from .segment_definitions import classify_segment
+from .segment_definitions import (
+    bands_from_org,
+    classify_segment,
+    classify_segment_absolute,
+    seed_segment_bands,
+)
 
 CHUNK_SIZE = 2000
 RFM_UPDATE_FIELDS = [
@@ -133,19 +138,33 @@ class RFMCalculator:
         breakpoints_r, breakpoints_f, breakpoints_m = self._compute_breakpoints(now)
         has_breakpoints = breakpoints_r is not None
 
+        # Absolute mode assigns the segment from fixed per-org cut-offs instead of
+        # the population-relative quintiles. Percentile scores are still computed
+        # in both modes (internal "top N%" ranking). Seed the bands once if unset.
+        absolute_mode = getattr(self.organization, 'segment_mode', 'percentile') == 'absolute'
+        if absolute_mode:
+            seed_segment_bands(self.organization)
+            band_kwargs, monetary_bands = bands_from_org(self.organization)
+
         chunk = []
         for row in self._base_queryset().iterator(chunk_size=CHUNK_SIZE):
             oc = row['order_count'] or 0
+            recency_days = (
+                (now - row['last_order_date']).days if row['last_order_date'] else 9999
+            )
             if has_breakpoints and oc > 0:
-                recency_days = (
-                    (now - row['last_order_date']).days if row['last_order_date'] else 9999
-                )
                 r = _assign_score(recency_days, breakpoints_r, lower_is_better=True)
                 f = _assign_score(oc, breakpoints_f, lower_is_better=False)
                 m = _assign_score(float(row['lifetime_value'] or 0), breakpoints_m, lower_is_better=False)
             else:
                 r = f = m = 1
-            segment = (classify_segment(r, f, m) or "Dormant")[:30]
+            if absolute_mode:
+                segment = (classify_segment_absolute(
+                    recency_days, oc, float(row['lifetime_value'] or 0),
+                    monetary_bands, **band_kwargs,
+                ) or "Dormant")[:30]
+            else:
+                segment = (classify_segment(r, f, m) or "Dormant")[:30]
             chunk.append(Customer(
                 id=row['id'],
                 rfm_recency_score=r,

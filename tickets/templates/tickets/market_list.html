@@ -1,0 +1,51 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Markets{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Markets</h1>
+        <p class="page-header-subtitle">Manage geographic markets assigned to events.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:market_builder' %}" class="btn btn-primary">
+            <i class="bi bi-magic"></i> Build Markets
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if markets %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Geography</th>
+                        <th>Value</th>
+                        <th>Events</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for market in markets %}
+                    <tr>
+                        <td><strong>{{ market.name }}</strong></td>
+                        <td>{{ market.get_geography_level_display }}</td>
+                        <td>{{ market.geography_value }}</td>
+                        <td>{{ market.event_count|default:0 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-map d-block"></i>
+            <p>No markets created yet. <a href="{% url 'tickets:market_builder' %}">Build markets</a> from event geography.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,9 +1,12 @@
 import csv
 import json
 import logging
+import re
 from decimal import Decimal
 from datetime import datetime, timezone as dt_timezone
 from typing import Dict, List, Optional, Tuple
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 from dateutil import parser as date_parser
@@ -12,8 +15,20 @@ import os
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, TicketTier, Venue
 )
+from .sms import normalize_phone
 
 logger = logging.getLogger(__name__)
+
+# Matches a normalized E.164 number (used to decide whether to store the normalized
+# form and to gate phone-only-subscriber reconciliation).
+_E164_RE = re.compile(r'^\+[1-9]\d{6,14}$')
+
+
+def _e164_or_raw(raw):
+    """Normalize a phone to E.164 when it parses cleanly, else return it untouched
+    (never destroy an unparseable value)."""
+    norm = normalize_phone(raw or '')
+    return norm if _E164_RE.match(norm) else (raw or '')
 
 
 class CSVProcessor:
@@ -66,6 +81,13 @@ class CSVProcessor:
             logger.error(f"CSV validation error: {str(e)}")
             return False, f"Error validating CSV: {str(e)}"
     
+    # Values (lower-cased) that count as "true" for boolean flag columns such as
+    # processed_in_person and customer_sms_opt_in. Kept lenient so common consent
+    # exports ("Subscribed", "Opted In", "Y") are recognized.
+    _TRUTHY_FLAG_VALUES = (
+        'true', 'yes', '1', 'y', 't', 'subscribed', 'opted in', 'opt-in', 'opted-in',
+    )
+
     def map_columns(self, row: Dict) -> Dict:
         """Map CSV column names to internal field names using format configuration."""
         mapped = {}
@@ -89,7 +111,7 @@ class CSVProcessor:
                     if value:
                         name_parts.append(value)
                 mapped[internal_field] = ' '.join(name_parts) if name_parts else None
-            elif internal_field == 'processed_in_person':
+            elif internal_field in ('processed_in_person', 'customer_sms_opt_in'):
                 # Optional: map CSV column(s) and normalize to boolean
                 value = None
                 for csv_col in csv_columns:
@@ -104,7 +126,7 @@ class CSVProcessor:
                         break
                 if value is not None:
                     s = str(value).strip().lower()
-                    mapped[internal_field] = s in ('true', 'yes', '1')
+                    mapped[internal_field] = s in self._TRUTHY_FLAG_VALUES
                 else:
                     mapped[internal_field] = False
             else:
@@ -143,6 +165,33 @@ class CSVProcessor:
             logger.warning(f"Could not parse date: {date_str}")
             return None
     
+    # Matches each per-ticket entry in a "Ticket Scan Details" cell. Anchored on the
+    # "- " segment prefix so "Not Scanned" never matches the "Scanned (...)" branch.
+    # The capture group holds the timestamp for scanned tickets, empty for unscanned.
+    _SCAN_DETAIL_RE = re.compile(
+        r'-\s*(?:Not\s+Scanned|Scanned\s*\(([^)]*)\))',
+        flags=re.IGNORECASE,
+    )
+
+    def parse_scan_details(self, raw: str) -> List[Optional[datetime]]:
+        """Parse a "Ticket Scan Details" cell into per-ticket scan datetimes.
+
+        Each ticket in an order appears as a comma-separated entry such as
+        ``general admission - Scanned (06-14-2026 7:40:36 pm)`` or
+        ``free rsvp - Not Scanned (N/A)``. Returns a list (in order) of parsed
+        datetimes for scanned tickets and ``None`` for unscanned ones.
+        """
+        if not raw or not str(raw).strip():
+            return []
+        results: List[Optional[datetime]] = []
+        for match in self._SCAN_DETAIL_RE.finditer(str(raw)):
+            timestamp = match.group(1)
+            if timestamp and timestamp.strip() and timestamp.strip().upper() != 'N/A':
+                results.append(self.parse_date(timestamp.strip()))
+            else:
+                results.append(None)
+        return results
+
     # Reason codes for skipped rows (used in processing_results and results template)
     SKIP_REASON_TOO_FEW_COLUMNS = "too_few_columns"
     SKIP_REASON_HEADER_REPEAT = "header_repeat"
@@ -176,8 +225,12 @@ class CSVProcessor:
 
     def validate_ticket_order_data(self, row: Dict) -> Tuple[bool, Optional[str]]:
         """Validate individual ticket order row."""
-        # In-person rows (processed_in_person=true) only require order_date and ticket_type
-        if row.get('processed_in_person'):
+        # In-person rows (processed_in_person=true) only require order_date and ticket_type.
+        # Formats that opt into placeholder handling (by mapping processed_in_person) also
+        # relax the email/name requirement for online rows: a row with no contact info is
+        # routed to a no-contact placeholder customer rather than dropped (which would
+        # silently lose its revenue). See _process_chunk customer assignment.
+        if row.get('processed_in_person') or 'processed_in_person' in self.column_mapping:
             required_fields = ['order_date', 'ticket_type']
         else:
             required_fields = ['order_date', 'customer_email', 'customer_name', 'ticket_type']
@@ -260,6 +313,10 @@ class CSVProcessor:
         )
         processed_rows = 0
 
+        # Resolve the loyalty points program ONCE per import (not per order).
+        from .services.loyalty import award_points_for_orders, get_points_program
+        points_program = get_points_program(self.uploaded_file.organization)
+
         # Process one pandas chunk at a time — peak memory ≈ CHUNK_SIZE rows
         for chunk in chunk_iter:
             chunk_data = chunk.to_dict('records')
@@ -280,6 +337,21 @@ class CSVProcessor:
 
                     # Update customer LTV after each chunk
                     self._update_customer_ltv(chunk_results['customer_ids'])
+
+                    # Award loyalty points for the chunk's new orders (inside
+                    # the chunk atomic so a rollback takes the points with it).
+                    # Idempotent per order; placeholder customers are guarded
+                    # in the service. Swallow failures: an import must never
+                    # fail because points hiccuped (self-heals via backfill).
+                    if points_program is not None:
+                        try:
+                            award_points_for_orders(
+                                chunk_results.get('created_orders', []),
+                                points_program,
+                                description='CSV import',
+                            )
+                        except Exception:
+                            logger.exception("Points award failed for CSV chunk at row %s", chunk_start)
 
             except Exception as e:
                 logger.error(f"Error processing chunk starting at row {chunk_start}: {str(e)}")
@@ -424,6 +496,9 @@ class CSVProcessor:
         
         customers_to_create = []
         customers_to_update = []
+        # Phones already used to adopt a phone-only subscriber this chunk, so two rows
+        # with the same phone but different emails don't both claim the same subscriber.
+        reconciled_phones = set()
         events_to_create = []
         events_to_update = []
         ticket_orders_to_create = []
@@ -437,18 +512,43 @@ class CSVProcessor:
             customer_filter = customer_filter.filter(organization=org)
         existing_customers = {c.email: c for c in customer_filter}
 
-        # Placeholder customer for in-person (no-email) rows; get-or-create when format supports it
+        # Placeholder customers for rows with no contact info; get-or-create when the format
+        # supports it. Two buckets: door/walk-up sales (in-person) and online orders that
+        # arrived without an email/name. Both let the order — and its revenue — import.
         placeholder_customer = None
+        no_contact_customer = None
         if org is not None and 'processed_in_person' in self.column_mapping:
             placeholder_email = f"in-person-{org.id}@placeholder.local"
             placeholder_customer, _ = Customer.objects.get_or_create(
                 organization=org,
                 email=placeholder_email,
-                defaults={'name': 'In-Person Sales'},
+                defaults={
+                    'name': 'In-Person Sales',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
             )
             existing_customers[placeholder_email] = placeholder_customer
 
+            no_contact_email = f"no-contact-{org.id}@placeholder.local"
+            no_contact_customer, _ = Customer.objects.get_or_create(
+                organization=org,
+                email=no_contact_email,
+                defaults={
+                    'name': 'Guest (No Contact Info)',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
+            )
+            existing_customers[no_contact_email] = no_contact_customer
+
         existing_events = {}
+
+        # One builder for the whole chunk: it caches the org's market index on
+        # first resolve, so assigning markets to newly-created events costs one
+        # query for the chunk, not up to three per event.
+        market_builder = None
+        if org is not None:
+            from .services.markets import MarketBuilder
+            market_builder = MarketBuilder(org)
 
         # Fast path: if event_id is in metadata, use that event directly (org-scoped)
         metadata_event_id = self.uploaded_file.metadata.get('event_id')
@@ -565,8 +665,25 @@ class CSVProcessor:
                         results['errors'].append("Row validation error: In-person row but no organization context.")
                         continue
                     customer_email = mapped_row.get('customer_email', '').lower().strip()
-                    customer = existing_customers.get(customer_email)
-                    if not customer:
+                    if customer_email:
+                        # Reject unparseable addresses (e.g. Apple "Hide My Email"
+                        # placeholder text) so they never reach the DB and later break
+                        # email sends. Treated the same as a missing email below.
+                        try:
+                            validate_email(customer_email)
+                        except ValidationError:
+                            customer_email = ''
+                    if not customer_email and no_contact_customer is not None:
+                        # Online order with no contact info — bucket it so its revenue counts.
+                        customer = no_contact_customer
+                    elif not customer_email:
+                        # No placeholder available (no org / format doesn't opt in): reject.
+                        results['error_count'] += 1
+                        results['errors'].append("Row validation error: Missing required fields: customer_email, customer_name")
+                        continue
+                    else:
+                        customer = existing_customers.get(customer_email)
+                    if customer is None:
                         # Check database directly before creating (org-scoped)
                         db_filter = Customer.objects.filter(email=customer_email)
                         if org is not None:
@@ -578,27 +695,64 @@ class CSVProcessor:
                             # Remove from customers_to_create if it was added earlier in this chunk
                             customers_to_create = [c for c in customers_to_create if c.email != customer_email]
                         else:
-                            # Check if already in customers_to_create to avoid duplicates within chunk
-                            already_in_create = any(c.email == customer_email for c in customers_to_create)
-                            if not already_in_create:
-                                customer = Customer(
-                                    email=customer_email,
-                                    name=mapped_row.get('customer_name', ''),
-                                    phone=mapped_row.get('customer_phone', ''),
-                                    **({'organization': org} if org is not None else {}),
-                                )
-                                customers_to_create.append(customer)
+                            # Reconcile with an existing phone-only subscriber (email='')
+                            # by verified E.164 phone before creating a new row — a fan who
+                            # subscribed by SMS (no email) unifies with their imported order
+                            # instead of forking a duplicate Customer.
+                            norm_phone = normalize_phone(mapped_row.get('customer_phone', ''))
+                            reco = None
+                            if (org is not None and _E164_RE.match(norm_phone)
+                                    and norm_phone not in reconciled_phones):
+                                reco = (Customer.objects
+                                        .filter(organization=org, email='', phone=norm_phone)
+                                        .first())
+                            if reco is not None:
+                                reconciled_phones.add(norm_phone)
+                                reco.email = customer_email  # backfill → now email-keyed
+                                if mapped_row.get('customer_name') and not reco.name:
+                                    reco.name = mapped_row.get('customer_name')
+                                if mapped_row.get('customer_sms_opt_in') and not reco.sms_opt_in:
+                                    reco.sms_opt_in = True
+                                    reco.sms_opt_in_date = timezone.now()
+                                customer = reco
                                 existing_customers[customer_email] = customer
+                                customers_to_update.append(customer)
                             else:
-                                # Find the customer in customers_to_create
-                                customer = next(c for c in customers_to_create if c.email == customer_email)
+                                # Check if already in customers_to_create to avoid duplicates within chunk
+                                already_in_create = any(c.email == customer_email for c in customers_to_create)
+                                if not already_in_create:
+                                    customer = Customer(
+                                        email=customer_email,
+                                        name=mapped_row.get('customer_name', ''),
+                                        phone=_e164_or_raw(mapped_row.get('customer_phone', '')),
+                                        acquisition_source=Customer.AcquisitionSource.IMPORT,
+                                        **({'organization': org} if org is not None else {}),
+                                    )
+                                    # Consent is only granted, never revoked, on import. SMS
+                                    # needs a phone, so opt-in requires one (mirrors set_sms_opt_in).
+                                    if mapped_row.get('customer_sms_opt_in') and customer.phone:
+                                        customer.sms_opt_in = True
+                                        customer.sms_opt_in_date = timezone.now()
+                                    customers_to_create.append(customer)
+                                    existing_customers[customer_email] = customer
+                                else:
+                                    # Find the customer in customers_to_create
+                                    customer = next(c for c in customers_to_create if c.email == customer_email)
                     else:
                         # Update customer info if needed
                         if mapped_row.get('customer_name') and customer.name != mapped_row.get('customer_name'):
                             customer.name = mapped_row.get('customer_name')
                             customers_to_update.append(customer)
-                        if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
-                            customer.phone = mapped_row.get('customer_phone')
+                        if mapped_row.get('customer_phone'):
+                            new_phone = _e164_or_raw(mapped_row.get('customer_phone'))
+                            if new_phone and customer.phone != new_phone:
+                                customer.phone = new_phone
+                                customers_to_update.append(customer)
+                        # Grant SMS consent if the source says so; never revoke on import.
+                        if (mapped_row.get('customer_sms_opt_in') and customer.phone
+                                and not customer.sms_opt_in):
+                            customer.sms_opt_in = True
+                            customer.sms_opt_in_date = timezone.now()
                             customers_to_update.append(customer)
                 
                 results['customer_ids'].add(customer.id if customer.id else customer_email)
@@ -709,6 +863,15 @@ class CSVProcessor:
 
                     event = existing_events.get(event_key)
                     if not event:
+                        # Defensive guard: CSV import auto-creates external events.
+                        # Entry views are gated by require_external_events, but block
+                        # here too so the processor can't silently create external
+                        # events for an org that has the feature disabled.
+                        if org is not None and not getattr(org, 'external_events_enabled', False):
+                            raise ValueError(
+                                'External events are not enabled for this organization; '
+                                'cannot create events from CSV.'
+                            )
                         event_kwargs = dict(
                             name=event_name,
                             venue=venue,
@@ -719,6 +882,8 @@ class CSVProcessor:
                         if org is not None:
                             event_kwargs['organization'] = org
                         event = Event(**event_kwargs)
+                        if market_builder is not None:
+                            market_builder.assign_event(event, save=False)
                         events_to_create.append(event)
                         existing_events[event_key] = event
                 
@@ -795,6 +960,13 @@ class CSVProcessor:
                     # Calculate from ticket price × quantity
                     total_amount = price * quantity
                 
+                # Parse per-ticket scan/check-in timestamps (if the format maps them)
+                scan_times = self.parse_scan_details(mapped_row.get('scan_details') or '')
+                scanned_only = [t for t in scan_times if t is not None]
+                # Order-level marker: an order counts as checked in once at least one of
+                # its tickets was scanned. Earliest scan is the order's check-in time.
+                order_checked_in_at = min(scanned_only) if scanned_only else None
+
                 # Create ticket order
                 order_date = self.parse_date(mapped_row.get('order_date'))
                 ticket_order = TicketOrder(
@@ -806,19 +978,21 @@ class CSVProcessor:
                     order_date=order_date,
                     total_amount=total_amount,
                     is_in_person=bool(mapped_row.get('processed_in_person')),
+                    checked_in_at=order_checked_in_at,
                 )
                 ticket_orders_to_create.append(ticket_order)
                 if event.id:
                     results['event_ids'].add(event.id)
 
                 # Create tickets
-                for _ in range(quantity):
+                for i in range(quantity):
                     ticket = Ticket(
                         ticket_order=ticket_order,
                         ticket_type=ticket_type,
                         price=price,
                         tier=assigned_tier,
-                        tier_name=tier_name
+                        tier_name=tier_name,
+                        scanned_at=scan_times[i] if i < len(scan_times) else None,
                     )
                     tickets_to_create.append(ticket)
 
@@ -856,7 +1030,10 @@ class CSVProcessor:
                     results['customer_ids'].add(customer.id)
         
         if customers_to_update:
-            Customer.objects.bulk_update(customers_to_update, ['name', 'phone'])
+            # 'email' included so a reconciled phone-only subscriber's backfilled email persists.
+            Customer.objects.bulk_update(
+                customers_to_update, ['name', 'phone', 'sms_opt_in', 'sms_opt_in_date', 'email']
+            )
         if events_to_create:
             Event.objects.bulk_create(events_to_create, ignore_conflicts=True)
             # Refetch created events to get their IDs
@@ -878,7 +1055,11 @@ class CSVProcessor:
             TicketOrder.objects.bulk_create(ticket_orders_to_create)
         if tickets_to_create:
             Ticket.objects.bulk_create(tickets_to_create)
-        
+
+        # Expose created orders so process() can award loyalty points for the
+        # chunk (client-generated UUID PKs are already set pre-bulk_create).
+        results['created_orders'] = ticket_orders_to_create
+
         return results
     
     def _update_customer_ltv(self, customer_ids: set):

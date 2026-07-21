@@ -1,0 +1,160 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+{% load tickets_extras %}
+
+{% block title %}{{ tier.name }} members{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb" style="font-size: 13px;">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_list' %}">Loyalty</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_detail' program.id %}">{{ program.name }}</a></li>
+        <li class="breadcrumb-item active">{{ tier.name }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{{ tier.name }} members</h1>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:loyalty_program_detail' program.id %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to program</a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <span class="badge {{ tier.color|badge_class }} fs-6">{{ tier.name }}</span>
+            <span class="text-muted small">Rank {{ tier.rank }}</span>
+            <span class="text-muted small">&middot;</span>
+            <span class="text-muted small">{{ page_obj.paginator.count|intcomma }} member{{ page_obj.paginator.count|pluralize }}</span>
+        </div>
+
+        <div class="loyalty-eyebrow text-muted small text-uppercase mb-2">Qualifying rules</div>
+        {% if tier.has_no_rules %}
+        <p class="text-muted small mb-0">Base tier &mdash; includes everyone.</p>
+        {% else %}
+        <div class="d-flex flex-wrap gap-2">
+            {% for rule in tier.qualifying_rules %}
+            <span class="badge bg-light text-dark border">{{ rule }}</span>
+            {% endfor %}
+        </div>
+        <p class="text-muted small mb-0 mt-2">Members must meet <strong>all</strong> of these.</p>
+        {% endif %}
+
+        {% if tier.perks %}
+        <div class="loyalty-eyebrow text-muted small text-uppercase mt-3 mb-2">Perks</div>
+        <p class="small mb-0">{{ tier.perks }}</p>
+        {% endif %}
+    </div>
+</div>
+
+{% if page_obj.object_list or search_query or market_filter %}
+<div class="search-bar">
+    <form method="get" class="d-flex flex-wrap gap-2 w-100 align-items-center">
+        <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
+        {% if market_choices %}
+        <select name="market" class="form-select" style="max-width: 200px;" onchange="this.form.submit()">
+            <option value="">All markets</option>
+            {% for m in market_choices %}
+            <option value="{{ m }}"{% if market_filter == m %} selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        <input type="hidden" name="sort" value="{{ sort_by }}">
+        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
+        {% if search_query or market_filter %}
+        <a href="{% url 'tickets:loyalty_tier_members' program.id tier.id %}" class="btn btn-outline-secondary">Clear</a>
+        {% endif %}
+    </form>
+</div>
+{% endif %}
+
+{% if page_obj.object_list %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>
+                            {% with asc='name' desc='-name' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&market={{ market_filter|urlencode }}">Customer
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th>
+                            {% with asc='email' desc='-email' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&market={{ market_filter|urlencode }}">Email
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th>Market</th>
+                        <th class="text-end">
+                            {% with asc='lifetime_value' desc='-lifetime_value' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&market={{ market_filter|urlencode }}">Lifetime value
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='last_order_date' desc='-last_order_date' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&market={{ market_filter|urlencode }}">Last order
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for customer in page_obj.object_list %}
+                    <tr>
+                        <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="text-decoration-none">{{ customer.name }}</a></td>
+                        <td class="text-muted">{{ customer.email }}</td>
+                        <td>{% if customer.top_market %}{{ customer.top_market }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td class="text-end">${{ customer.lifetime_value|floatformat:2|intcomma }}</td>
+                        <td class="text-end text-muted small">{% if customer.last_order_date %}{{ customer.last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3">
+    <ul class="pagination justify-content-center">
+        {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&market={{ market_filter|urlencode }}">Previous</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+        {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&market={{ market_filter|urlencode }}">Next</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% elif search_query or market_filter %}
+<div class="empty-state">
+    <i class="bi bi-search"></i>
+    <h3>No members match your filters</h3>
+    <p>No customers in this tier match{% if search_query %} &ldquo;{{ search_query }}&rdquo;{% endif %}{% if market_filter %} in {{ market_filter }}{% endif %}. <a href="{% url 'tickets:loyalty_tier_members' program.id tier.id %}">Clear</a> to see all members.</p>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-people"></i>
+    <h3>No members in this tier yet</h3>
+    <p>No customers currently meet this tier's rules. Try recalculating, or adjust the thresholds.</p>
+</div>
+{% endif %}
+{% endblock %}

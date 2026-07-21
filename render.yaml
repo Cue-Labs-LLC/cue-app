@@ -1,14 +1,21 @@
 services:
+  # ----------------------------------------------------------------------
+  # PRODUCTION — deploys from `main`
+  # ----------------------------------------------------------------------
+
   # Web service
   - type: web
     name: ltv-updater
     runtime: python
-    plan: pro
+    plan: standard
+    branch: main
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
-    startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 4 --timeout 120
+    startCommand: gunicorn ltv_updater.wsgi:application --workers 4 --threads 2 --worker-class gthread --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         generateValue: true
       - key: DEBUG
@@ -64,11 +71,14 @@ services:
     name: ltv-updater-worker
     runtime: python
     plan: standard
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A ltv_updater worker --loglevel=info --concurrency=2
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         sync: false
       - key: DATABASE_URL
@@ -84,17 +94,31 @@ services:
         sync: false
       - key: SITE_URL
         sync: false
+      # Marketing SMS sending happens on the worker, so it needs Twilio creds +
+      # the Messaging Service that holds the verified sender number.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      # Set TWILIO_MESSAGING_SERVICE_SID (preferred) OR TWILIO_SMS_FROM.
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        sync: false
+      - key: TWILIO_SMS_FROM
+        sync: false
 
   # Daily AI opportunity scan. Enqueues one Celery task per organization.
   - type: cron
     name: ltv-updater-ai-opportunities
     runtime: python
     schedule: "0 9 * * *"
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: python manage.py generate_ai_opportunities
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         sync: false
       - key: DATABASE_URL
@@ -104,3 +128,190 @@ services:
           name: ltv-updater-redis
           type: redis
           property: connectionString
+
+  # Daily AI event-summary refresh. Enqueues one Celery task per candidate event;
+  # each task regenerates the summary only if the event ended and its underlying
+  # data changed since the last generation. 14:00 UTC = 6:00 AM PST (Render cron is
+  # UTC-only and doesn't observe DST, so this lands at 7:00 AM during PDT).
+  - type: cron
+    name: cue-event-summary-regenerator
+    runtime: python
+    schedule: "0 14 * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py regenerate_event_summaries
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
+  # Marketing SMS scheduler. Every 5 min: dispatch due scheduled campaigns and
+  # recover any stuck mid-send. Only enqueues Celery tasks (sending runs on the
+  # worker), so it needs DB + broker but not Twilio creds.
+  - type: cron
+    name: ltv-updater-sms-scheduler
+    runtime: python
+    schedule: "*/5 * * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py send_due_sms_campaigns
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
+  # Post-event survey scheduler. Every 5 min: dispatch survey invitations whose
+  # relative-to-event-end send time has arrived. Only enqueues Celery tasks
+  # (sending runs on the worker), so it needs DB + broker.
+  - type: cron
+    name: cue-survey-scheduler
+    runtime: python
+    schedule: "*/5 * * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py send_due_survey_invitations
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
+  # ----------------------------------------------------------------------
+  # STAGING — TEMPORARILY DISABLED (2026-06-05) to avoid Render charges.
+  #
+  # The entire staging stack below is commented out so a Blueprint re-sync
+  # sees zero staging services. Note: this edit alone does NOT stop billing —
+  # the live services must be suspended/deleted in the Render dashboard
+  # (web + worker can be suspended; paid Redis + the manual staging Postgres
+  # must be deleted). See docs/STAGING.md.
+  #
+  # To restore: un-comment this block, re-sync the Blueprint in Render, then
+  # re-create/attach the staging Postgres DATABASE_URL and re-set per-env vars
+  # (full steps in docs/STAGING.md).
+  # ----------------------------------------------------------------------
+
+  # STAGING — deploys from `staging` branch
+  #
+  # Manual setup before first deploy (see docs/STAGING.md):
+  #   1. Create a `staging` branch in git and push it.
+  #   2. Create a separate Postgres DB in Render; paste DATABASE_URL here.
+  #   3. Create a test-mode Stripe webhook pointing at staging SITE_URL;
+  #      paste STRIPE_WEBHOOK_SECRET + test STRIPE_SECRET_KEY/PUBLISHABLE_KEY.
+  #   4. Set ALLOWED_HOSTS + SITE_URL to your staging domain.
+  #   5. (Optional) Create a separate S3 bucket for staging media uploads.
+  #
+  # - type: web
+  #   name: ltv-updater-staging
+  #   runtime: python
+  #   plan: standard
+  #   branch: staging
+  #   buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
+  #   startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 2 --timeout 120
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: 3.12.0
+  #     - key: DJANGO_ENV
+  #       value: staging
+  #     - key: SECRET_KEY
+  #       generateValue: true
+  #     - key: DEBUG
+  #       value: "false"
+  #     - key: ALLOWED_HOSTS
+  #       sync: false
+  #     - key: AWS_ACCESS_KEY_ID
+  #       sync: false
+  #     - key: AWS_SECRET_ACCESS_KEY
+  #       sync: false
+  #     - key: AWS_STORAGE_BUCKET_NAME
+  #       sync: false
+  #     - key: AWS_S3_REGION_NAME
+  #       value: us-east-1
+  #     - key: AWS_S3_CUSTOM_DOMAIN
+  #       sync: false
+  #     - key: DATABASE_URL
+  #       sync: false
+  #     - key: CELERY_BROKER_URL
+  #       fromService:
+  #         name: ltv-updater-redis-staging
+  #         type: redis
+  #         property: connectionString
+  #     - key: SENDGRID_API_KEY
+  #       sync: false
+  #     - key: DEFAULT_FROM_EMAIL
+  #       sync: false
+  #     - key: SITE_URL
+  #       sync: false
+  #     - key: STRIPE_SECRET_KEY
+  #       sync: false
+  #     - key: STRIPE_PUBLISHABLE_KEY
+  #       sync: false
+  #     - key: STRIPE_WEBHOOK_SECRET
+  #       sync: false
+  #     - key: STRIPE_CURRENCY
+  #       value: usd
+  #   healthCheckPath: /health/
+  #
+  # - type: redis
+  #   name: ltv-updater-redis-staging
+  #   plan: starter
+  #   maxmemoryPolicy: noeviction
+  #   ipAllowList:
+  #     - source: 0.0.0.0/0
+  #       description: Allow staging web and worker services to connect
+  #
+  # - type: worker
+  #   name: ltv-updater-worker-staging
+  #   runtime: python
+  #   plan: starter
+  #   branch: staging
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: celery -A ltv_updater worker --loglevel=info --concurrency=1
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: 3.12.0
+  #     - key: DJANGO_ENV
+  #       value: staging
+  #     - key: SECRET_KEY
+  #       sync: false
+  #     - key: DATABASE_URL
+  #       sync: false
+  #     - key: CELERY_BROKER_URL
+  #       fromService:
+  #         name: ltv-updater-redis-staging
+  #         type: redis
+  #         property: connectionString
+  #     - key: SENDGRID_API_KEY
+  #       sync: false
+  #     - key: DEFAULT_FROM_EMAIL
+  #       sync: false
+  #     - key: SITE_URL
+  #       sync: false

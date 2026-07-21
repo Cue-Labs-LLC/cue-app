@@ -1,0 +1,746 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}{{ plan.name }}{% endblock %}
+
+{% block extra_head %}
+<style>
+.plan-summary {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.75rem;
+    color: var(--text-primary); line-height: 1.55;
+}
+.plan-summary .plan-summary-label {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.4rem;
+}
+.plan-timeline { position: relative; margin-left: 6px; }
+.plan-step { position: relative; padding: 0 0 1.5rem 2rem; }
+.plan-step:not(:last-child)::before {
+    content: ''; position: absolute; left: 7px; top: 22px; bottom: 0;
+    width: 2px; background: var(--border);
+}
+.plan-step::after {
+    content: ''; position: absolute; left: 0; top: 6px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--bg-primary); border: 3px solid var(--accent);
+}
+.plan-step.is-launched::after { background: var(--accent); }
+.plan-step-card {
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 1rem 1.15rem; background: var(--bg-primary);
+}
+.plan-step-head {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 0.65rem;
+}
+.plan-step-timing {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+}
+.plan-timing-display {
+    border: 0; background: transparent; color: inherit; font: inherit;
+    cursor: pointer; padding: 2px 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background 0.12s, color 0.12s;
+}
+.plan-timing-display:hover { background: var(--bg-inset); color: var(--text-primary); }
+.plan-timing-pencil { opacity: 0; font-size: 11px; transition: opacity 0.12s; }
+.plan-timing-display:hover .plan-timing-pencil { opacity: 0.6; }
+.plan-timing-editor { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.plan-timing-input { width: auto; min-width: 210px; font-family: var(--font-mono); }
+/* Inline title rename — same display/editor pattern, sized for the page title. */
+.plan-name-edit { display: inline-flex; align-items: center; }
+.plan-name-display {
+    border: 0; background: transparent; color: inherit; font: inherit;
+    cursor: pointer; padding: 2px 8px; margin-left: -8px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: background 0.12s;
+}
+.plan-name-display:hover { background: var(--bg-inset); }
+.plan-name-pencil { opacity: 0; font-size: 0.55em; transition: opacity 0.12s; }
+.plan-name-display:hover .plan-name-pencil { opacity: 0.55; }
+.plan-name-editor { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-name-input { min-width: 320px; max-width: 640px; font-size: 1.1rem; font-weight: 600; }
+.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+.plan-audience-edit {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 2px 5px; border-radius: 6px; line-height: 1;
+    opacity: 0; font-size: 11px; transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.plan-step-card:hover .plan-audience-edit { opacity: 0.6; }
+.plan-audience-edit:hover { opacity: 1; color: var(--text-primary); background: var(--bg-inset); }
+.aud-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+    cursor: pointer; user-select: none; font-size: 13px; margin: 0;
+}
+.seg-chip input { margin: 0; }
+.plan-step-message {
+    display: block; width: 100%; box-sizing: border-box;
+    white-space: pre-wrap; word-break: break-word; overflow: hidden;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.8rem 0.95rem; margin: 0.5rem 0 0.6rem;
+    font-size: 14.5px; line-height: 1.5; color: var(--text-primary);
+    font-family: inherit; resize: none;
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+.plan-step-message:hover { border-color: var(--text-secondary); }
+.plan-step-message:focus {
+    outline: none; background: var(--bg-primary);
+    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,124,255,0.15);
+}
+.plan-step-rationale { font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; }
+.plan-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
+.plan-step-saved { color: #33c481; }
+.launched-pill {
+    font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
+    background: rgba(51,196,129,0.12); color: #33c481;
+}
+.launched-pill--scheduled { background: rgba(79,124,255,0.14); color: #4f7cff; }
+.launched-pill--muted { background: var(--bg-inset); color: var(--text-secondary); }
+.plan-step-remove { margin-left: auto; }
+.plan-step-remove-btn {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; line-height: 1;
+    opacity: 0.55; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.plan-step-remove-btn:hover { opacity: 1; color: #e5484d; background: rgba(229,72,77,0.1); }
+.plan-step-actions { display: inline-flex; align-items: center; gap: 8px; }
+.plan-step-launched-link { text-decoration: none; }
+.plan-confirm-panel {
+    margin-top: 0.75rem; padding: 0.85rem 0.95rem;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset);
+}
+.plan-confirm-headline { font-size: 14px; color: var(--text-primary); margin-bottom: 0.15rem; }
+.plan-confirm-headline b { font-weight: 600; }
+.plan-confirm-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.plan-confirm-warn { margin-top: 0.5rem; }
+.plan-confirm-buttons { display: flex; gap: 8px; margin-top: 0.7rem; }
+.plan-confirm-loading { font-size: 13px; color: var(--text-secondary); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="plan-name-edit" data-rename-url="{% url 'tickets:sms_plan_rename' pk=plan.id %}">
+                <button type="button" class="plan-name-display" title="Click to rename">
+                    <span data-plan-name>{{ plan.name }}</span>
+                    <i class="bi bi-pencil plan-name-pencil"></i>
+                </button>
+                <span class="plan-name-editor" hidden>
+                    <input type="text" class="form-control form-control-sm plan-name-input"
+                           maxlength="200" value="{{ plan.name }}" aria-label="Plan name">
+                    <button type="button" class="btn btn-sm btn-primary plan-name-save">Save</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary plan-name-cancel">Cancel</button>
+                </span>
+            </span>
+            <span class="align-middle">{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</span>
+        </h1>
+        <p class="page-subtitle">
+            AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
+            {% if plan.event %} · for {{ plan.event.name }}{% endif %}
+        </p>
+        {% include 'tickets/marketing/sms/_plan_progress.html' with step_count=progress.total sent_count=progress.sent scheduled_count=progress.scheduled draft_count=progress.draft %}
+    </div>
+    <div class="d-flex gap-2">
+        <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0" id="planDeleteForm">
+            {% csrf_token %}
+            <button type="button" class="btn btn-outline-danger btn-sm" id="planDeleteBtn"><i class="bi bi-trash"></i> Delete</button>
+        </form>
+        <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Plans</a>
+    </div>
+</div>
+
+{% if plan.objective %}
+<p class="text-secondary mb-3"><strong>Goal:</strong> {{ plan.objective }}</p>
+{% endif %}
+
+{% if plan.strategy_summary %}
+<div class="plan-summary">
+    <div class="plan-summary-label">Strategy</div>
+    {{ plan.strategy_summary }}
+</div>
+{% endif %}
+
+<div class="plan-timeline">
+    {% for step in steps %}
+    <div class="plan-step{% if step.launched_at %} is-launched{% endif %}">
+        <div class="plan-step-card">
+            <div class="plan-step-head">
+                <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
+                <span class="plan-step-timing" data-step="{{ step.order }}"
+                      data-schedule-url="{% url 'tickets:sms_plan_update_schedule' pk=plan.id step=step.order %}">
+                    <button type="button" class="plan-timing-display" title="Click to edit send date &amp; time">
+                        <i class="bi bi-clock"></i> <span data-timing-label>{{ step.timing_label }}</span>
+                        <i class="bi bi-pencil plan-timing-pencil"></i>
+                    </button>
+                    <span class="plan-timing-editor" hidden>
+                        <input type="datetime-local" class="form-control form-control-sm plan-timing-input"
+                               value="{{ step.send_local }}">
+                        <button type="button" class="btn btn-sm btn-primary plan-timing-save">Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary plan-timing-cancel">Cancel</button>
+                    </span>
+                </span>
+                {% if step.launched_at %}<span class="launched-pill {{ step.launched_pill_class }}"><i class="bi {{ step.launched_icon|default:'bi-check2' }}"></i> {{ step.launched_label|default:'Launched' }}</span>{% endif %}
+                <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
+                      class="plan-step-remove m-0" data-remove-form>
+                    {% csrf_token %}
+                    <button type="button" class="plan-step-remove-btn" data-remove-trigger
+                            title="Remove from plan" aria-label="Remove from plan">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </form>
+            </div>
+            <div class="plan-step-audience">
+                <i class="bi bi-people"></i>
+                <span data-audience-label>{{ step.audience_label }}</span>
+                <button type="button" class="plan-audience-edit" data-audience-trigger
+                        data-update-url="{% url 'tickets:sms_plan_update_audience' pk=plan.id step=step.order %}"
+                        data-criteria="{{ step.audience_criteria_json }}"
+                        title="Change who this is sent to" aria-label="Change audience">
+                    <i class="bi bi-pencil"></i>
+                </button>
+            </div>
+            <textarea class="plan-step-message" data-step="{{ step.order }}"
+                      data-update-url="{% url 'tickets:sms_plan_update_step' pk=plan.id step=step.order %}"
+                      maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
+            {% if step.rationale %}<div class="plan-step-rationale">{{ step.rationale }}</div>{% endif %}
+            <div class="plan-step-foot">
+                <span class="plan-step-segs">
+                    <span data-segs-for="{{ step.order }}">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
+                    <span class="plan-step-saved" data-saved-for="{{ step.order }}" hidden><i class="bi bi-check2"></i> Saved</span>
+                </span>
+                <div class="plan-step-actions" data-actions-for="{{ step.order }}">
+                    {% if step.launched_campaign_id %}
+                    <a href="{% url 'tickets:sms_campaign_detail' pk=step.launched_campaign_id %}" class="btn btn-sm btn-outline-secondary plan-step-launched-link">
+                        <i class="bi bi-check2-circle"></i> View campaign
+                    </a>
+                    {% else %}
+                    <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
+                        {% csrf_token %}
+                        <input type="hidden" name="body">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Open in full editor</button>
+                    </form>
+                    <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
+                            data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
+                            data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}">
+                        <i class="bi bi-send"></i> Confirm &amp; Schedule
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+            {% if not step.launched_campaign_id %}
+            <div class="plan-confirm-panel" data-panel-for="{{ step.order }}" hidden>
+                <div class="plan-confirm-loading" data-confirm-loading>Checking recipients…</div>
+                <div data-confirm-body hidden>
+                    <div class="plan-confirm-headline" data-confirm-headline></div>
+                    <div class="plan-confirm-meta" data-confirm-meta></div>
+                    <div class="plan-confirm-warn text-danger small" data-confirm-warn hidden></div>
+                    <div class="plan-confirm-buttons">
+                        <button type="button" class="btn btn-sm btn-primary" data-confirm-go disabled>Confirm &amp; send</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-confirm-cancel>Cancel</button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% empty %}
+    <div class="empty-state">
+        <i class="bi bi-inbox"></i>
+        <p>This plan has no steps.</p>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="modal fade" id="removeStepModal" tabindex="-1" aria-labelledby="removeStepModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="removeStepModalLabel">Remove message</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Remove this message from the plan? This can't be undone.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="deletePlanModal" tabindex="-1" aria-labelledby="deletePlanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deletePlanModalLabel">Delete plan</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Delete this plan? Campaigns you already launched from it are unaffected. This can't be undone.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="deletePlanConfirm">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="audienceModal" tabindex="-1" aria-labelledby="audienceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="audienceModalLabel">Who should this go to?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                {% if plan.event %}
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_all" value="all">
+                    <label class="form-check-label" for="aud_mode_all">All SMS subscribers</label>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_event" value="event">
+                    <label class="form-check-label" for="aud_mode_event">Ticket buyers for {{ plan.event.name }}</label>
+                </div>
+                {% endif %}
+                <div class="form-check mb-1">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_custom" value="custom">
+                    <label class="form-check-label" for="aud_mode_custom">Specific segments, tags, or market</label>
+                </div>
+
+                <div id="aud-custom" class="mt-2">
+                    <label class="form-label mb-1">Segments</label>
+                    <div class="aud-chip-row">
+                        {% for seg in segment_choices %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-seg" value="{{ seg }}"> {{ seg }}</label>
+                        {% endfor %}
+                    </div>
+                    {% if tags %}
+                    <label class="form-label mb-1 mt-3">Tags</label>
+                    <div class="aud-chip-row">
+                        {% for tag in tags %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-tag" value="{{ tag.id }}"> {{ tag.name }}</label>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <label class="form-label mb-1 mt-3" for="aud-market">Market</label>
+                    <select class="form-select aud-market" id="aud-market">
+                        <option value="">All markets</option>
+                        {% for value, name in market_choices %}
+                        <option value="{{ value }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="aud-error text-danger small mt-2" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="audienceSave">Save audience</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="confirmNowModal" tabindex="-1" aria-labelledby="confirmNowModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="confirmNowModalLabel">Send now?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="confirmNowBody">This message's scheduled time has passed. Send it now?</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmNowGo">Send now</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const CSRF = '{{ csrf_token }}';
+
+    function autoGrow(ta) {
+        ta.style.height = 'auto';
+        ta.style.height = ta.scrollHeight + 'px';
+    }
+
+    async function saveStep(ta) {
+        const body = ta.value.trim();
+        // Don't persist an empty message or a no-op (unchanged since last save).
+        if (!body || body === ta.dataset.saved) return;
+        let data;
+        try {
+            const resp = await fetch(ta.dataset.updateUrl, {
+                method: 'POST',
+                headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({body: body}),
+            });
+            if (!resp.ok) return;
+            data = await resp.json();
+        } catch (e) { return; }
+        if (!data || !data.ok) return;
+
+        ta.dataset.saved = body;
+        const step = ta.dataset.step;
+        const segs = document.querySelector('[data-segs-for="' + step + '"]');
+        if (segs) {
+            segs.textContent = data.segments + ' segment' + (data.segments === 1 ? '' : 's') + ' · ' + data.encoding;
+        }
+        const saved = document.querySelector('[data-saved-for="' + step + '"]');
+        if (saved) {
+            saved.hidden = false;
+            clearTimeout(saved._t);
+            saved._t = setTimeout(function () { saved.hidden = true; }, 1800);
+        }
+    }
+
+    document.querySelectorAll('.plan-step-message').forEach(function (ta) {
+        ta.dataset.saved = ta.value.trim();
+        autoGrow(ta);
+        ta.addEventListener('input', function () { autoGrow(ta); });
+        ta.addEventListener('blur', function () { saveStep(ta); });
+    });
+
+    // Inline send date/time editing.
+    document.querySelectorAll('.plan-step-timing').forEach(function (wrap) {
+        const display = wrap.querySelector('.plan-timing-display');
+        const editor = wrap.querySelector('.plan-timing-editor');
+        const input = wrap.querySelector('.plan-timing-input');
+        const labelEl = wrap.querySelector('[data-timing-label]');
+
+        function open() { display.hidden = true; editor.hidden = false; input.focus(); }
+        function close() { editor.hidden = true; display.hidden = false; }
+
+        display.addEventListener('click', open);
+        editor.querySelector('.plan-timing-cancel').addEventListener('click', close);
+
+        editor.querySelector('.plan-timing-save').addEventListener('click', async function () {
+            if (!input.value) { input.reportValidity(); return; }
+            let data;
+            try {
+                const resp = await fetch(wrap.dataset.scheduleUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({send_at: input.value}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) { input.setCustomValidity(data && data.error || 'Could not save'); input.reportValidity(); input.setCustomValidity(''); return; }
+            } catch (e) { return; }
+            labelEl.textContent = data.timing_label;
+            input.value = data.send_local;
+            close();
+        });
+    });
+
+    // Inline plan rename (title).
+    document.querySelectorAll('.plan-name-edit').forEach(function (wrap) {
+        const display = wrap.querySelector('.plan-name-display');
+        const editor = wrap.querySelector('.plan-name-editor');
+        const input = wrap.querySelector('.plan-name-input');
+        const nameEl = wrap.querySelector('[data-plan-name]');
+
+        function open() { display.hidden = true; editor.hidden = false; input.focus(); input.select(); }
+        function close() { editor.hidden = true; display.hidden = false; }
+
+        display.addEventListener('click', open);
+        editor.querySelector('.plan-name-cancel').addEventListener('click', function () {
+            input.value = nameEl.textContent;
+            close();
+        });
+
+        async function save() {
+            const value = input.value.trim();
+            if (!value) { input.setCustomValidity('Name cannot be empty'); input.reportValidity(); input.setCustomValidity(''); return; }
+            let data;
+            try {
+                const resp = await fetch(wrap.dataset.renameUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({name: value}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) { input.setCustomValidity(data && data.error || 'Could not save'); input.reportValidity(); input.setCustomValidity(''); return; }
+            } catch (e) { return; }
+            nameEl.textContent = data.name;
+            input.value = data.name;
+            document.title = data.name;
+            close();
+        }
+
+        editor.querySelector('.plan-name-save').addEventListener('click', save);
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); save(); }
+            else if (e.key === 'Escape') { input.value = nameEl.textContent; close(); }
+        });
+    });
+
+    // Remove-message confirmation via a Bootstrap modal (native confirm() proved
+    // unreliable). The trash button opens the modal; "Remove" submits its form.
+    var removeModalEl = document.getElementById('removeStepModal');
+    if (removeModalEl && window.bootstrap) {
+        var removeModal = new bootstrap.Modal(removeModalEl);
+        var pendingForm = null;
+        document.querySelectorAll('[data-remove-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                pendingForm = btn.closest('[data-remove-form]');
+                removeModal.show();
+            });
+        });
+        document.getElementById('removeStepConfirm').addEventListener('click', function () {
+            if (pendingForm) pendingForm.submit();
+        });
+    }
+
+    // Delete-whole-plan confirmation (same Bootstrap-modal pattern).
+    var delModalEl = document.getElementById('deletePlanModal');
+    if (delModalEl && window.bootstrap) {
+        var delModal = new bootstrap.Modal(delModalEl);
+        var delBtn = document.getElementById('planDeleteBtn');
+        if (delBtn) delBtn.addEventListener('click', function () { delModal.show(); });
+        document.getElementById('deletePlanConfirm').addEventListener('click', function () {
+            document.getElementById('planDeleteForm').submit();
+        });
+    }
+
+    // Audience editing via a shared Bootstrap modal.
+    var audModalEl = document.getElementById('audienceModal');
+    if (audModalEl && window.bootstrap) {
+        var audModal = new bootstrap.Modal(audModalEl);
+        var audPending = null;                 // { url, labelEl }
+        var audCustom = document.getElementById('aud-custom');
+        var audMarket = audModalEl.querySelector('.aud-market');
+        var audError = audModalEl.querySelector('.aud-error');
+
+        function audSyncMode() {
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            audCustom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+        }
+        audModalEl.querySelectorAll('input[name="aud_mode"]').forEach(function (r) {
+            r.addEventListener('change', audSyncMode);
+        });
+
+        document.querySelectorAll('[data-audience-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var labelEl = btn.closest('.plan-step-audience').querySelector('[data-audience-label]');
+                audPending = {url: btn.dataset.updateUrl, labelEl: labelEl};
+                var criteria = {};
+                try { criteria = JSON.parse(btn.dataset.criteria || '{}'); } catch (e) {}
+
+                audModalEl.querySelectorAll('.aud-seg, .aud-tag').forEach(function (c) { c.checked = false; });
+                if (audMarket) audMarket.value = '';
+                audError.hidden = true;
+
+                var eventRadio = document.getElementById('aud_mode_event');
+                var allRadio = document.getElementById('aud_mode_all');
+                if (criteria.all_subscribers && allRadio) {
+                    allRadio.checked = true;
+                } else if (criteria.event_id && eventRadio) {
+                    eventRadio.checked = true;
+                } else {
+                    document.getElementById('aud_mode_custom').checked = true;
+                    (criteria.rfm_segment || []).forEach(function (s) {
+                        var el = audModalEl.querySelector('.aud-seg[value="' + CSS.escape(s) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    (criteria.tag_ids || []).forEach(function (t) {
+                        var el = audModalEl.querySelector('.aud-tag[value="' + CSS.escape(String(t)) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    if (criteria.market_id && audMarket) audMarket.value = criteria.market_id;
+                }
+                audSyncMode();
+                audModal.show();
+            });
+        });
+
+        document.getElementById('audienceSave').addEventListener('click', async function () {
+            if (!audPending) return;
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            var mode = checked ? checked.value : 'custom';
+            var params = new URLSearchParams();
+            params.set('audience_mode', mode);
+            if (mode === 'custom') {
+                audModalEl.querySelectorAll('.aud-seg:checked').forEach(function (c) { params.append('rfm_segment', c.value); });
+                audModalEl.querySelectorAll('.aud-tag:checked').forEach(function (c) { params.append('tag_ids', c.value); });
+                if (audMarket && audMarket.value) params.set('market_id', audMarket.value);
+            }
+            var data;
+            try {
+                var resp = await fetch(audPending.url, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) {
+                    audError.textContent = (data && data.error) || 'Could not save.';
+                    audError.hidden = false;
+                    return;
+                }
+            } catch (e) { return; }
+            audPending.labelEl.textContent = data.audience_label;
+            audModal.hide();
+        });
+    }
+
+    // On launch, copy the (possibly just-edited) message into the form so the
+    // composer prefills exactly what the organizer sees — even without a blur-save.
+    document.querySelectorAll('.plan-launch-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            const card = form.closest('.plan-step-card');
+            const ta = card ? card.querySelector('.plan-step-message') : null;
+            const hidden = form.querySelector('input[name="body"]');
+            if (ta && hidden) hidden.value = ta.value;
+        });
+    });
+
+    // Inline "Review & send": confirm recipients + schedule and actually send/schedule
+    // the message right here, without the full composer. A past/unset send time asks for
+    // an explicit "send now" confirmation first.
+    function tokensLabel(n) { return n + ' token' + (n === 1 ? '' : 's'); }
+    function pluralR(n) { return n === 1 ? '' : 's'; }
+
+    function markLaunched(card, step, campaignUrl, scheduled) {
+        const wrap = card.closest('.plan-step');
+        if (wrap) wrap.classList.add('is-launched');
+        const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
+        if (panel) panel.hidden = true;
+        const actions = card.querySelector('[data-actions-for="' + step + '"]');
+        if (actions) {
+            actions.innerHTML = '<a href="' + campaignUrl + '" class="btn btn-sm btn-outline-secondary plan-step-launched-link"><i class="bi bi-check2-circle"></i> View campaign</a>';
+        }
+        const head = card.querySelector('.plan-step-head');
+        if (head && !head.querySelector('.launched-pill')) {
+            const pill = document.createElement('span');
+            pill.className = 'launched-pill' + (scheduled ? ' launched-pill--scheduled' : '');
+            pill.innerHTML = scheduled
+                ? '<i class="bi bi-clock"></i> Scheduled'
+                : '<i class="bi bi-check2"></i> Sent';
+            const timing = head.querySelector('.plan-step-timing');
+            if (timing && timing.nextSibling) head.insertBefore(pill, timing.nextSibling);
+            else head.appendChild(pill);
+        }
+    }
+
+    const confirmNowEl = document.getElementById('confirmNowModal');
+    const confirmNowModal = (confirmNowEl && window.bootstrap) ? new bootstrap.Modal(confirmNowEl) : null;
+    const confirmNowBody = document.getElementById('confirmNowBody');
+    let pendingSend = null;
+    if (confirmNowEl) {
+        document.getElementById('confirmNowGo').addEventListener('click', function () {
+            if (confirmNowModal) confirmNowModal.hide();
+            const fn = pendingSend; pendingSend = null;
+            if (fn) fn();
+        });
+    }
+
+    document.querySelectorAll('.plan-confirm-open').forEach(function (openBtn) {
+        const card = openBtn.closest('.plan-step-card');
+        const step = openBtn.dataset.step;
+        const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
+        if (!panel) return;
+        const loadingEl = panel.querySelector('[data-confirm-loading]');
+        const bodyEl = panel.querySelector('[data-confirm-body]');
+        const headlineEl = panel.querySelector('[data-confirm-headline]');
+        const metaEl = panel.querySelector('[data-confirm-meta]');
+        const warnEl = panel.querySelector('[data-confirm-warn]');
+        const goBtn = panel.querySelector('[data-confirm-go]');
+        const cancelBtn = panel.querySelector('[data-confirm-cancel]');
+        const ta = card.querySelector('.plan-step-message');
+        const state = {idempotency_key: null, scheduled: false, count: 0, sendable: false};
+
+        function currentBody() { return ta ? ta.value : ''; }
+        cancelBtn.addEventListener('click', function () { panel.hidden = true; });
+
+        openBtn.addEventListener('click', async function () {
+            if (!panel.hidden) { panel.hidden = true; return; }   // toggle closed
+            panel.hidden = false;
+            loadingEl.textContent = 'Checking recipients…';
+            loadingEl.hidden = false;
+            bodyEl.hidden = true;
+            warnEl.hidden = true;
+            let data;
+            try {
+                const resp = await fetch(openBtn.dataset.previewUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({body: currentBody()}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error();
+            } catch (e) {
+                loadingEl.textContent = 'Could not load recipients. Try again.';
+                return;
+            }
+            loadingEl.hidden = true;
+            bodyEl.hidden = false;
+            state.idempotency_key = data.idempotency_key;
+            state.scheduled = data.scheduled;
+            state.count = data.recipient_count;
+
+            headlineEl.innerHTML = 'Send to <b>' + data.recipient_count + '</b> recipient' +
+                pluralR(data.recipient_count) + ' for <b>' + tokensLabel(data.cost_tokens) + '</b>';
+            const when = data.scheduled ? ('Scheduled for ' + data.schedule_label) : 'Sends immediately';
+            metaEl.textContent = when + ' · balance ' + tokensLabel(data.balance_tokens);
+            goBtn.textContent = data.scheduled ? 'Confirm & schedule' : 'Confirm & send';
+
+            let problem = '';
+            if (data.recipient_count === 0) problem = 'This audience has no contactable recipients.';
+            else if (data.exceeds_cap) problem = 'This audience is larger than the ' + data.cap + ' recipient cap. Narrow it first.';
+            else if (data.insufficient) problem = 'Not enough SMS tokens. Top up to send.';
+            if (problem) {
+                warnEl.textContent = problem; warnEl.hidden = false;
+                goBtn.disabled = true; state.sendable = false;
+            } else {
+                goBtn.disabled = false; state.sendable = true;
+            }
+        });
+
+        async function doConfirm() {
+            goBtn.disabled = true;
+            let data;
+            try {
+                const resp = await fetch(openBtn.dataset.confirmUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({idempotency_key: state.idempotency_key || '', body: currentBody()}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) {
+                    warnEl.textContent = (data && data.error) || 'Could not send. Try again.';
+                    warnEl.hidden = false; goBtn.disabled = false;
+                    return;
+                }
+            } catch (e) {
+                warnEl.textContent = 'Could not send. Try again.';
+                warnEl.hidden = false; goBtn.disabled = false;
+                return;
+            }
+            markLaunched(card, step, data.campaign_url, data.scheduled);
+        }
+
+        goBtn.addEventListener('click', function () {
+            if (!state.sendable) return;
+            if (state.scheduled) { doConfirm(); return; }
+            // Past/unset send time (D1): explicit "send now" confirmation.
+            if (confirmNowModal) {
+                confirmNowBody.textContent = 'This message will send immediately to ' + state.count +
+                    ' recipient' + pluralR(state.count) + '. Its scheduled time has already passed. Send now?';
+                pendingSend = doConfirm;
+                confirmNowModal.show();
+            } else {
+                doConfirm();
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

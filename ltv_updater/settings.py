@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
+from decimal import Decimal
 from pathlib import Path
 import dj_database_url
 from dotenv import load_dotenv
@@ -23,6 +25,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Detect if we're running on Render
 IS_RENDER = os.environ.get('RENDER') == 'true'
+
+# Environment name: 'production', 'staging', or 'development'.
+# Set explicitly in Render dashboard per service; falls back sensibly for local dev.
+DJANGO_ENV = os.environ.get('DJANGO_ENV', 'production' if IS_RENDER else 'development')
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-099e&9k@*#s!*=_@u02!id83oe30(ie@bou!$p+9#e%s_*fb7u')
@@ -113,7 +119,7 @@ if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.config(
             default=DATABASE_URL,
-            conn_max_age=600,
+            conn_max_age=60,
             conn_health_checks=True,
         )
     }
@@ -143,6 +149,13 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+# Under the test runner, swap PBKDF2 for MD5 hashing. The suite creates a user in
+# most setUp() methods; PBKDF2 dominates their cost. Test-only — production hashing
+# (Django's default) is untouched. Gated on 'test' in argv, so the `migrations` CI
+# job (which runs `migrate` / `makemigrations`) is unaffected.
+if 'test' in sys.argv:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 
 # Internationalization
@@ -248,6 +261,41 @@ SESSION_SAVE_EVERY_REQUEST = True         # refresh the 30-day window on each re
 TWILIO_ACCOUNT_SID       = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN        = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_VERIFY_SERVICE_SID = os.environ.get('TWILIO_VERIFY_SERVICE_SID', '')
+# Native marketing SMS sender. Prefer a Messaging Service (MG...) — it provides
+# Advanced Opt-Out (STOP/HELP) + the OptOutType webhook our compliance flow uses.
+# Falls back to sending directly from TWILIO_SMS_FROM (the verified number) when
+# no Messaging Service is configured (toll-free still has built-in STOP filtering,
+# but you lose the clean OptOutType mirror).
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID', '')
+TWILIO_SMS_FROM = os.environ.get('TWILIO_SMS_FROM', '')
+# Validate inbound Twilio webhook signatures (disable in local dev without a tunnel).
+TWILIO_VALIDATE_WEBHOOKS = os.environ.get('TWILIO_VALIDATE_WEBHOOKS', 'True') == 'True'
+# Hard ceiling on recipients per marketing-SMS campaign (cost / blast-radius guard).
+SMS_CAMPAIGN_MAX_RECIPIENTS = int(os.environ.get('SMS_CAMPAIGN_MAX_RECIPIENTS', '5000'))
+# Price charged to an org per SMS segment (in cents, Decimal so sub-cent rates work,
+# e.g. "3" = 3¢/segment). Each recipient costs segments × this; debited from the
+# org's prepaid SMS credit wallet at send time.
+SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENTS', '3'))
+# Days between required STOP-footer disclosures to the same phone. The footer is
+# included on the first message to a phone and again once a prior disclosure is older
+# than this window; in between it's omitted (fewer segments, lower cost) while Twilio's
+# Messaging Service still enforces STOP. Confirm against your registered 10DLC/toll-free
+# campaign terms before lowering.
+SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '30'))
+# E.164 calling-code prefixes eligible for marketing SMS, comma-separated. Recipients
+# whose number doesn't start with one are dropped before a campaign is scheduled —
+# they'd be blocked by Twilio Geo Permissions (Error 21408) and can't be billed anyway.
+# Default US/CA ('+1'). Must mirror the destinations enabled in your Twilio Geo
+# Permissions; set to an empty string to allow all countries.
+SMS_ALLOWED_COUNTRY_PREFIXES = tuple(
+    p.strip() for p in os.environ.get('SMS_ALLOWED_COUNTRY_PREFIXES', '+1').split(',') if p.strip()
+)
+# Lookback window (days) for the daily AI event-summary auto-regeneration scan. Only
+# events that ended within this many days are re-examined for data changes; changes to
+# older events stop triggering regeneration. Bounds daily cost/work — widen if organizers
+# routinely edit long-past events.
+EVENT_SUMMARY_REGEN_LOOKBACK_DAYS = int(os.environ.get('EVENT_SUMMARY_REGEN_LOOKBACK_DAYS', '180'))
+
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)
@@ -301,7 +349,10 @@ MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')
 MAILCHIMP_CLIENT_SECRET = os.environ.get('MAILCHIMP_CLIENT_SECRET', '')
 MAILCHIMP_REPORTS_CACHE_TTL = int(os.environ.get('MAILCHIMP_REPORTS_CACHE_TTL', 900))
 MAILCHIMP_MATCH_PREFILTER_MAX = int(os.environ.get('MAILCHIMP_MATCH_PREFILTER_MAX', 150))
-MAILCHIMP_MATCH_MAX_CANDIDATES = int(os.environ.get('MAILCHIMP_MATCH_MAX_CANDIDATES', 25))
+MAILCHIMP_MATCH_MAX_CANDIDATES = int(os.environ.get('MAILCHIMP_MATCH_MAX_CANDIDATES', 50))
+
+# Per-event cache TTL (seconds) for Mailchimp/SlickText/Meta campaign matcher results.
+CAMPAIGN_MATCH_CACHE_TTL = int(os.environ.get('CAMPAIGN_MATCH_CACHE_TTL', 3600))
 
 # Typeform integration
 TYPEFORM_API_BASE = os.environ.get('TYPEFORM_API_BASE', 'https://api.typeform.com')
@@ -310,6 +361,10 @@ TYPEFORM_WEBHOOK_TAG = os.environ.get('TYPEFORM_WEBHOOK_TAG', 'cue')
 # during local development). Falls back to SITE_URL when empty.
 TYPEFORM_WEBHOOK_BASE_URL = os.environ.get('TYPEFORM_WEBHOOK_BASE_URL', '')
 
+# Outbound (general-purpose) webhooks
+# Per-delivery HTTP timeout in seconds for signed webhook POSTs (deliver_webhook_task).
+WEBHOOK_DELIVERY_TIMEOUT = int(os.environ.get('WEBHOOK_DELIVERY_TIMEOUT', '10'))
+
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.sendgrid.net'
@@ -317,7 +372,11 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'apikey'
 EMAIL_HOST_PASSWORD = os.environ.get('SENDGRID_API_KEY', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
+# Wrap the sender address in a display name so recipients see "Cue" rather than
+# the raw email (e.g. "Cue <info@cueup.co>"). The env var supplies just the
+# address; if it already includes a display name (contains "<"), leave it as-is.
+_from_email = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
+DEFAULT_FROM_EMAIL = _from_email if '<' in _from_email else f'Cue <{_from_email}>'
 
 # Custom error views
 CSRF_FAILURE_VIEW = 'tickets.views.csrf_failure'
@@ -423,7 +482,7 @@ if _SENTRY_DSN:
             CeleryIntegration(),
             RedisIntegration(),
         ],
-        environment='production' if IS_RENDER else 'development',
+        environment=DJANGO_ENV,
         # Capture 100% of transactions for performance monitoring.
         # Lower to 0.2 (20%) if volume gets large and costs become a concern.
         traces_sample_rate=1.0,

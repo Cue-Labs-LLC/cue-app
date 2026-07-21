@@ -1,13 +1,14 @@
 import json
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.utils.html import format_html
 from django.db import models
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Subquery, OuterRef
+from django.db.models.functions import Coalesce
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -17,9 +18,14 @@ from .models import (
     OrganizerWaitlist,
     PipedreamCalendarConnection,
     OrganizationAPIKey,
+    WebhookEndpoint, WebhookDelivery,
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
+    SMSConsentRecord,
+    SMSCreditTransaction,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
 )
 
 
@@ -50,8 +56,31 @@ class JSONWidget(forms.Textarea):
         return str(value)
 
 
+class OrgScopedModelAdmin(admin.ModelAdmin):
+    """Mixin: scope the changelist to the request user's organization (superusers
+    see everything) and auto-assign that org when creating a row. Extracted so the
+    identical org-scoping logic lives in one place instead of being copy-pasted
+    into every org-owned model's admin."""
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
+
+
 @admin.register(CSVFormat)
-class CSVFormatAdmin(admin.ModelAdmin):
+class CSVFormatAdmin(OrgScopedModelAdmin):
     list_display = ['name', 'organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     list_filter = ['organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     search_fields = ['name', 'description']
@@ -80,25 +109,9 @@ class CSVFormatAdmin(admin.ModelAdmin):
         }),
     )
 
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
-
-    def save_model(self, request, obj, form, change):
-        if not change and not getattr(obj, 'organization_id', None):
-            profile = getattr(request.user, 'profile', None)
-            if profile and profile.organization_id:
-                obj.organization = profile.organization
-        super().save_model(request, obj, form, change)
-
 
 @admin.register(UploadedFile)
-class UploadedFileAdmin(admin.ModelAdmin):
+class UploadedFileAdmin(OrgScopedModelAdmin):
     list_display = ['filename', 'csv_format', 'organization', 'status', 'total_rows', 'processed_rows', 'uploaded_at']
     list_filter = ['organization', 'status', 'csv_format', 'uploaded_at']
     search_fields = ['filename', 'description', 'source']
@@ -118,22 +131,6 @@ class UploadedFileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
-
-    def save_model(self, request, obj, form, change):
-        if not change and not getattr(obj, 'organization_id', None):
-            profile = getattr(request.user, 'profile', None)
-            if profile and profile.organization_id:
-                obj.organization = profile.organization
-        super().save_model(request, obj, form, change)
 
 
 class TicketInline(admin.TabularInline):
@@ -201,6 +198,94 @@ class CustomerAdmin(admin.ModelAdmin):
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
 
+    actions = ['delete_customers_with_ledger']
+
+    @admin.action(
+        description='Delete customer(s) and their loyalty ledger',
+        permissions=['delete'],
+    )
+    def delete_customers_with_ledger(self, request, queryset):
+        """Hard-delete customers along with their immutable loyalty ledger.
+
+        The loyalty points ledger admin forbids deletion (append-only), which
+        makes Django's normal cascade-delete refuse to remove a customer. This
+        action performs the delete in Python, where the DB-level CASCADE clears
+        the ledger without hitting that guard — the same ``customer.delete()``
+        path that ``_reconcile_customers_after_order_deletion`` uses. Runs behind
+        an intermediate confirmation page. Irreversible.
+        """
+        from django.contrib.admin import helpers
+        from django.db import transaction
+        from django.template.response import TemplateResponse
+
+        if request.POST.get('confirm'):
+            deleted = 0
+            # Deterministic lock order (mirrors the reconcile path) to avoid
+            # deadlocks when this races other order/points mutations.
+            customer_ids = list(queryset.order_by('id').values_list('id', flat=True))
+            for customer_id in customer_ids:
+                with transaction.atomic():
+                    # A concurrent path (e.g. order-deletion reconcile) may have
+                    # already removed this customer — skip rather than 500.
+                    locked = (
+                        Customer.objects.select_for_update()
+                        .filter(id=customer_id)
+                        .first()
+                    )
+                    if locked is None:
+                        continue
+                    locked.delete()
+                    deleted += 1
+            self.message_user(
+                request,
+                f'Deleted {deleted} customer{"" if deleted == 1 else "s"} and '
+                f'their loyalty ledger.',
+                level=messages.SUCCESS,
+            )
+            return None
+
+        # Isolated Subquery per stat (see event_list/home) — joining both
+        # tables at once would inflate rows to orders × ledger entries.
+        order_count_sq = Subquery(
+            TicketOrder.objects.filter(customer=OuterRef('pk'))
+            .values('customer')
+            .annotate(n=Count('id'))
+            .values('n')[:1],
+            output_field=models.IntegerField(),
+        )
+        ledger_count_sq = Subquery(
+            LoyaltyPointsTransaction.objects.filter(customer=OuterRef('pk'))
+            .values('customer')
+            .annotate(n=Count('id'))
+            .values('n')[:1],
+            output_field=models.IntegerField(),
+        )
+        # Re-query from a clean base queryset: the incoming changelist queryset
+        # already carries a join-based order_count annotation (get_queryset),
+        # and re-annotating over it leaves its join/grouping behind.
+        customers = list(
+            Customer.objects.filter(
+                id__in=list(queryset.values_list('id', flat=True))
+            )
+            .annotate(
+                order_count=Coalesce(order_count_sq, 0),
+                ledger_count=Coalesce(ledger_count_sq, 0),
+            )
+            .order_by('name')
+        )
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Delete customers and loyalty ledger',
+            'customers': customers,
+            'queryset': queryset,
+            'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+            'opts': self.model._meta,
+            'media': self.media,
+        }
+        return TemplateResponse(
+            request, 'admin/delete_customers_with_ledger_confirm.html', context,
+        )
+
 
 @admin.register(CustomerTag)
 class CustomerTagAdmin(admin.ModelAdmin):
@@ -223,15 +308,6 @@ class VenueAdmin(admin.ModelAdmin):
         'name', 'city', 'street_address', 'state', 'postal_code', 'country'
     ]
     readonly_fields = ['id', 'created_at', 'updated_at']
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
 
     def save_model(self, request, obj, form, change):
         if not change and not getattr(obj, 'organization_id', None):
@@ -259,9 +335,56 @@ class VenueAdmin(admin.ModelAdmin):
     event_count.short_description = 'Events'
     
     def get_queryset(self, request):
-        """Optimize queryset with event count."""
+        """Optimize queryset with event count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.annotate(event_count=Count('events'))
+
+
+@admin.register(Market)
+class MarketAdmin(admin.ModelAdmin):
+    list_display = ['name', 'geography_level', 'geography_value', 'event_count', 'organization', 'created_at']
+    list_filter = ['organization', 'geography_level', 'created_at']
+    search_fields = ['name', 'geography_value']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization']
+
+    fieldsets = (
+        ('Market', {
+            'fields': ('organization', 'name', 'geography_level', 'geography_value')
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def event_count(self, obj):
+        return obj.event_count
+    event_count.short_description = 'Events'
+    event_count.admin_order_field = 'event_count'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
+        return qs.annotate(event_count=Count('events'))
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
 
 
 class EventTalentInline(admin.TabularInline):
@@ -762,7 +885,8 @@ class OrganizationMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ['name', 'slug', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
+    list_display = ['name', 'slug', 'external_events_enabled', 'sms_marketing_enabled', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
+    list_editable = ['external_events_enabled', 'sms_marketing_enabled']
     search_fields = ['name', 'slug']
     readonly_fields = [
         'id',
@@ -781,7 +905,8 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('waitlist_feature_enabled',)}),
+        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
+        ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {
             'fields': (
@@ -895,7 +1020,7 @@ class PayoutAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name']
+    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name', 'impersonate_link']
     list_filter = ['role', 'organization']
     search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email', 'phone_number']
     raw_id_fields = ['user']
@@ -904,6 +1029,15 @@ class UserProfileAdmin(admin.ModelAdmin):
     def user_full_name(self, obj):
         return obj.user.get_full_name() if obj.user_id else ''
     user_full_name.short_description = 'Full Name'
+
+    def impersonate_link(self, obj):
+        # Mirror the view guardrail: never offer to impersonate a privileged account.
+        if not obj.user_id or obj.user.is_superuser or obj.user.is_staff:
+            return '—'
+        from django.urls import reverse
+        url = reverse('tickets:admin_impersonate_start', args=[obj.user_id])
+        return format_html('<a href="{}">Log in as</a>', url)
+    impersonate_link.short_description = 'Impersonate'
 
 
 @admin.register(OrganizationInvitation)
@@ -965,6 +1099,23 @@ class SurveyQuestionAdmin(admin.ModelAdmin):
     readonly_fields = ['id', 'created_at', 'updated_at']
     autocomplete_fields = ['event', 'organization']
     ordering = ['position']
+
+    @staticmethod
+    def _has_answers(obj):
+        return bool(obj) and obj.pk and obj.answers.exists()
+
+    def get_readonly_fields(self, request, obj=None):
+        """Lock structural fields once a question has answers (versioning is
+        enforced by the builder; admin must not silently corrupt history)."""
+        ro = list(super().get_readonly_fields(request, obj))
+        if self._has_answers(obj):
+            ro += ['question_type', 'event', 'organization']
+        return ro
+
+    def has_delete_permission(self, request, obj=None):
+        if self._has_answers(obj):
+            return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -1132,7 +1283,7 @@ class SaleableTicketTypeTierInline(admin.TabularInline):
 
 @admin.register(SaleableTicketType)
 class SaleableTicketTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'event', 'price', 'quantity_sold', 'quantity_limit', 'is_active', 'order']
+    list_display = ['name', 'event', 'price', 'quantity_sold', 'quantity_limit', 'low_stock_threshold', 'is_active', 'order']
     list_filter = ['event__organization', 'is_active']
     search_fields = ['name', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'quantity_sold']
@@ -1198,3 +1349,254 @@ class OrganizerWaitlistAdmin(admin.ModelAdmin):
             approved_by=request.user,
         )
         self.message_user(request, f'{updated} entr{"y" if updated == 1 else "ies"} approved.')
+
+
+@admin.register(SMSCampaign)
+class SMSCampaignAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'status', 'audience_size', 'scheduled_at', 'sent_at', 'created_at']
+    list_filter = ['organization', 'status', 'created_at']
+    search_fields = ['name', 'body']
+    readonly_fields = ['id', 'started_at', 'sent_at', 'audience_size', 'created_at', 'updated_at']
+
+
+@admin.register(SMSCampaignPlan)
+class SMSCampaignPlanAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'event', 'model_name', 'generated_at', 'created_at']
+    list_filter = ['organization', 'created_at']
+    search_fields = ['name', 'objective', 'strategy_summary']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(SMSMessageRecipient)
+class SMSMessageRecipientAdmin(admin.ModelAdmin):
+    list_display = ['phone', 'campaign', 'status', 'twilio_sid', 'sent_at', 'delivered_at']
+    list_filter = ['status']
+    search_fields = ['phone', 'twilio_sid']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(PhoneSuppression)
+class PhoneSuppressionAdmin(admin.ModelAdmin):
+    list_display = ['phone', 'organization', 'reason', 'created_at']
+    list_filter = ['reason', 'organization']
+    search_fields = ['phone']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(SMSConsentRecord)
+class SMSConsentRecordAdmin(admin.ModelAdmin):
+    """Consent ledger is view-only in admin — it is legal proof, never edited."""
+    list_display = ['phone', 'email', 'organization', 'source', 'verified_at', 'pending_start', 'created_at']
+    list_filter = ['source', 'pending_start', 'organization']
+    search_fields = ['phone', 'email', 'name']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+
+@admin.register(SMSCreditTransaction)
+class SMSCreditTransactionAdmin(admin.ModelAdmin):
+    list_display = ['organization', 'kind', 'amount_cents', 'balance_after_cents', 'campaign', 'created_at']
+    list_filter = ['kind', 'organization']
+    search_fields = ['organization__name', 'stripe_checkout_session_id', 'description']
+    readonly_fields = ['id', 'balance_after_cents', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization', 'campaign']
+
+
+class LoyaltyTierInline(admin.TabularInline):
+    model = LoyaltyTier
+    extra = 1
+
+
+@admin.register(LoyaltyProgram)
+class LoyaltyProgramAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'is_active', 'recalc_in_progress', 'last_recalculated_at']
+    list_filter = ['is_active', 'organization']
+    search_fields = ['name', 'organization__name']
+    readonly_fields = ['id', 'recalc_in_progress', 'last_recalculated_at', 'created_at', 'updated_at']
+    inlines = [LoyaltyTierInline]
+    actions = ['reset_loyalty_points']
+
+    @admin.action(description='Reset loyalty points to scratch (delete ledger, zero balances)')
+    def reset_loyalty_points(self, request, queryset):
+        """Hard-reset every selected program's org back to zero points.
+
+        Irreversible — deletes the org's points ledger and zeroes balances — so
+        it runs through an intermediate confirmation page. De-dupes by org (one
+        active program per org, but selections can overlap) and refuses any org
+        with a backfill/recalc in flight.
+        """
+        from django.contrib.admin import helpers
+        from django.template.response import TemplateResponse
+        from tickets.services.loyalty.points import reset_points_for_organization
+
+        # De-dupe selected programs down to their organizations.
+        orgs = {}
+        for program in queryset.select_related('organization'):
+            orgs.setdefault(program.organization_id, program.organization)
+        orgs = list(orgs.values())
+
+        if request.POST.get('confirm'):
+            done, blocked = 0, []
+            for org in orgs:
+                # Refuse if a backfill/recalc is mid-flight for this org.
+                if LoyaltyProgram.objects.filter(
+                    organization=org, recalc_in_progress=True,
+                ).exists():
+                    blocked.append(org)
+                    continue
+                summary = reset_points_for_organization(org)
+                done += 1
+                self.message_user(
+                    request,
+                    f'Reset points for "{org.name}": deleted '
+                    f'{summary["transactions_deleted"]} ledger rows, zeroed '
+                    f'{summary["customers_reset"]} customers.',
+                    level=messages.SUCCESS,
+                )
+            for org in blocked:
+                self.message_user(
+                    request,
+                    f'Skipped "{org.name}": a backfill/recalc is in progress. '
+                    f'Wait for it to finish, then retry.',
+                    level=messages.WARNING,
+                )
+            return None
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Reset loyalty points',
+            'organizations': orgs,
+            'queryset': queryset,
+            'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+            'opts': self.model._meta,
+            'media': self.media,
+        }
+        return TemplateResponse(
+            request, 'admin/reset_loyalty_points_confirm.html', context,
+        )
+
+
+@admin.register(LoyaltyTier)
+class LoyaltyTierAdmin(admin.ModelAdmin):
+    list_display = ['name', 'program', 'rank', 'min_lifetime_value', 'min_order_count', 'min_events_purchased', 'min_lifetime_points']
+    list_filter = ['program']
+    search_fields = ['name', 'program__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(LoyaltyPointsTransaction)
+class LoyaltyPointsTransactionAdmin(admin.ModelAdmin):
+    """Read-only ledger view — balances are mutated only by the points service."""
+    list_display = ['customer', 'kind', 'amount', 'balance_after', 'lifetime_after', 'ticket_order', 'created_at']
+    list_filter = ['kind', 'organization']
+    search_fields = ['customer__email', 'customer__name', 'description']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'ticket_order', 'kind', 'amount',
+        'balance_after', 'lifetime_after', 'description', 'created_by',
+        'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(LoyaltyTierTransition)
+class LoyaltyTierTransitionAdmin(admin.ModelAdmin):
+    """Read-only history — rows are written only by LoyaltyTierAssigner."""
+    list_display = ['customer', 'from_tier', 'to_tier', 'changed_at']
+    list_filter = ['organization']
+    search_fields = ['customer__email', 'customer__name']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'from_tier', 'to_tier',
+        'changed_at', 'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class WebhookEndpointForm(forms.ModelForm):
+    """Render event_types as checkboxes validated against the canonical set."""
+    class Meta:
+        model = WebhookEndpoint
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPE_CHOICES
+        self.fields['event_types'] = forms.MultipleChoiceField(
+            choices=WEBHOOK_EVENT_TYPE_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+            required=False,
+            help_text="Domain events this endpoint receives.",
+        )
+
+
+@admin.register(WebhookEndpoint)
+class WebhookEndpointAdmin(OrgScopedModelAdmin):
+    form = WebhookEndpointForm
+    list_display = ['label', 'organization', 'url', 'is_active', 'last_used_at', 'created_at']
+    list_filter = ['organization', 'is_active', 'created_at']
+    list_select_related = ['organization']
+    search_fields = ['label', 'url', 'description']
+    readonly_fields = ['id', 'masked_secret', 'last_used_at', 'created_at', 'updated_at']
+
+    fieldsets = (
+        ('Endpoint', {
+            'fields': ('label', 'url', 'event_types', 'is_active', 'description')
+        }),
+        ('Signing', {
+            'fields': ('secret', 'masked_secret'),
+            'description': 'The secret HMAC-signs each delivery (X-Cue-Signature header). '
+                           'Rotating it invalidates existing receiver verification.'
+        }),
+        ('Metadata', {
+            'fields': ('id', 'last_used_at', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(WebhookDelivery)
+class WebhookDeliveryAdmin(OrgScopedModelAdmin):
+    """Read-only append-only delivery log."""
+    list_display = ['event_type', 'endpoint', 'organization', 'success', 'response_status', 'attempt', 'created_at']
+    list_filter = ['organization', 'event_type', 'success', 'created_at']
+    list_select_related = ['endpoint', 'organization']
+    search_fields = ['endpoint__label', 'event_type']
+    readonly_fields = [
+        'id', 'endpoint', 'organization', 'event_type', 'delivery_id', 'payload',
+        'response_status', 'response_body', 'attempt', 'success',
+        'error_message', 'created_at', 'updated_at',
+    ]
+    date_hierarchy = 'created_at'
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+

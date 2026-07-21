@@ -16,6 +16,6 @@ Tickets:
 {% endif %}
 Total:    {% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}
 
-Your ticket QR code is in the HTML version of this email.
+Each of your tickets has its own QR code in the HTML version of this email. Show one QR code per guest at the door for check-in.
 
 Questions? Reply to this email and we'll be happy to help.

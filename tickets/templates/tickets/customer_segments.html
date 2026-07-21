@@ -4,7 +4,66 @@
 {% block title %}Customer Segments{% endblock %}
 
 {% block extra_head %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+    /* Segments-by-market: collapsible panels keep the section compact even
+       with many markets. Collapsed rows show only the market name and customer
+       count; the per-segment breakdown appears on expand. */
+    .market-accordion { display: flex; flex-direction: column; }
+    .market-panel { border-top: 1px solid var(--border, rgba(0,0,0,.09)); }
+    .market-panel:first-child { border-top: 0; }
+
+    .market-panel__header {
+        display: grid;
+        grid-template-columns: 1.25rem 1fr auto;
+        align-items: center;
+        gap: 1rem;
+        width: 100%;
+        padding: .85rem 1.25rem;
+        background: transparent;
+        border: 0;
+        text-align: left;
+        color: var(--text-primary, inherit);
+        cursor: pointer;
+        transition: background-color .15s ease;
+    }
+    .market-panel__header:hover { background: var(--bg-inset, rgba(0,0,0,.03)); }
+    .market-panel__header:focus-visible {
+        outline: 2px solid var(--accent, #3A3835);
+        outline-offset: -2px;
+    }
+
+    .market-panel__chevron {
+        color: var(--text-tertiary, #9A9794);
+        font-size: .8rem;
+        transition: transform .2s ease;
+    }
+    .market-panel__header[aria-expanded="true"] .market-panel__chevron { transform: rotate(90deg); }
+
+    .market-panel__name {
+        font-weight: 600;
+        font-size: .95rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .market-panel__count {
+        font-variant-numeric: tabular-nums;
+        font-size: .85rem;
+        color: var(--text-secondary, #5C5A57);
+        white-space: nowrap;
+    }
+    .market-panel__count strong { color: var(--text-primary, inherit); font-weight: 600; }
+
+    .market-panel__body { padding: 0 1.25rem 1rem calc(1.25rem + 1.25rem + 1rem); }
+    .market-panel__body .table { margin-bottom: 0; }
+    .market-panel__body .table > :not(caption) > * > * { padding-top: .5rem; padding-bottom: .5rem; }
+
+    @media (max-width: 575.98px) {
+        .market-panel__header { gap: .6rem; }
+        .market-panel__body { padding-left: 1.25rem; }
+    }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -15,7 +74,48 @@
             {% csrf_token %}
             <button type="submit" class="btn btn-primary" {% if rfm_recalc_in_progress %}disabled{% endif %}><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
         </form>
+        {% if is_org_admin %}
+        <a href="{% url 'tickets:settings_segment_tuning' %}" class="btn btn-outline-secondary"><i class="bi bi-sliders"></i> Settings</a>
+        {% endif %}
+        {% if org.ai_sms_strategist_enabled and org.sms_marketing_enabled %}
+        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-outline-primary"><i class="bi bi-stars"></i> Plan with AI</a>
+        {% endif %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-people"></i> Customers</a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body d-flex flex-column flex-lg-row justify-content-between gap-2">
+        <div>
+            <h5 class="mb-1">Scoring</h5>
+            <p class="text-muted mb-0">{{ segment_mode_summary }}</p>
+        </div>
+        <div class="text-lg-end">
+            <span class="badge bg-info text-dark">{{ segment_mode_label }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="d-flex flex-wrap gap-2 align-items-end">
+            <div>
+                <label for="segment-market-filter" class="form-label small text-muted mb-1">Market</label>
+                <select id="segment-market-filter" name="market" class="form-select" style="min-width: 220px;">
+                    <option value="">All markets</option>
+                    {% for market in market_choices %}
+                    <option value="{{ market.id }}" {% if market_filter == market.id|stringformat:'s' %}selected{% endif %}>{{ market.name }}</option>
+                    {% endfor %}
+                    {% if has_no_market %}
+                    <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
+                    {% endif %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-funnel"></i> Apply</button>
+            {% if market_filter %}
+            <a href="{% url 'tickets:customer_segments' %}" class="btn btn-outline-secondary">Clear</a>
+            {% endif %}
+        </form>
     </div>
 </div>
 
@@ -26,128 +126,43 @@
 </div>
 {% endif %}
 
-{% if segment_stats %}
-<script type="application/json" id="segment-stats-data">{{ segment_stats_json|safe }}</script>
-<script type="application/json" id="behavior-stats-data">{{ behavior_stats_json|safe }}</script>
-<div class="row mb-4 g-3">
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">RFM segment distribution</h5></div>
-            <div class="card-body d-flex align-items-center justify-content-center">
-                <div class="chart-container" style="height: 280px; width: 100%; max-width: 320px;">
-                    <canvas id="segmentDonutChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">Avg LTV by RFM segment</h5></div>
-            <div class="card-body">
-                <div class="chart-container" style="height: 280px;">
-                    <canvas id="segmentBarChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row mb-4 g-3">
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">Behavior profile distribution</h5></div>
-            <div class="card-body d-flex align-items-center justify-content-center">
-                <div class="chart-container" style="height: 280px; width: 100%; max-width: 320px;">
-                    <canvas id="behaviorDonutChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">Avg LTV by behavior profile</h5></div>
-            <div class="card-body">
-                <div class="chart-container" style="height: 280px;">
-                    <canvas id="behaviorBarChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center pe-3" type="button" data-bs-toggle="collapse" data-bs-target="#whatSegmentsMean" aria-expanded="false" aria-controls="whatSegmentsMean" style="cursor: pointer;">
-        <h5 class="mb-0">What the segments mean</h5>
-        <i class="bi bi-chevron-down" aria-hidden="true"></i>
-    </div>
-    <div class="collapse" id="whatSegmentsMean">
-        <div class="card-body">
-            <p class="text-muted small mb-3">Customers are grouped by how recently and how often they buy, and how much they spend.</p>
-            <dl class="mb-0">
-                {% for defn in segment_definitions %}
-                <dt class="mb-1">
-                    <span class="badge bg-{{ defn.badge_color }}">{{ defn.segment }}</span>
-                </dt>
-                <dd class="mb-3 ms-0">{{ defn.description }}</dd>
-                {% endfor %}
-            </dl>
-            <div class="mt-3">
-                <button class="btn btn-link btn-sm p-0 text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#segmentScoreRanges" aria-expanded="false" aria-controls="segmentScoreRanges">Score ranges (R/F/M)</button>
-                <div class="collapse mt-2" id="segmentScoreRanges">
-                    <div class="table-responsive">
-                        <table class="table table-sm table-bordered mb-0" style="max-width: 420px;">
-                            <thead>
-                                <tr>
-                                    <th>Segment</th>
-                                    <th>Recency (R)</th>
-                                    <th>Frequency (F)</th>
-                                    <th>Monetary (M)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for defn in segment_definitions %}
-                                <tr>
-                                    <td><span class="badge bg-{{ defn.badge_color }}">{{ defn.segment }}</span></td>
-                                    <td>{{ defn.r_range }}</td>
-                                    <td>{{ defn.f_range }}</td>
-                                    <td>{{ defn.m_range }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div class="card">
-    <div class="card-header"><h5 class="mb-0">RFM segments</h5></div>
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <h5 class="mb-0">Segments{% if selected_market_label %}: {{ selected_market_label }}{% endif %}</h5>
+        {% if total_customers %}
+        <span class="text-muted small">{{ total_customers|intcomma }} customer{{ total_customers|pluralize }}</span>
+        {% endif %}
+    </div>
     <div class="card-body p-0">
         {% if segment_stats %}
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0 align-middle">
                 <thead>
                     <tr>
                         <th>Segment</th>
-                        <th>Count</th>
-                        <th>% of total</th>
+                        <th>Customers</th>
+                        <th style="min-width: 160px;">Share</th>
                         <th>Avg LTV</th>
                         <th>Avg orders</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in segment_stats %}
-                    <tr>
+                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}{% if market_filter %}&market={{ market_filter|urlencode }}{% endif %}'">
                         <td>
-                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}">
-                                <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}{% if market_filter %}&market={{ market_filter|urlencode }}{% endif %}">
+                                <span class="badge bg-{{ row.badge_color }}" {% if row.description %}data-bs-toggle="tooltip" data-bs-placement="top" title="{{ row.description }}"{% endif %}>{{ row.segment }}</span>
                             </a>
                         </td>
                         <td>{{ row.count|intcomma }}</td>
-                        <td>{{ row.pct }}%</td>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="progress flex-grow-1" style="height: 6px; min-width: 90px;">
+                                    <div class="progress-bar bg-{{ row.badge_color }}" role="progressbar" style="width: {{ row.pct }}%;" aria-valuenow="{{ row.pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                </div>
+                                <span class="text-muted small" style="min-width: 3.5em;">{{ row.pct }}%</span>
+                            </div>
+                        </td>
                         <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
                         <td>{{ row.avg_orders }}</td>
                     </tr>
@@ -168,116 +183,64 @@
     </div>
 </div>
 
+{% if market_segment_breakdown %}
 <div class="card mt-4">
-    <div class="card-header"><h5 class="mb-0">Behavior profiles</h5></div>
-    <div class="card-body">
-        <p class="text-muted small mb-3">These profiles explain customer buying cadence and repeat behavior on top of the core RFM segment.</p>
-        <dl class="mb-4">
-            {% for defn in behavior_definitions %}
-            <dt class="mb-1">
-                <span class="badge bg-{{ defn.badge_color }}">{{ defn.segment }}</span>
-            </dt>
-            <dd class="mb-3 ms-0">{{ defn.description }}</dd>
+    <div class="card-header">
+        <h5 class="mb-0">Segments by Market</h5>
+        <span class="text-muted small">Select a market to see its full segment breakdown</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="market-accordion">
+            {% for market in market_segment_breakdown %}
+            <div class="market-panel">
+                <button class="market-panel__header" type="button" data-bs-toggle="collapse" data-bs-target="#market-panel-{{ forloop.counter }}" aria-expanded="false" aria-controls="market-panel-{{ forloop.counter }}">
+                    <i class="bi bi-chevron-right market-panel__chevron" aria-hidden="true"></i>
+                    <span class="market-panel__name">{{ market.market_name }}</span>
+                    <span class="market-panel__count"><strong>{{ market.total_customers|intcomma }}</strong> customer{{ market.total_customers|pluralize }}</span>
+                </button>
+                <div id="market-panel-{{ forloop.counter }}" class="collapse">
+                    <div class="market-panel__body">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Segment</th>
+                                        <th>Customers</th>
+                                        <th style="min-width: 150px;">Share</th>
+                                        <th>Avg LTV</th>
+                                        <th>Avg orders</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in market.segments %}
+                                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}'">
+                                        <td>
+                                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}">
+                                                <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                                            </a>
+                                        </td>
+                                        <td>{{ row.count|intcomma }}</td>
+                                        <td>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <div class="progress flex-grow-1" style="height: 6px; min-width: 90px;">
+                                                    <div class="progress-bar bg-{{ row.badge_color }}" role="progressbar" style="width: {{ row.pct }}%;" aria-valuenow="{{ row.pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                                </div>
+                                                <span class="text-muted small" style="min-width: 3.5em;">{{ row.pct }}%</span>
+                                            </div>
+                                        </td>
+                                        <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
+                                        <td>{{ row.avg_orders }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
             {% endfor %}
-        </dl>
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Profile</th>
-                        <th>Count</th>
-                        <th>% of total</th>
-                        <th>Avg LTV</th>
-                        <th>Avg orders</th>
-                        <th>Avg days between orders</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in behavior_stats %}
-                    <tr>
-                        <td><span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span></td>
-                        <td>{{ row.count|intcomma }}</td>
-                        <td>{{ row.pct }}%</td>
-                        <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
-                        <td>{{ row.avg_orders }}</td>
-                        <td>{% if row.avg_gap is not None %}{{ row.avg_gap }}{% else %}&mdash;{% endif %}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
     </div>
 </div>
-
-{% if segment_stats %}
-<script>
-(function() {
-    function renderCharts(dataElementId, donutChartId, barChartId, colors) {
-        var el = document.getElementById(dataElementId);
-        if (!el) return;
-        var data = JSON.parse(el.textContent);
-        if (!data.length) return;
-
-        var bg = data.map(function(d) { return colors[d.segment] || 'rgb(108, 117, 125)'; });
-        var bgAlpha = data.map(function(d) {
-            var c = colors[d.segment] || 'rgb(108, 117, 125)';
-            return c.replace('rgb', 'rgba').replace(')', ', 0.7)');
-        });
-
-        var donutCtx = document.getElementById(donutChartId);
-        if (donutCtx) {
-            new Chart(donutCtx.getContext('2d'), {
-                type: 'doughnut',
-                data: {
-                    labels: data.map(function(d) { return d.segment; }),
-                    datasets: [{ data: data.map(function(d) { return d.count; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1 }]
-                },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
-            });
-        }
-
-        var barCtx = document.getElementById(barChartId);
-        if (barCtx) {
-            new Chart(barCtx.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: data.map(function(d) { return d.segment; }),
-                    datasets: [{ label: 'Avg LTV', data: data.map(function(d) { return d.avg_ltv; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1, borderRadius: 4 }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { tooltip: { callbacks: { label: function(c) { return '$' + Number(c.parsed.y).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } } } },
-                    scales: { y: { beginAtZero: true, title: { display: true, text: 'Avg LTV ($)' } } }
-                }
-            });
-        }
-    }
-
-    var rfmColors = {
-        'VIP': 'rgb(220, 53, 69)',
-        'Loyal': 'rgb(25, 135, 84)',
-        'Big Spender': 'rgb(13, 202, 240)',
-        'New': 'rgb(13, 110, 253)',
-        'Promising': 'rgb(13, 110, 253)',
-        'At-Risk': 'rgb(255, 193, 7)',
-        'Lapsed': 'rgb(253, 126, 20)',
-        'Dormant': 'rgb(108, 117, 125)'
-    };
-    var behaviorColors = {
-        'Fast Repeat': 'rgb(25, 135, 84)',
-        'Steady Repeat': 'rgb(13, 110, 253)',
-        'Occasional Repeat': 'rgb(13, 202, 240)',
-        'High-Value Occasional': 'rgb(220, 53, 69)',
-        'Slowing Down': 'rgb(255, 193, 7)',
-        'Inactive Repeat': 'rgb(108, 117, 125)',
-        'First-Time Recent': 'rgb(111, 66, 193)',
-        'Dormant': 'rgb(173, 181, 189)'
-    };
-
-    renderCharts('segment-stats-data', 'segmentDonutChart', 'segmentBarChart', rfmColors);
-    renderCharts('behavior-stats-data', 'behaviorDonutChart', 'behaviorBarChart', behaviorColors);
-})();
-</script>
 {% endif %}
 {% endblock %}

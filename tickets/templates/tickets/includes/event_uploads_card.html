@@ -3,7 +3,9 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Uploads</h5>
+        {% if external_events_enabled %}
         <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
+        {% endif %}
     </div>
     <div class="card-body p-0">
         {% if upload_stats %}
@@ -39,6 +41,7 @@
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:upload_results' stat.upload.id %}" class="btn btn-sm btn-outline-secondary">Results</a>
                                 {% if stat.upload.csv_file %}
+                                <a href="{% url 'tickets:download_csv_file' stat.upload.id %}" class="btn btn-sm btn-outline-secondary" title="Download original CSV"><i class="bi bi-download"></i></a>
                                 <a href="{% url 'tickets:reprocess_csv_file' stat.upload.id %}" class="btn btn-sm btn-outline-warning">Re-process</a>
                                 {% endif %}
                                 <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"

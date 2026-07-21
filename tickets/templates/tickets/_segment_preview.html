@@ -1,0 +1,101 @@
+{% load humanize %}
+{% if form.errors %}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> Please check the numbers in your rules above, then try again.</div>
+{% endif %}
+
+<!-- 1. Who lands in each segment -->
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Your segments</h5></div>
+    <div class="card-body">
+        {% if preview_sizes %}
+        <p class="text-muted small mb-3">This is just <strong>who lands in each segment</strong> with these numbers. Nothing is saved yet &mdash; the check below shows whether these segments actually predict spending.</p>
+        <div style="max-width: 680px;">
+        {% for row in preview_sizes %}
+        <div class="group-row py-2">
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-{{ row.badge_color }}" style="min-width: 8em;">{{ row.segment }}</span>
+                <div class="progress flex-grow-1" style="height: 10px;">
+                    <div class="progress-bar bg-{{ row.badge_color }}" style="width: {{ row.pct }}%;"></div>
+                </div>
+                <span class="text-muted small text-end" style="width: 6em; font-variant-numeric: tabular-nums;">{{ row.count|intcomma }} ({{ row.pct }}%)</span>
+            </div>
+            {% if row.description %}<div class="text-muted small mt-1 ms-1">{{ row.description }}</div>{% endif %}
+        </div>
+        {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-people d-block"></i>
+            <p>Press <strong>See my segments</strong> to preview how your customers would be sorted into segments.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if backtest_status %}
+<!-- 2. Do these segments actually work? (the order check) -->
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Do these segments work?</h5></div>
+    <div class="card-body">
+        {% if backtest_status == 'ok' and order_rows %}
+        <p class="text-muted small mb-3" style="max-width: 70ch;">
+            We sorted your customers as they were a few months ago, then looked at what they
+            <strong>actually spent next</strong>. Good rules put your biggest future spenders in your top
+            segments &mdash; so the bars below should get <strong>shorter as you go down</strong>.
+            These flags are only checking future revenue; recency and order count still decide
+            who lands in each segment.
+        </p>
+
+        <div class="alert {% if order_violations == 0 %}alert-success{% else %}alert-warning{% endif %} d-flex align-items-center gap-2">
+            <i class="bi {% if order_violations == 0 %}bi-check-circle-fill{% else %}bi-exclamation-triangle-fill{% endif %} fs-4"></i>
+            <div>
+                {% if order_violations == 0 %}
+                <strong>Your segments line up.</strong> The more valuable the segment, the more they actually spent later.
+                {% elif order_violations <= 2 %}
+                <strong>Mostly in order</strong>, with a couple of future-revenue flags below.
+                {% else %}
+                <strong>Revenue order is uneven.</strong> Some lower segments spent more later than higher segments &mdash; see the flags below.
+                {% endif %}
+            </div>
+        </div>
+
+        <div style="max-width: 640px;">
+            {% include 'tickets/_segment_order.html' %}
+        </div>
+
+        {% if backtest_verdict %}
+        <p class="text-muted small mt-3 mb-0">
+            Overall, this does {% if backtest_verdict.label == 'better' %}a <strong>better</strong>{% elif backtest_verdict.label == 'worse' %}a <strong>worse</strong>{% else %}<strong>about the same</strong>{% endif %} job than your current automatic segments at spotting who's likely to spend more later.
+        </p>
+        {% endif %}
+
+        <!-- Recommended adjustments (one-click apply, then re-check; unsaved) -->
+        <hr class="my-4">
+        {% if recommendations %}
+        <h6 class="fw-semibold mb-1">Recommended adjustments</h6>
+        <p class="text-muted small mb-3">One click fills in the number and re-checks &mdash; nothing is saved until you press Save.</p>
+        {% for rec in recommendations %}
+        <div class="mb-3">
+            <button type="button" class="apply-rec btn btn-sm {% if rec.primary %}btn-primary{% else %}btn-outline-primary{% endif %}" data-apply='{{ rec.apply_json }}'>
+                <i class="bi bi-magic"></i> {{ rec.label }}
+            </button>
+            {% if rec.why %}<div class="text-muted small mt-1">{{ rec.why }}</div>{% endif %}
+        </div>
+        {% endfor %}
+        {% if spread_note %}<p class="text-muted small mb-0">{{ spread_note }}</p>{% endif %}
+        {% elif spread_note %}
+        <p class="text-muted small mb-0">{{ spread_note }}</p>
+        {% elif order_violations == 0 and backtest_verdict.label != 'worse' %}
+        <p class="text-muted small mb-0"><i class="bi bi-check2-circle text-success"></i> These rules look good &mdash; press Save to keep them.</p>
+        {% else %}
+        <p class="text-muted small mb-0">No one-click adjustment improved this future-revenue check. Try changing the cut-offs above and run the check again.</p>
+        {% endif %}
+
+        {% elif backtest_status == 'too_large' %}
+        <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle"></i> You have too many customers to check this in the browser. Save your rules to apply them, then review the results on the Segments page.</div>
+        {% else %}
+        <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle"></i> There isn't enough recent order history to check these rules yet.</div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}

@@ -175,6 +175,57 @@ class SalesCurveCalculator:
             cumulative[day] = running_total
         return cumulative
 
+    def get_pacing_series(self, event: Event) -> dict:
+        """Incremental tickets + revenue per days-before-event for one event.
+
+        Used to plot a sales-pacing comparison between two events on a shared
+        "days before the event" axis. Returns absolute (non-cumulative) daily
+        values so the caller can build cumulative and percentage views client-side.
+
+        Revenue uses ``order.total_amount`` (gross, matching the Activity chart's
+        ``Sum('total_amount')``, i.e. not net of refunds). One pass over orders
+        with tickets prefetched.
+
+        Returns:
+            {
+                'series': [{'d': days_before, 'tickets': int, 'revenue': float}, ...]
+                          sorted by 'd' descending,
+                'total_tickets': int,
+                'total_revenue': float,
+            }
+        """
+        orders = event.ticket_orders.prefetch_related('tickets').all()
+
+        tickets_by_day = defaultdict(int)
+        revenue_by_day = defaultdict(float)
+
+        for order in orders:
+            days_before = self.calculate_days_before(
+                order.order_date,
+                event.start_date,
+            )
+            tickets_by_day[days_before] += order.tickets.count()
+            revenue_by_day[days_before] += float(order.total_amount)
+
+        days = sorted(
+            set(tickets_by_day) | set(revenue_by_day),
+            reverse=True,
+        )
+        series = [
+            {
+                'd': day,
+                'tickets': tickets_by_day.get(day, 0),
+                'revenue': round(revenue_by_day.get(day, 0.0), 2),
+            }
+            for day in days
+        ]
+
+        return {
+            'series': series,
+            'total_tickets': sum(tickets_by_day.values()),
+            'total_revenue': round(sum(revenue_by_day.values()), 2),
+        }
+
     def get_detailed_sales_data(self, event: Event) -> list:
         """
         Get detailed daily sales data for an event.

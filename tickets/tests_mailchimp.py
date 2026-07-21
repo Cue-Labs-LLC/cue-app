@@ -296,6 +296,35 @@ class MailchimpCampaignMatcherTests(TestCase):
         self.assertIn('campaign_title', prompt)
         self.assertIn('subject_line', prompt)
         self.assertIn('send_time', prompt)
+        self.assertIn('list_name', prompt)
+
+    def test_system_prompt_includes_confidence_calibration(self):
+        org = Organization.objects.create(name='Org', slug='org')
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertIn('HIGH (0.7', system_prompt)
+        self.assertIn('MEDIUM (0.4', system_prompt)
+        self.assertIn('LOW', system_prompt)
+        self.assertIn('list_name', system_prompt)
+
+    def test_system_prompt_injects_org_campaign_title_hints(self):
+        org = Organization.objects.create(
+            name='Org', slug='org',
+            mailchimp_campaign_title_hints='lv = Las Vegas, dates in MMDDYYYY.',
+        )
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertIn('lv = Las Vegas, dates in MMDDYYYY.', system_prompt)
+        self.assertIn('hints about their campaign', system_prompt)
+
+    def test_system_prompt_omits_hints_block_when_unset(self):
+        org = Organization.objects.create(name='Org', slug='org')
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertNotIn('hints about their campaign', system_prompt)
 
 
 @override_settings(MAILCHIMP_REPORTS_CACHE_TTL=900)
@@ -438,7 +467,7 @@ class MailchimpViewTests(TestCase):
         self.assertTrue(params['state'][0])
         self.assertEqual(self.client.session['mailchimp_oauth_state'], params['state'][0])
 
-    @patch('tickets.views.exchange_code_for_token')
+    @patch('tickets.integrations.mailchimp.exchange_code_for_token')
     def test_callback_rejects_invalid_state(self, mock_exchange):
         self._set_oauth_state('expected')
 
@@ -450,9 +479,9 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         mock_exchange.assert_not_called()
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.get_oauth_metadata')
-    @patch('tickets.views.exchange_code_for_token')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.get_oauth_metadata')
+    @patch('tickets.integrations.mailchimp.exchange_code_for_token')
     def test_callback_stores_direct_mailchimp_credentials(self, mock_exchange, mock_metadata, mock_client_cls):
         self._disconnect_org()
         self._set_oauth_state('state_123')
@@ -482,7 +511,7 @@ class MailchimpViewTests(TestCase):
         mock_exchange.assert_called_once()
         mock_client_cls.assert_called_once_with('token_new', 'us20')
 
-    @patch('tickets.views.exchange_code_for_token')
+    @patch('tickets.integrations.mailchimp.exchange_code_for_token')
     def test_callback_api_failure_does_not_store_partial_credentials(self, mock_exchange):
         self._disconnect_org()
         self._set_oauth_state('state_123')
@@ -509,8 +538,8 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(self.org.mailchimp_account_name, '')
         self.assertEqual(self.org.mailchimp_login_email, '')
 
-    @patch('tickets.views.MailchimpCampaignMatcher')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpCampaignMatcher')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_match_endpoint_returns_modal_json(self, mock_fetch, mock_matcher_cls):
         mock_fetch.return_value = [
             _report(f'cmp_{idx}', f'Event Campaign {idx}', '2026-05-08T15:00:00+00:00')
@@ -536,7 +565,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(payload['candidates'][0]['send_time'], 'Friday, May 8th 2026 at 8:00 AM PST')
         mock_fetch.assert_called_once_with(self.org)
 
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_match_endpoint_rejects_unconnected_org(self, mock_fetch):
         self._disconnect_org()
 
@@ -548,8 +577,8 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_fetch.assert_not_called()
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_apply_upserts_single_mailchimp_campaign(self, mock_fetch, mock_client_cls):
         mock_fetch.return_value = [_report('cmp_1', 'Event Campaign')]
         client = mock_client_cls.return_value
@@ -575,7 +604,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaign.match_confidence, Decimal('0.900'))
         self.assertEqual(campaign.version, 2)
 
-    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
     @patch('tickets.services.mailchimp.MailchimpClient')
     def test_regression_apply_succeeds_for_campaign_beyond_old_cap(self, mock_helper_client_cls, mock_view_client_cls):
         """An 'older' campaign — outside the legacy 200 most-recent slice — must now
@@ -598,8 +627,8 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaigns.get().external_id, older_campaign['id'])
         mock_view_client_cls.return_value.get_campaign_report.assert_called_once_with(older_campaign['id'])
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_apply_allows_multiple_linked_campaigns(self, mock_fetch, mock_client_cls):
         mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
@@ -619,8 +648,8 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaigns.count(), 2)
         self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1', 'cmp_2'})
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_apply_accepts_multiple_campaign_ids_in_one_request(self, mock_fetch, mock_client_cls):
         mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
@@ -648,8 +677,8 @@ class MailchimpViewTests(TestCase):
         flash_messages = [str(m) for m in response.wsgi_request._messages]
         self.assertTrue(any('Linked 2 Mailchimp campaigns' in m for m in flash_messages), flash_messages)
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_apply_partial_failure_keeps_successes(self, mock_fetch, mock_client_cls):
         mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
@@ -675,8 +704,8 @@ class MailchimpViewTests(TestCase):
         flash_messages = [str(m) for m in response.wsgi_request._messages]
         self.assertTrue(any('cmp_2' in m for m in flash_messages), flash_messages)
 
-    @patch('tickets.views.MailchimpClient')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_apply_rejects_unknown_campaign_id(self, mock_fetch, mock_client_cls):
         mock_fetch.return_value = [_report('cmp_1', 'Event Campaign')]
         client = mock_client_cls.return_value
@@ -693,8 +722,8 @@ class MailchimpViewTests(TestCase):
         flash_messages = [str(m) for m in response.wsgi_request._messages]
         self.assertTrue(any('cmp_unknown' in m for m in flash_messages), flash_messages)
 
-    @patch('tickets.views.MailchimpCampaignMatcher')
-    @patch('tickets.views.fetch_org_reports_cached')
+    @patch('tickets.integrations.mailchimp.MailchimpCampaignMatcher')
+    @patch('tickets.integrations.mailchimp.fetch_org_reports_cached')
     def test_match_json_marks_linked_candidates(self, mock_fetch, mock_matcher_cls):
         EventEmailCampaign.objects.create(
             event=self.event,
@@ -721,7 +750,7 @@ class MailchimpViewTests(TestCase):
         self.assertTrue(by_id['cmp_1']['is_linked'])
         self.assertFalse(by_id['cmp_2']['is_linked'])
 
-    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
     def test_refresh_action_updates_only_selected_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.return_value = _report('cmp_1', 'Updated Campaign')
@@ -755,7 +784,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(other.emails_sent, 20)
         self.assertEqual(other.version, 1)
 
-    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
     def test_bulk_refresh_updates_linked_campaigns_for_marketing_tab(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = [
@@ -791,7 +820,7 @@ class MailchimpViewTests(TestCase):
         )
         self.assertEqual(client.get_campaign_report.call_count, 2)
 
-    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.integrations.mailchimp.MailchimpClient')
     def test_refresh_failure_keeps_existing_metrics(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = MailchimpAPIError('Mailchimp unavailable')

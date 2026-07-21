@@ -1,0 +1,173 @@
+{% extends 'tickets/base.html' %}
+{% load humanize tickets_extras %}
+
+{% block title %}{{ program.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb" style="font-size: 13px;">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_list' %}">Loyalty</a></li>
+        <li class="breadcrumb-item active">{{ program.name }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <div>
+        <h1>{{ program.name }}
+            {% if program.is_active %}<span class="badge bg-success align-middle">Active</span>{% else %}<span class="badge bg-secondary align-middle">Inactive</span>{% endif %}
+        </h1>
+        {% if program.description %}<p class="text-muted mb-0">{{ program.description }}</p>{% endif %}
+    </div>
+    <div class="page-header-actions">
+        <form method="post" action="{% url 'tickets:loyalty_recalculate' program.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" {% if program.recalc_in_progress %}disabled{% endif %}><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
+        </form>
+        <a href="{% url 'tickets:loyalty_program_edit' program.id %}" class="btn btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a>
+        <form method="post" action="{% url 'tickets:loyalty_program_delete' program.id %}" class="d-inline" onsubmit="return confirm('Delete this loyalty program? Members will be unassigned.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger"><i class="bi bi-trash"></i></button>
+        </form>
+    </div>
+</div>
+
+{% if program.recalc_in_progress %}
+<div class="alert alert-info">
+    <i class="bi bi-hourglass-split"></i>
+    Member recalculation is in progress. Refresh the page in a few moments to see updated results.
+</div>
+{% endif %}
+
+{% if program.points_enabled %}
+<details class="mb-3">
+    <summary class="btn btn-outline-warning btn-sm"><i class="bi bi-arrow-repeat"></i> Recompute points at current rate</summary>
+    <div class="card mt-2 border-warning">
+        <div class="card-body">
+            <p class="small mb-2">
+                Changing the basis or rate only affects <strong>future</strong> orders. Recompute
+                <strong>deletes the points history for every member</strong> and rebuilds it at the current
+                rate ({{ program.points_rate|floatformat:"-2" }} pts {{ program.get_points_basis_display|lower }}).
+                This cannot be undone.
+            </p>
+            <form method="post" action="{% url 'tickets:loyalty_recompute_points' program.id %}"
+                  class="d-flex gap-2 align-items-center flex-wrap"
+                  onsubmit="return confirm('Recompute all loyalty balances at the current rate? This deletes the existing points history for every member and rebuilds it. This cannot be undone.');">
+                {% csrf_token %}
+                <label class="small mb-0" for="recomputeConfirmName">Type <strong>{{ program.name }}</strong> to confirm:</label>
+                <input type="text" name="confirm_name" id="recomputeConfirmName" class="form-control form-control-sm"
+                       style="max-width: 240px;" autocomplete="off" {% if program.recalc_in_progress %}disabled{% endif %}>
+                <button type="submit" id="recomputeSubmit" class="btn btn-sm btn-warning" disabled>Recompute</button>
+            </form>
+        </div>
+    </div>
+</details>
+{% endif %}
+
+{% if points_stats %}
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Outstanding points</div>
+            <div class="stat-value">{{ points_stats.outstanding|intcomma }}</div>
+            <div class="text-muted small mt-1">Unspent balance across all members</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Lifetime points issued</div>
+            <div class="stat-value">{{ points_stats.issued|intcomma }}</div>
+            <div class="text-muted small mt-1">
+                Earning: {{ program.points_rate|floatformat:"-2" }} pts {{ program.get_points_basis_display|lower }}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Members with points</div>
+            <div class="stat-value">{{ points_stats.members_with_points|intcomma }}</div>
+            {% if points_backfilled_at %}
+            <div class="text-muted small mt-1">History backfilled {{ points_backfilled_at|naturaltime }}</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Enrolled members</div>
+            <div class="stat-value">{{ stats.assigned|intcomma }}</div>
+            <div class="text-muted small mt-1">{{ stats.enrolled_pct }}% of {{ stats.total_customers|intcomma }} customers</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Tiers</div>
+            <div class="stat-value">{{ stats.tiers|length }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-label">Not in a tier</div>
+            <div class="stat-value">{{ stats.unassigned|intcomma }}</div>
+            <div class="text-muted small mt-1">Customers who qualify for no tier yet</div>
+        </div>
+    </div>
+</div>
+
+{% if stats.tiers %}
+<div class="row g-3">
+    {% for row in stats.tiers %}
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <span class="badge {{ row.tier.color|badge_class }} fs-6">{{ row.tier.name }}</span>
+                    <span class="text-muted small">Rank {{ row.tier.rank }}</span>
+                </div>
+                <div class="d-flex align-items-baseline gap-2 mb-2">
+                    <span class="h4 mb-0">{{ row.count|intcomma }}</span>
+                    <span class="text-muted small">members ({{ row.pct }}%)</span>
+                </div>
+                <div class="text-muted small mb-2">Avg LTV ${{ row.avg_ltv|floatformat:2|intcomma }}</div>
+                {% if row.tier.perks %}
+                <p class="small mb-3">{{ row.tier.perks }}</p>
+                {% endif %}
+                <a href="{% url 'tickets:loyalty_tier_members' program.id row.tier.id %}" class="btn btn-sm btn-outline-secondary">View members</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-diagram-3"></i>
+    <h3>No tiers configured</h3>
+    <p>Add tiers to this program to start sorting customers by loyalty.</p>
+    <a href="{% url 'tickets:loyalty_program_edit' program.id %}" class="btn btn-primary">Add tiers</a>
+</div>
+{% endif %}
+
+{% if program.last_recalculated_at %}
+<p class="text-muted small mt-3">Members last recalculated {{ program.last_recalculated_at|naturaltime }}.</p>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if program.points_enabled and not program.recalc_in_progress %}
+<script>
+// Type-to-confirm: the Recompute button only enables when the organizer types
+// the exact program name. The server re-validates confirm_name regardless.
+(function () {
+    var input = document.getElementById('recomputeConfirmName');
+    var btn = document.getElementById('recomputeSubmit');
+    if (!input || !btn) return;
+    var target = "{{ program.name|escapejs }}";
+    input.addEventListener('input', function () {
+        btn.disabled = input.value.trim() !== target;
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

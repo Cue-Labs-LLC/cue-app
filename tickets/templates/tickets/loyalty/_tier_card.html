@@ -1,0 +1,130 @@
+{% comment %}
+One loyalty tier card. Rendered once per tier in the formset loop and once
+(hidden) as the clone source for "Add tier".
+
+Context:
+  tier_form     — a LoyaltyTierForm (a real bound form, or formset.empty_form)
+  index         — forloop.counter0 for real rows (omit for the template)
+  initial_count — formset.initial_form_count (omit for the template)
+  is_template   — True when rendered as the hidden clone source (forces collapsed)
+
+A card opens by default when it's a newly-added row (index >= initial_count) or
+has validation errors; existing rows render collapsed.
+{% endcomment %}
+<div class="tier-card{% if not is_template and index >= initial_count or tier_form.errors or tier_form.non_field_errors %} tier-card--open{% endif %}">
+    {{ tier_form.id }}
+    <div class="d-none">{{ tier_form.DELETE }}</div>
+
+    <div class="tier-card__bar">
+        <button type="button" class="tier-card__header"
+                aria-expanded="{% if not is_template and index >= initial_count or tier_form.errors or tier_form.non_field_errors %}true{% else %}false{% endif %}">
+            <span class="tier-card__swatch"></span>
+            <span class="tier-card__title">New tier</span>
+            <span class="tier-card__rank"></span>
+            <span class="tier-card__summary"></span>
+            <i class="bi bi-chevron-down tier-card__chevron"></i>
+        </button>
+        <button type="button" class="tier-remove" title="Remove tier" aria-label="Remove tier"><i class="bi bi-x-lg"></i></button>
+    </div>
+
+    <div class="tier-card__body"{% if is_template or index < initial_count and not tier_form.errors and not tier_form.non_field_errors %} hidden{% endif %}>
+        {% for error in tier_form.non_field_errors %}
+        <div class="text-danger small mb-2">{{ error }}</div>
+        {% endfor %}
+
+        <div class="tier-row__head">
+            <div class="tier-row__name loyalty-field mb-0">
+                <label class="form-label" for="{{ tier_form.name.id_for_label }}">Tier name</label>
+                {{ tier_form.name }}
+                {{ tier_form.name.errors }}
+            </div>
+            <div class="tier-row__rank loyalty-field mb-0">
+                <label class="form-label" for="{{ tier_form.rank.id_for_label }}">Rank</label>
+                {{ tier_form.rank }}
+                {{ tier_form.rank.errors }}
+            </div>
+            <div class="tier-row__color loyalty-field mb-0">
+                <label class="form-label">Color</label>
+                <div class="color-dots">
+                    {% for value, label in tier_form.color.field.choices %}
+                    <input type="radio" class="color-dot-input" name="{{ tier_form.color.html_name }}"
+                           id="{{ tier_form.color.auto_id }}_{{ value }}" value="{{ value }}"
+                           {% if tier_form.color.value|stringformat:'s' == value %}checked{% endif %}>
+                    <label class="color-dot swatch-{{ value }}" for="{{ tier_form.color.auto_id }}_{{ value }}" title="{{ label }}"></label>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="loyalty-field mb-0 mt-3">
+            <label class="form-label" for="{{ tier_form.perks.id_for_label }}">Perks</label>
+            {{ tier_form.perks }}
+        </div>
+
+        <div class="tier-rules mt-3">
+            <div class="loyalty-eyebrow">Qualifying rules</div>
+            <div class="rule-list">
+                <div class="rule{% if not tier_form.min_lifetime_value.value %} d-none{% endif %}" data-rule="spend">
+                    <label class="form-label" for="{{ tier_form.min_lifetime_value.id_for_label }}">Lifetime spend <span class="rule__unit">$</span></label>
+                    <span class="rule__input">{{ tier_form.min_lifetime_value }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_order_count.value %} d-none{% endif %}" data-rule="orders">
+                    <label class="form-label" for="{{ tier_form.min_order_count.id_for_label }}">Orders</label>
+                    <span class="rule__input">{{ tier_form.min_order_count }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_events_purchased.value %} d-none{% endif %}" data-rule="events">
+                    <label class="form-label" for="{{ tier_form.min_events_purchased.id_for_label }}">Events</label>
+                    <span class="rule__input">{{ tier_form.min_events_purchased }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_tickets_purchased.value %} d-none{% endif %}" data-rule="tickets">
+                    <label class="form-label" for="{{ tier_form.min_tickets_purchased.id_for_label }}">Tickets</label>
+                    <span class="rule__input">{{ tier_form.min_tickets_purchased }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.max_days_since_last_order.value %} d-none{% endif %}" data-rule="days">
+                    <label class="form-label" for="{{ tier_form.max_days_since_last_order.id_for_label }}">Within <span class="rule__unit">days</span></label>
+                    <span class="rule__input">{{ tier_form.max_days_since_last_order }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_lifetime_points.value %} d-none{% endif %}" data-rule="points">
+                    <label class="form-label" for="{{ tier_form.min_lifetime_points.id_for_label }}">Lifetime <span class="rule__unit">pts</span></label>
+                    <span class="rule__input">{{ tier_form.min_lifetime_points }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_events_attended.value and not tier_form.attended_within_days.value %} d-none{% endif %}" data-rule="events-attended">
+                    <label class="form-label" for="{{ tier_form.min_events_attended.id_for_label }}">Attended</label>
+                    <span class="rule__input">{{ tier_form.min_events_attended }}</span>
+                    <span class="rule__joiner">events within</span>
+                    <span class="rule__input">{{ tier_form.attended_within_days }}</span>
+                    <span class="rule__unit">days</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_paid_events_recent.value and not tier_form.paid_events_within_days.value %} d-none{% endif %}" data-rule="paid-events">
+                    <label class="form-label" for="{{ tier_form.min_paid_events_recent.id_for_label }}">Paid events</label>
+                    <span class="rule__input">{{ tier_form.min_paid_events_recent }}</span>
+                    <span class="rule__joiner">within</span>
+                    <span class="rule__input">{{ tier_form.paid_events_within_days }}</span>
+                    <span class="rule__unit">days</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+            </div>
+            <div class="rule-add">
+                <button type="button" class="rule-add__btn"><i class="bi bi-plus-lg"></i> Add condition</button>
+                <span class="rule-empty-hint">Includes everyone</span>
+                <div class="rule-add__menu" hidden>
+                    <button type="button" class="rule-add__item" data-rule="spend">Lifetime spend</button>
+                    <button type="button" class="rule-add__item" data-rule="orders">Orders</button>
+                    <button type="button" class="rule-add__item" data-rule="events">Events</button>
+                    <button type="button" class="rule-add__item" data-rule="tickets">Tickets</button>
+                    <button type="button" class="rule-add__item" data-rule="days">Ordered within (days)</button>
+                    <button type="button" class="rule-add__item" data-rule="points">Lifetime points</button>
+                    <button type="button" class="rule-add__item" data-rule="events-attended">Events attended</button>
+                    <button type="button" class="rule-add__item" data-rule="paid-events">Paid events (recent)</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

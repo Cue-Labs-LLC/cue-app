@@ -1,0 +1,377 @@
+{% load static %}
+{% comment %}
+Inline "New venue" modal — shared by event_create.html and event_edit.html.
+Renders a trigger next to the venue dropdown (id_venue) and creates venues via
+AJAX (tickets:venue_create_inline) without leaving the page.
+{% endcomment %}
+<div class="modal fade" id="addVenueModal" tabindex="-1" aria-labelledby="add-venue-modal-title" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="add-venue-modal-title">New Venue</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="iv-errors" class="alert alert-danger d-none py-2 mb-3"></div>
+        <div class="mb-3">
+          <label for="iv-name" class="form-label fw-semibold">Venue name <span class="text-danger">*</span></label>
+          <input type="text" id="iv-name" class="form-control" placeholder="e.g., The Fillmore" autocomplete="off">
+        </div>
+        {% if google_maps_api_key %}
+        <div class="mb-3">
+          <label class="form-label fw-semibold" for="iv-address-input">Address</label>
+          <div class="cue-autocomplete-field">
+            <input type="text" id="iv-address-input" class="form-control" placeholder="Start typing an address" autocomplete="off">
+            <div id="iv-address-dropdown"></div>
+          </div>
+          <div id="iv-address-display" class="small text-muted mt-1"></div>
+        </div>
+        <input type="hidden" id="iv-street">
+        <input type="hidden" id="iv-city">
+        <input type="hidden" id="iv-state">
+        <input type="hidden" id="iv-postal">
+        <input type="hidden" id="iv-country">
+        {% else %}
+        <div class="row g-2 mb-3">
+          <div class="col-md-8">
+            <label for="iv-street" class="form-label fw-semibold">Street address</label>
+            <input type="text" id="iv-street" class="form-control" autocomplete="off">
+          </div>
+          <div class="col-md-4">
+            <label for="iv-city" class="form-label fw-semibold">City</label>
+            <input type="text" id="iv-city" class="form-control" autocomplete="off">
+          </div>
+        </div>
+        <input type="hidden" id="iv-state">
+        <input type="hidden" id="iv-postal">
+        <input type="hidden" id="iv-country">
+        {% endif %}
+        <div class="mb-1">
+          <label for="iv-capacity" class="form-label fw-semibold">Capacity</label>
+          <input type="number" id="iv-capacity" class="form-control" min="1" placeholder="Optional">
+          <div class="form-text text-muted">If set, this pre-fills the event capacity.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="iv-submit">
+          <span class="iv-submit-spinner spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span>
+          <span class="iv-submit-label">Add venue</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if google_maps_api_key %}
+<script src="{% static 'tickets/js/address_autocomplete.js' %}" defer></script>
+{% endif %}
+<script>
+(function () {
+    var CREATE_URL = '{% url "tickets:venue_create_inline" %}';
+    var MAPS_API_KEY = '{{ google_maps_api_key|escapejs }}';
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var venueSelect = document.getElementById('id_venue');
+        var modalEl = document.getElementById('addVenueModal');
+        if (!venueSelect || !modalEl) return;
+
+        // ----- Searchable venue combobox (progressive enhancement over the
+        //       native <select>, which stays the source of truth for submission). -----
+        var venueCombo = (function () {
+            venueSelect.classList.add('d-none');
+
+            var field = document.createElement('div');
+            field.className = 'cue-autocomplete-field cue-combo';
+
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'form-control cue-combo-input';
+            input.placeholder = 'Search venues…';
+            input.autocomplete = 'off';
+            input.setAttribute('role', 'combobox');
+            input.setAttribute('aria-expanded', 'false');
+            input.setAttribute('aria-autocomplete', 'list');
+
+            var dropdown = document.createElement('div');
+            dropdown.className = 'cue-autocomplete-dropdown';
+            dropdown.setAttribute('role', 'listbox');
+
+            field.appendChild(input);
+            field.appendChild(dropdown);
+            venueSelect.insertAdjacentElement('afterend', field);
+
+            var options = [];          // [{ value, label }] excluding the empty placeholder
+            var rows = [];             // currently rendered row elements (venue rows + action row)
+            var activeIndex = -1;
+
+            function refreshOptions() {
+                options = [];
+                for (var i = 0; i < venueSelect.options.length; i++) {
+                    var o = venueSelect.options[i];
+                    if (!o.value) continue; // skip "Select a venue" placeholder
+                    options.push({ value: o.value, label: o.textContent });
+                }
+            }
+
+            function selectedLabel() {
+                var o = venueSelect.options[venueSelect.selectedIndex];
+                return (o && o.value) ? o.textContent : '';
+            }
+
+            function syncInputToSelection() {
+                input.value = selectedLabel();
+            }
+
+            function close() {
+                dropdown.classList.remove('cue-autocomplete-open');
+                dropdown.innerHTML = '';
+                input.setAttribute('aria-expanded', 'false');
+                rows = [];
+                activeIndex = -1;
+            }
+
+            function setActive(idx) {
+                for (var i = 0; i < rows.length; i++) {
+                    rows[i].classList.toggle('cue-autocomplete-item--active', i === idx);
+                }
+                activeIndex = idx;
+                if (idx >= 0 && rows[idx]) rows[idx].scrollIntoView({ block: 'nearest' });
+            }
+
+            function chooseVenue(opt) {
+                venueSelect.value = opt.value;
+                input.value = opt.label;
+                venueSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                close();
+            }
+
+            function openCreate() {
+                var typed = input.value.trim();
+                var nm = document.getElementById('iv-name');
+                if (nm) nm.value = typed;
+                close();
+                bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            }
+
+            function render(filter) {
+                dropdown.innerHTML = '';
+                rows = [];
+                var q = (filter || '').trim().toLowerCase();
+                var matches = options.filter(function (o) {
+                    return !q || o.label.toLowerCase().indexOf(q) !== -1;
+                });
+
+                matches.forEach(function (opt) {
+                    var item = document.createElement('button');
+                    item.type = 'button';
+                    item.className = 'cue-autocomplete-item';
+                    item.setAttribute('role', 'option');
+                    item.textContent = opt.label;
+                    item.addEventListener('mouseenter', function () { setActive(rows.indexOf(item)); });
+                    item.addEventListener('mousedown', function (e) { e.preventDefault(); chooseVenue(opt); });
+                    dropdown.appendChild(item);
+                    rows.push(item);
+                });
+
+                // Persistent "+ New venue" action row.
+                var action = document.createElement('button');
+                action.type = 'button';
+                action.className = 'cue-autocomplete-item cue-autocomplete-item--action';
+                action.setAttribute('role', 'option');
+                action.innerHTML = '<i class="bi bi-plus-lg"></i> New venue';
+                action.addEventListener('mouseenter', function () { setActive(rows.indexOf(action)); });
+                action.addEventListener('mousedown', function (e) { e.preventDefault(); openCreate(); });
+                dropdown.appendChild(action);
+                rows.push(action);
+
+                dropdown.classList.add('cue-autocomplete-open');
+                input.setAttribute('aria-expanded', 'true');
+                setActive(-1);
+            }
+
+            input.addEventListener('focus', function () { render(input.value); });
+            input.addEventListener('input', function () { render(input.value); });
+
+            input.addEventListener('keydown', function (e) {
+                var open = dropdown.classList.contains('cue-autocomplete-open');
+                if (e.key === 'ArrowDown') {
+                    if (!open) { render(input.value); return; }
+                    e.preventDefault();
+                    setActive(Math.min(activeIndex + 1, rows.length - 1));
+                } else if (e.key === 'ArrowUp') {
+                    if (!open) return;
+                    e.preventDefault();
+                    setActive(Math.max(activeIndex - 1, 0));
+                } else if (e.key === 'Enter') {
+                    if (open && activeIndex >= 0 && rows[activeIndex]) {
+                        e.preventDefault();
+                        rows[activeIndex].dispatchEvent(new MouseEvent('mousedown'));
+                    }
+                } else if (e.key === 'Escape') {
+                    close();
+                }
+            });
+
+            input.addEventListener('blur', function () { setTimeout(close, 120); });
+            document.addEventListener('click', function (e) {
+                if (e.target !== input && !dropdown.contains(e.target)) close();
+            });
+
+            // Reflect programmatic selection changes (e.g. a venue created via the modal).
+            venueSelect.addEventListener('change', function () {
+                refreshOptions();
+                syncInputToSelection();
+            });
+            // If a venue creation modal is dismissed, drop any stale typed text.
+            modalEl.addEventListener('hidden.bs.modal', syncInputToSelection);
+
+            refreshOptions();
+            syncInputToSelection();
+            return { refreshOptions: refreshOptions };
+        })();
+
+        var nameInput = document.getElementById('iv-name');
+        var capInput = document.getElementById('iv-capacity');
+        var streetInput = document.getElementById('iv-street');
+        var cityInput = document.getElementById('iv-city');
+        var stateInput = document.getElementById('iv-state');
+        var postalInput = document.getElementById('iv-postal');
+        var countryInput = document.getElementById('iv-country');
+        var errorsBox = document.getElementById('iv-errors');
+        var submitBtn = document.getElementById('iv-submit');
+        var spinner = submitBtn.querySelector('.iv-submit-spinner');
+
+        function clearErrors() {
+            errorsBox.classList.add('d-none');
+            errorsBox.innerHTML = '';
+            nameInput.classList.remove('is-invalid');
+        }
+
+        function renderErrors(errors) {
+            var msgs = [];
+            Object.keys(errors).forEach(function (field) {
+                (errors[field] || []).forEach(function (e) {
+                    var text = (typeof e === 'string') ? e : (e && e.message ? e.message : '');
+                    if (text) msgs.push(text);
+                });
+                if (field === 'name') nameInput.classList.add('is-invalid');
+            });
+            if (!msgs.length) msgs.push('Could not create venue. Please check the details.');
+            errorsBox.innerHTML = msgs.map(function (m) {
+                var d = document.createElement('div');
+                d.textContent = m;
+                return d.outerHTML;
+            }).join('');
+            errorsBox.classList.remove('d-none');
+        }
+
+        function setLoading(on) {
+            submitBtn.disabled = on;
+            spinner.classList.toggle('d-none', !on);
+        }
+
+        function resetForm() {
+            clearErrors();
+            [nameInput, capInput, streetInput, cityInput, stateInput, postalInput, countryInput].forEach(function (el) {
+                if (el) el.value = '';
+            });
+            var addrInput = document.getElementById('iv-address-input');
+            if (addrInput) addrInput.value = '';
+            var display = document.getElementById('iv-address-display');
+            if (display) display.textContent = '';
+        }
+
+        function getCsrf() {
+            var el = document.querySelector('[name=csrfmiddlewaretoken]');
+            return el ? el.value : '';
+        }
+
+        submitBtn.addEventListener('click', function () {
+            clearErrors();
+            var name = nameInput.value.trim();
+            if (!name) {
+                renderErrors({ name: ['Venue name is required.'] });
+                return;
+            }
+            setLoading(true);
+            var body = new URLSearchParams();
+            body.append('name', name);
+            if (capInput.value) body.append('capacity', capInput.value);
+            body.append('street_address', streetInput ? streetInput.value : '');
+            body.append('city', cityInput ? cityInput.value : '');
+            body.append('state', stateInput ? stateInput.value : '');
+            body.append('postal_code', postalInput ? postalInput.value : '');
+            body.append('country', countryInput ? countryInput.value : '');
+
+            fetch(CREATE_URL, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCsrf(),
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: body.toString(),
+            }).then(function (r) {
+                return r.json().then(function (d) { return { ok: r.ok, data: d }; });
+            }).then(function (res) {
+                setLoading(false);
+                if (res.ok && res.data && res.data.success) {
+                    var v = res.data.venue;
+                    var opt = document.createElement('option');
+                    opt.value = v.id;
+                    opt.textContent = v.label;
+                    venueSelect.appendChild(opt);
+                    venueSelect.value = v.id;
+                    // Mirror the existing venue→capacity sync for the new venue.
+                    var capacityInput = document.getElementById('id_capacity');
+                    if (capacityInput && v.capacity && !capacityInput.value) {
+                        capacityInput.value = v.capacity;
+                    }
+                    venueSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    resetForm();
+                    var inst = bootstrap.Modal.getInstance(modalEl);
+                    if (inst) inst.hide();
+                    if (window.showCueToast) window.showCueToast('Venue created', 'success');
+                } else {
+                    renderErrors((res.data && res.data.errors) || {});
+                }
+            }).catch(function () {
+                setLoading(false);
+                renderErrors({ __all__: ['Something went wrong. Please try again.'] });
+            });
+        });
+
+        // Submit on Enter within the name/capacity fields.
+        [nameInput, capInput].forEach(function (el) {
+            if (!el) return;
+            el.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); submitBtn.click(); }
+            });
+        });
+
+        // Focus the name field whenever the modal opens.
+        modalEl.addEventListener('shown.bs.modal', function () {
+            nameInput.focus();
+        });
+
+        {% if google_maps_api_key %}
+        // Wire up the custom address autocomplete (lazy-loads the Maps API on first keystroke).
+        if (window.CueAddressAutocomplete) {
+            var display = document.getElementById('iv-address-display');
+            CueAddressAutocomplete.attach({
+                inputEl: 'iv-address-input',
+                dropdownEl: 'iv-address-dropdown',
+                apiKey: MAPS_API_KEY,
+                fields: {
+                    street: streetInput, city: cityInput, state: stateInput,
+                    postal: postalInput, country: countryInput,
+                },
+                onSelect: function (formatted) { if (display) display.textContent = formatted; },
+                onClear: function () { if (display) display.textContent = ''; },
+            });
+        }
+        {% endif %}
+    });
+})();
+</script>

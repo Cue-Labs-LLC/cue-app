@@ -45,4 +45,25 @@
         {% endif %}
     </div>
 </div>
+
+{% if mailchimp_connection %}
+<div class="card mt-4">
+    <div class="card-body">
+        <h2 class="h5 mb-2">Campaign naming hints</h2>
+        <p class="text-body-secondary small mb-3">
+            Help the AI matcher decode your campaign titles. Optional — leave blank if your campaigns have descriptive titles.
+        </p>
+        <form method="post" action="{% url 'tickets:mailchimp_save_hints' %}">
+            {% csrf_token %}
+            <textarea
+                name="campaign_title_hints"
+                class="form-control"
+                rows="5"
+                maxlength="2000"
+                placeholder="Example: Campaigns prefixed 'lv-' are for Las Vegas events. Format is lv-MMDDYYYY-email-NN where MMDDYYYY is the event date.">{{ org.mailchimp_campaign_title_hints }}</textarea>
+            <button type="submit" class="btn btn-primary mt-3">Save hints</button>
+        </form>
+    </div>
+</div>
+{% endif %}
 {% endblock %}

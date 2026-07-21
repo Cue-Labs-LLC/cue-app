@@ -1,0 +1,189 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% if step == 'done' %}You're in{% else %}Get text updates from {{ org.name }}{% endif %}</title>
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style"
+        href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap"
+        onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap"></noscript>
+  <style>
+    :root{
+      --bg:#0F0E0D; --surface:#191817; --surface-2:#232220; --surface-3:#2D2C2A;
+      --cta:#EDE8E3; --text:#FFFFFF; --text-2:#E8E6E3; --text-3:#C8C5C1;
+      --danger:#D97060; --success:#6A9E7F;
+      --border:rgba(255,255,255,0.07); --border-mid:rgba(255,255,255,0.11); --border-strong:rgba(255,255,255,0.16);
+      --font-display:'Barlow Condensed',system-ui,sans-serif;
+      --font-body:'DM Sans',system-ui,sans-serif;
+      --radius:3px;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{
+      background:var(--bg); color:var(--text);
+      font-family:var(--font-body); font-weight:300; line-height:1.55;
+      -webkit-font-smoothing:antialiased;
+      min-height:100dvh; display:flex; justify-content:center;
+      padding:max(28px,env(safe-area-inset-top)) 22px calc(40px + env(safe-area-inset-bottom));
+    }
+    .wrap{width:100%;max-width:420px;margin:auto;display:flex;flex-direction:column;gap:24px}
+    /* Brand */
+    .brand{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px}
+    .avatar{width:84px;height:84px;border-radius:50%;object-fit:cover;
+      background:var(--surface);border:1px solid var(--border-mid)}
+    .avatar--initial{display:flex;align-items:center;justify-content:center;
+      font-family:var(--font-display);font-weight:800;font-size:2.2rem;color:var(--text)}
+    .org-name{font-family:var(--font-display);font-weight:800;font-size:2.1rem;
+      line-height:1.02;letter-spacing:0.01em;color:var(--text)}
+    .org-desc{font-size:0.86rem;color:var(--text-3);max-width:36ch}
+    /* Form */
+    .form-title{font-family:var(--font-display);font-weight:700;font-size:1.2rem;
+      line-height:1.15;letter-spacing:0.02em;color:var(--text);text-align:center;margin:0 0 2px}
+    form{display:flex;flex-direction:column;gap:16px}
+    .field{display:flex;flex-direction:column;gap:7px}
+    .form-label{font-family:var(--font-body);font-size:0.7rem;font-weight:500;
+      letter-spacing:0.1em;text-transform:uppercase;color:var(--text)}
+    .form-control{
+      width:100%;background:var(--surface-2);border:1px solid var(--border-mid);
+      border-radius:var(--radius);padding:11px 13px;
+      font-family:var(--font-body);font-size:0.9rem;color:var(--text);
+      outline:none;transition:border-color .15s,background .15s;
+    }
+    .form-control::placeholder{color:var(--text-3)}
+    .form-control:focus{border-color:var(--border-strong);background:var(--surface-3)}
+    /* Custom caret so the market select looks designed, not default-native */
+    select.form-control{
+      appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:38px;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23C8C5C1' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat:no-repeat;background-position:right 14px center;
+    }
+    .field--error .form-control{border-color:var(--danger)}
+    .err{font-family:var(--font-body);font-size:0.7rem;letter-spacing:0.03em;color:var(--danger)}
+    /* Consent */
+    .consent{display:flex;gap:11px;align-items:flex-start;margin-top:2px}
+    .consent input{width:16px;height:16px;min-width:16px;margin-top:3px;accent-color:var(--cta);cursor:pointer}
+    .consent label{font-size:0.74rem;line-height:1.5;color:var(--text-3)}
+    .consent a{color:var(--text-2);text-decoration:underline}
+    /* CTA (attendee .btn-primary-dark) */
+    .btn{
+      width:100%;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--cta);color:var(--bg);border:none;border-radius:var(--radius);
+      padding:13px 20px;cursor:pointer;
+      font-family:var(--font-body);font-size:0.78rem;font-weight:500;
+      letter-spacing:0.09em;text-transform:uppercase;transition:opacity .15s;
+    }
+    .btn:hover{opacity:.88}
+    .btn:focus-visible,.form-control:focus-visible,.consent input:focus-visible,a:focus-visible{
+      outline:2px solid var(--border-strong);outline-offset:2px;
+    }
+    /* Notices / states */
+    .notice{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      padding:14px 16px;font-size:0.82rem;color:var(--text-2)}
+    .notice--warn{border-color:var(--danger)}
+    .banner{background:rgba(217,112,96,0.12);border:1px solid var(--danger);color:var(--text);
+      border-radius:var(--radius);padding:12px 14px;font-size:0.82rem}
+    .center{text-align:center}
+    .sub{color:var(--text-3);font-size:0.82rem}
+    .link{color:var(--text-3);text-decoration:underline;background:none;border:none;
+      font:inherit;cursor:pointer;padding:0}
+    .link:hover{color:var(--text-2)}
+    .code-input{text-align:center;font-size:1.5rem;letter-spacing:.5em;
+      padding:14px 0 14px .5em;font-family:var(--font-body);font-weight:500}
+    .done-check{width:60px;height:60px;border-radius:50%;
+      background:rgba(106,158,127,0.16);color:var(--success);
+      display:flex;align-items:center;justify-content:center;font-size:1.9rem;margin:0 auto 4px}
+    .muted-foot{text-align:center;color:var(--text-3);font-size:0.7rem;
+      letter-spacing:0.04em;text-transform:uppercase}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="brand">
+      {% if org.photo %}
+        <img class="avatar" src="{{ org.photo.url }}" alt="{{ org.name }}">
+      {% else %}
+        <div class="avatar avatar--initial" aria-hidden="true">{{ org.name|make_list|first }}</div>
+      {% endif %}
+      <h1 class="org-name">{{ org.name }}</h1>
+      {% if org.description %}<p class="org-desc">{{ org.description }}</p>{% endif %}
+    </div>
+
+    {% if step == 'unavailable' %}
+      <div class="notice center">{{ org.name }} isn't accepting new text subscribers right now.</div>
+
+    {% elif step == 'form' %}
+      {% if send_error %}<div class="banner" role="alert">{{ send_error }}</div>{% endif %}
+      {% if org.sms_subscribe_title %}<h2 class="form-title">{{ org.sms_subscribe_title }}</h2>{% endif %}
+      <form method="post" action="{% url 'tickets:subscribe' org.slug %}" novalidate>
+        {% csrf_token %}
+        <div class="field {% if form.phone.errors %}field--error{% endif %}">
+          <label class="form-label" for="id_phone">Mobile number</label>
+          <input class="form-control" type="tel" id="id_phone" name="phone" autocomplete="tel"
+                 value="{{ form.phone.value|default:'' }}" required aria-describedby="err_phone">
+          {% if form.phone.errors %}<p class="err" id="err_phone" aria-live="polite">{{ form.phone.errors.0 }}</p>{% endif %}
+        </div>
+        {% if form.market %}
+        <div class="field {% if form.market.errors %}field--error{% endif %}">
+          <label class="form-label" for="id_market">{{ form.market.label }}</label>
+          <select class="form-control" id="id_market" name="market" required aria-describedby="err_market">
+            {% for value, label in form.market.field.choices %}
+            <option value="{{ value }}" {% if form.market.value|stringformat:'s' == value|stringformat:'s' %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          {% if form.market.errors %}<p class="err" id="err_market" aria-live="polite">{{ form.market.errors.0 }}</p>{% endif %}
+        </div>
+        {% endif %}
+        <div class="consent">
+          <input type="checkbox" id="id_sms_consent" name="sms_consent" required
+                 {% if form.sms_consent.value %}checked{% endif %} aria-describedby="err_consent">
+          <label for="id_sms_consent">
+            {{ consent_text }} <a href="{% url 'tickets:sms_consent' %}" target="_blank" rel="noopener">Terms &amp; privacy</a>.
+          </label>
+        </div>
+        {% if form.sms_consent.errors %}<p class="err" id="err_consent" aria-live="polite">{{ form.sms_consent.errors.0 }}</p>{% endif %}
+        <button type="submit" class="btn">Get text updates</button>
+      </form>
+      <p class="muted-foot">We text you updates. Reply STOP anytime.</p>
+
+    {% elif step == 'code' %}
+      <form method="post" action="{% url 'tickets:subscribe_verify' org.slug %}" novalidate>
+        {% csrf_token %}
+        <p class="center sub">We texted a 6-digit code to <strong>•••• {{ masked_phone }}</strong>.</p>
+        {% if resent %}<p class="center sub" aria-live="polite">New code sent.</p>{% endif %}
+        <div class="field {% if code_error %}field--error{% endif %}" style="margin-top:14px">
+          <label class="form-label" for="id_otp_code">Verification code</label>
+          <input class="form-control code-input" type="text" id="id_otp_code" name="otp_code"
+                 inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code"
+                 autofocus required aria-describedby="err_code">
+          {% if code_error %}<p class="err" id="err_code" aria-live="polite">{{ code_error }}</p>{% endif %}
+        </div>
+        <button type="submit" class="btn" style="margin-top:16px">Verify</button>
+      </form>
+      <form method="post" action="{% url 'tickets:subscribe_verify' org.slug %}" class="center">
+        {% csrf_token %}
+        <input type="hidden" name="resend" value="1">
+        <button type="submit" class="link">Resend code</button>
+      </form>
+
+    {% elif step == 'done' %}
+      <div class="center" style="display:flex;flex-direction:column;gap:14px">
+        <div class="done-check" aria-hidden="true">&#10003;</div>
+        <h2 class="org-name" style="font-size:1.6rem">You're in.</h2>
+        {% if pending_start %}
+          <div class="notice notice--warn">
+            You previously opted out of texts. To start receiving them again,
+            reply <strong>START</strong>{% if start_number %} to <strong>{{ start_number }}</strong>{% else %} to any message from us{% endif %}. It can take a minute to take effect.
+          </div>
+        {% else %}
+          <p class="sub">{{ org.name }} will text you updates. Reply STOP anytime to opt out.</p>
+        {% endif %}
+        <a class="link" href="{% url 'tickets:public_org_profile' org.slug %}">See {{ org.name }}'s events</a>
+      </div>
+    {% endif %}
+  </main>
+</body>
+</html>

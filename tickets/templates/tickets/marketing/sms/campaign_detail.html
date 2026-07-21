@@ -1,0 +1,113 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}{{ campaign.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-start justify-content-between flex-wrap gap-2">
+    <div>
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to campaigns</a>
+        <h1 class="mb-0">{{ campaign.name }}</h1>
+        <div class="text-muted small mt-1">
+            {% if campaign.status == 'sent' %}<span class="badge bg-success">Sent</span> {{ campaign.sent_at|date:"M d, Y g:i A" }}
+            {% elif campaign.status == 'scheduled' %}<span class="badge bg-info">Scheduled</span> for {{ campaign.scheduled_at|date:"M d, Y g:i A" }}
+            {% elif campaign.status == 'sending' %}<span class="badge bg-warning">Sending…</span>
+            {% elif campaign.status == 'canceled' %}<span class="badge bg-secondary">Canceled</span>
+            {% elif campaign.status == 'failed' %}<span class="badge bg-danger">Failed</span>
+            {% else %}<span class="badge bg-light text-dark">Draft</span>{% endif %}
+        </div>
+    </div>
+    {% if campaign.status == 'scheduled' %}
+    <form method="post" action="{% url 'tickets:sms_campaign_cancel' pk=campaign.id %}" onsubmit="return confirm('Cancel this scheduled campaign?');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-x-circle"></i> Cancel</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Audience</div><div class="stat-card-value">{{ campaign.audience_size }}</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--accent"><div class="stat-card-label">Sent</div><div class="stat-card-value">{{ campaign.sent_count }}</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--success"><div class="stat-card-label">Delivered</div><div class="stat-card-value">{{ campaign.delivered_count }}</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Failed</div><div class="stat-card-value">{{ campaign.failed_count }}</div></div></div>
+</div>
+{% if campaign.link_url %}
+<div class="row g-3 mb-3">
+    <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Clicks (unique)</div><div class="stat-card-value">{{ campaign.unique_clicks }}</div><div class="stat-card-label">{{ campaign.total_clicks }} total</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Unsubscribes</div><div class="stat-card-value">{{ campaign.unsub_count }}</div></div></div>
+    {% if buy_stats and not external_ticket_link %}
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Tickets bought</div><div class="stat-card-value">{{ buy_stats.tickets }}</div><div class="stat-card-label">{{ buy_stats.orders }} order{{ buy_stats.orders|pluralize }}</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--success"><div class="stat-card-label">Revenue</div><div class="stat-card-value">${{ buy_stats.revenue|floatformat:2 }}</div><div class="stat-card-label">net of fees</div></div></div>
+    {% endif %}
+</div>
+{% if external_ticket_link %}
+<div class="text-muted small mb-3"><i class="bi bi-info-circle"></i> This campaign links to an external ticket page, so clicks are tracked but ticket sales and revenue are not.</div>
+{% endif %}
+{% else %}
+<div class="row g-3 mb-3">
+    <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Unsubscribes</div><div class="stat-card-value">{{ campaign.unsub_count }}</div></div></div>
+</div>
+{% endif %}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="text-muted small mb-1">
+            Message &middot; to {{ audience_summary }}
+            {% if campaign.event %}&middot; <a href="{% url 'tickets:event_detail' campaign.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ campaign.event.name }}</a>
+            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                    data-campaign-pk="{{ campaign.id }}" data-campaign-name="{{ campaign.name }}"
+                    data-current-event="{{ campaign.event.id }}" data-next="{{ request.get_full_path }}">Change</button>
+            {% else %}&middot;
+            <button type="button" class="btn btn-link btn-sm p-0 align-baseline"
+                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                    data-campaign-pk="{{ campaign.id }}" data-campaign-name="{{ campaign.name }}"
+                    data-current-event="" data-next="{{ request.get_full_path }}"><i class="bi bi-link-45deg"></i> Link to event</button>
+            {% endif %}
+        </div>
+        <div>{{ campaign.body|linebreaksbr }}</div>
+        {% if campaign.link_url %}<div class="mt-2 small"><i class="bi bi-link-45deg"></i> {{ campaign.link_url }}</div>{% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><strong>Recipients</strong></div>
+    <div class="card-body p-0">
+        {% if page_obj.object_list %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead><tr><th>Customer</th><th>Phone</th><th>Status</th><th>Error</th><th>Updated</th></tr></thead>
+                <tbody>
+                    {% for r in page_obj.object_list %}
+                    <tr>
+                        <td>{% if r.customer %}{{ r.customer.name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-muted">{{ r.phone }}</td>
+                        <td>
+                            {% if r.status == 'delivered' %}<span class="badge bg-success">Delivered</span>
+                            {% elif r.status == 'sent' %}<span class="badge bg-primary">Sent</span>
+                            {% elif r.status == 'queued' %}<span class="badge bg-light text-dark">Queued</span>
+                            {% elif r.status == 'undelivered' %}<span class="badge bg-warning">Undelivered</span>
+                            {% else %}<span class="badge bg-danger">Failed</span>{% endif %}
+                        </td>
+                        <td class="small text-muted">{{ r.error_message }}</td>
+                        <td class="small text-muted">{{ r.updated_at|date:"M d, g:i A" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><i class="bi bi-inbox"></i><p>No recipients yet.</p></div>
+        {% endif %}
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3"><ul class="pagination justify-content-center">
+    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>{% endif %}
+</ul></nav>
+{% endif %}
+
+{% include 'tickets/marketing/sms/_link_event_modal.html' %}
+{% endblock %}

@@ -1,0 +1,25 @@
+{% comment %}
+Reusable connection-aware CTA for a third-party integration.
+
+Frames each integration as something you connect in the Integrations section
+rather than a feature built into the app. Params (via {% include ... with %}):
+  connected  bool — whether this org has the integration connected
+  label      e.g. "Mailchimp"
+  icon       Bootstrap icon class, e.g. "bi-envelope-paper"
+  url_name   URL name of the integration's page, e.g. "tickets:mailchimp_settings"
+  blurb      (not-connected only) one line explaining what connecting unlocks
+{% endcomment %}
+{% if connected %}
+<p class="mb-0 text-body-secondary small">
+    <i class="bi bi-check-circle-fill" style="color: var(--success);"></i>
+    {{ label }} connected · <a href="{% url url_name %}">Manage in Integrations</a>
+</p>
+{% else %}
+<div class="empty-state" style="padding: 24px;">
+    <i class="bi {{ icon }}"></i>
+    <p class="mb-2">{{ blurb }}</p>
+    <a href="{% url url_name %}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-plug"></i> Connect in Integrations
+    </a>
+</div>
+{% endif %}

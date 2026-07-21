@@ -1,0 +1,109 @@
+"""Built-in (system) CSV format definitions maintained by Cue.
+
+These are stored as global ``CSVFormat`` rows (``organization=None``,
+``is_system=True``) so every organization can use them out of the box without
+configuring a column mapping. Orgs can "duplicate to customize" a built-in into
+their own editable, org-scoped format; the global rows themselves are read-only.
+
+``sync_builtin_formats()`` is idempotent and is invoked from a data migration so
+existing and fresh databases stay current. Editing a mapping here and shipping a
+new migration that calls it again upgrades the stored row in place.
+"""
+
+# Each entry mirrors the editable fields of CSVFormat. ``column_mapping`` maps an
+# internal field name to the CSV column header(s) for that platform's export.
+BUILTIN_CSV_FORMATS = [
+    {
+        "name": "POSH",
+        "description": (
+            "Built-in format for POSH ticketing exports, including per-ticket "
+            "check-in / scan data (the \"Ticket Scan Details\" column)."
+        ),
+        "requires_manual_pricing": False,
+        "uses_tiers": False,
+        # Values are lists of candidate CSV headers (CSVProcessor.map_columns
+        # iterates each field's column list).
+        "column_mapping": {
+            "order_number": ["Order Number"],
+            "order_date": ["Order Date/Time"],
+            "customer_name": ["First Name", "Last Name"],
+            "customer_email": ["Email"],
+            "customer_phone": ["Phone Number"],
+            "ticket_type": ["Tickets Purchased"],
+            "quantity": ["# of Tickets"],
+            "price": ["Order Subtotal"],
+            # Revenue = net to organizer (Order Subtotal). POSH's "Order Total"
+            # adds the buyer-paid processing fee on top, which inflates revenue
+            # relative to what POSH reports as the event's Total Revenue.
+            "total_amount": ["Order Subtotal"],
+            "scan_details": ["Ticket Scan Details"],
+            # Door/walk-up sales have no attendee contact info. Mapping this
+            # activates the in-person placeholder path so those rows import
+            # (and their revenue counts) instead of failing email/name validation.
+            "processed_in_person": ["Was Processed In Person"],
+        },
+    },
+    {
+        "name": "Eventbrite",
+        "description": (
+            "Built-in format for Eventbrite CSV exports. Tuned for the Attendee "
+            "report (one row per ticket — real ticket types + barcodes); also "
+            "handles the Orders report via fallback headers. The customer is the "
+            "Buyer (who paid), so a group buyer's tickets credit one customer."
+        ),
+        "requires_manual_pricing": False,
+        "uses_tiers": False,
+        # Candidate lists cover BOTH reports; the right column resolves per file:
+        #   - Attendee report: Barcode number (unique per ticket, so multi-ticket
+        #     orders don't collapse), Ticket type, per-ticket Ticket price.
+        #   - Orders report: Order ID, Event name (no ticket class), Net sales.
+        # Note: "Ticket tier" is intentionally NOT a ticket_type candidate — it is
+        # present-but-blank in Attendee exports and map_columns picks the first
+        # PRESENT column, which would blank out the required ticket_type.
+        "column_mapping": {
+            "order_number": ["Barcode number", "Order ID"],
+            "order_date": ["Order date"],
+            "customer_name": ["Buyer first name", "Buyer last name"],
+            "customer_email": ["Buyer email"],
+            "customer_phone": ["Phone number"],
+            "ticket_type": ["Ticket type", "Ticket Class Name", "Event name"],
+            "quantity": ["Ticket quantity"],
+            # Attendee report: per-ticket face value (net to organizer).
+            "price": ["Ticket price"],
+            # Orders report: order-level organizer net (used when Ticket price absent).
+            # ASSUMPTION (verified against real exports 2026-07): the Attendee report
+            # has NO revenue column and one ticket per row (quantity=1). The processor
+            # uses total_amount DIRECTLY as the order total when present, so if a future
+            # Attendee export ever carried an order-level "Net sales" on each per-ticket
+            # row, revenue would be multiplied by the ticket count. Re-verify before
+            # trusting a new Eventbrite report shape.
+            "total_amount": ["Net sales", "Ticket + add-ons revenue"],
+            "event_name": ["Event name"],
+            "venue": ["Event location"],
+        },
+    },
+]
+
+
+def sync_builtin_formats():
+    """Create or update the global built-in CSV formats. Idempotent.
+
+    Keyed on the (globally unique) ``name`` with ``organization=None`` and
+    ``is_system=True``. Safe to call repeatedly and from migrations.
+    """
+    # Imported lazily so this module is import-safe before app registry is ready.
+    from .models import CSVFormat
+
+    for spec in BUILTIN_CSV_FORMATS:
+        CSVFormat.objects.update_or_create(
+            name=spec["name"],
+            defaults={
+                "organization": None,
+                "is_system": True,
+                "is_default": False,
+                "description": spec.get("description", ""),
+                "requires_manual_pricing": spec.get("requires_manual_pricing", False),
+                "uses_tiers": spec.get("uses_tiers", False),
+                "column_mapping": spec["column_mapping"],
+            },
+        )

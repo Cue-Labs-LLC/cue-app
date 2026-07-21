@@ -70,7 +70,7 @@
 
     /* Layout */
     --sidebar-width: 210px;
-    --content-max: 1200px;
+    --content-max: 1600px;
     --radius: 6px;
     --radius-sm: 4px;
     --radius-lg: 8px;
@@ -95,6 +95,15 @@
 
 html {
     overflow-x: hidden;
+}
+
+/* `overflow-x: hidden` above turns <html> into the scroll container, so the
+   page scrolls behind open modals — Bootstrap's scroll-lock only sets
+   `overflow: hidden` on <body>. Lock the <html> scroller too while any modal
+   is shown. (Bootstrap's body padding-right compensation offsets the
+   disappearing scrollbar, so there's no layout shift.) */
+html:has(.modal.show) {
+    overflow: hidden;
 }
 
 body {
@@ -689,6 +698,17 @@ a:hover {
     margin: 28px 0 12px;
 }
 
+/* Category label above each provider card on the event Marketing tab */
+.marketing-category-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin: 4px 0 10px;
+}
+
 /* -- Tables (Bootstrap Override) --------------- */
 .table {
     font-size: 13.5px;
@@ -778,6 +798,20 @@ a:hover {
 
 .table-striped > tbody > tr:nth-of-type(odd) > * {
     --bs-table-bg-type: rgba(255, 255, 255, 0.02);
+}
+
+/* Pinned "All Markets" portfolio row on the Market Trends leaderboard: a faint
+   accent tint plus a heavier divider so it reads as a summary above the
+   per-market rows rather than a peer market. */
+.market-row--all > td {
+    background-color: var(--accent-muted);
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+}
+
+.table-hover > tbody > tr.market-row--all:hover > * {
+    background-color: var(--accent-muted-border);
+    --bs-table-bg-state: var(--accent-muted-border);
 }
 
 /* -- Buttons (Bootstrap Override) -------------- */
@@ -973,6 +1007,58 @@ a:hover {
     font-weight: 300;
 }
 
+/* Modern circular select for the customers table (header "select all" + rows).
+   Fill uses --accent and the checkmark uses --bg-surface, so contrast holds in
+   both the dark default and the light organizer theme automatically. */
+.cust-check {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    position: relative;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-inset);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.cust-check:hover {
+    border-color: var(--accent);
+}
+.cust-check:checked,
+.cust-check:indeterminate {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.cust-check:checked::after {
+    content: "";
+    position: absolute;
+    left: 6.5px;
+    top: 3px;
+    width: 5px;
+    height: 9px;
+    border: solid var(--bg-surface);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+.cust-check:indeterminate::after {
+    content: "";
+    position: absolute;
+    left: 4.5px;
+    top: 8.5px;
+    width: 9px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--bg-surface);
+}
+.cust-check:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-muted-border);
+}
+
 /* -- Nav Tabs (Status Filter) ------------------ */
 .nav-tabs {
     border-bottom: none;
@@ -1013,6 +1099,113 @@ a:hover {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
 }
+
+/* -- Marketing section nav (primary page-level tabs) -- */
+.marketing-head { margin-bottom: 26px; }
+.marketing-head-top h1 { margin: 0; }
+.marketing-head-subtitle {
+    color: var(--text-secondary);
+    margin: 7px 0 0;
+    max-width: 64ch;
+    font-size: 14px;
+}
+.marketing-sectionnav {
+    display: flex;
+    gap: 2px;
+    margin-top: 18px;
+    border-bottom: 1px solid var(--border);
+}
+.marketing-sectionnav-link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 13px;
+    margin-bottom: -1px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 14px;
+    letter-spacing: 0.01em;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+.marketing-sectionnav-link i { font-size: 15px; opacity: 0.75; transition: opacity 0.15s ease, color 0.15s ease; }
+.marketing-sectionnav-link:hover { color: var(--text-primary); }
+.marketing-sectionnav-link:hover i { opacity: 1; }
+.marketing-sectionnav-link.is-active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.marketing-sectionnav-link.is-active i { opacity: 1; color: var(--accent); }
+.marketing-sectionnav-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px 4px 0 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .marketing-sectionnav-link { animation: mkt-nav-in 0.4s ease both; }
+    .marketing-sectionnav-link:nth-child(2) { animation-delay: 0.07s; }
+    @keyframes mkt-nav-in {
+        from { opacity: 0; transform: translateY(5px); }
+        to   { opacity: 1; transform: none; }
+    }
+}
+
+/* -- Marketing channel + chart cards (shared: Overview + SMS pages) -- */
+.channel-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    border-top-width: 3px;
+    border-top-style: solid;
+    margin-bottom: 1.25rem;
+}
+.channel-card--email { border-top-color: var(--accent); }
+.channel-card--sms   { border-top-color: var(--success); }
+.channel-card--ads   { border-top-color: var(--info); }
+.channel-card-title {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.4rem;
+}
+.channel-card-headline {
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-size: 1.9rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+.channel-card-meta {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    margin-top: 0.65rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 6px 16px;
+}
+.channel-card-meta span { display: block; }
+.channel-card-meta b { color: var(--text-primary); font-weight: 600; }
+
+.marketing-grid-two {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 1.5rem;
+}
+@media (max-width: 900px) { .marketing-grid-two { grid-template-columns: 1fr; } }
+.chart-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.chart-card h2 {
+    font-size: 1rem;
+    margin-bottom: 0.8rem;
+    color: var(--text-primary);
+}
+.chart-canvas-wrap { position: relative; height: 280px; }
 
 /* -- Search Bar -------------------------------- */
 .search-bar {
@@ -1631,9 +1824,88 @@ code {
     color: var(--text-muted);
 }
 
-gmp-place-autocomplete#venue-address-autocomplete {
+/* Custom address autocomplete (CueAddressAutocomplete) — fully themed by us,
+   replacing the stock <gmp-place-autocomplete> shadow-DOM dropdown. */
+.cue-autocomplete-field {
+    position: relative;
+}
+
+.cue-autocomplete-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 1080; /* above Bootstrap modal content (1055) */
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    padding: 4px;
+}
+
+.cue-autocomplete-dropdown.cue-autocomplete-open {
+    display: block;
+}
+
+.cue-autocomplete-item {
     display: block;
     width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: var(--font-body);
+    line-height: 1.3;
+}
+
+.cue-autocomplete-item:hover,
+.cue-autocomplete-item--active {
+    background: var(--bg-inset);
+}
+
+.cue-autocomplete-item--active {
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.cue-autocomplete-item-main {
+    display: block;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.cue-autocomplete-item-secondary {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 1px;
+}
+
+/* Searchable venue combobox — a caret on the input so it reads as a dropdown,
+   and a distinct "+ New venue" action row pinned at the bottom of the list. */
+.cue-combo-input {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%237A7672'%3E%3Cpath d='M4 6l4 4 4-4z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.65rem center;
+    background-size: 16px;
+    padding-right: 2rem;
+}
+
+.cue-autocomplete-item--action {
+    color: var(--accent);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    margin-top: 2px;
+}
+
+.cue-autocomplete-item--action:hover,
+.cue-autocomplete-item--action.cue-autocomplete-item--active {
+    background: var(--accent-muted);
 }
 
 .venue-address-selected-display {
@@ -2343,6 +2615,34 @@ gmp-place-autocomplete#venue-address-autocomplete {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+/* -- Market Trends loading overlay -------------- */
+.mt-region {
+    position: relative;
+}
+
+.mt-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    z-index: 5;
+    background: color-mix(in srgb, var(--bg-page) 55%, transparent);
+    backdrop-filter: blur(1px);
+    border-radius: var(--radius);
+}
+
+.mt-loading-overlay[hidden] {
+    display: none;
+}
+
+.mt-loading-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
 /* =============================================
    ORGANIZER LIGHT THEME
    Overrides the dark defaults for all dashboard
@@ -2626,3 +2926,675 @@ gmp-place-autocomplete#venue-address-autocomplete {
 .survey-form-tabs .nav-link.active .badge {
     background-color: var(--bs-body-bg) !important;
 }
+
+/* =============================================
+   Event Manage tab — minimal, consistent rhythm
+   ============================================= */
+
+/* Quieter, flatter card stack scoped to the Manage tab */
+.manage-tab .card {
+    border-color: var(--border-light);
+    margin-bottom: 20px;
+}
+.manage-tab .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 30px;
+}
+.manage-tab .card-header h5 {
+    line-height: 1.2;
+}
+/* Lead-in helper text under a header */
+.manage-lead {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin: -2px 0 16px;
+    max-width: 60ch;
+}
+
+/* Reusable inset "copy / share" field — replaces bordered input-groups */
+.manage-copy {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 7px 8px 7px 12px;
+    max-width: 560px;
+}
+.manage-copy__text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* When the text element is an <input> (e.g. the public URL) strip chrome */
+input.manage-copy__text {
+    border: none;
+    background: transparent;
+    padding: 0;
+    outline: none;
+    box-shadow: none;
+}
+
+/* Borderless ghost icon button used across the Manage tab */
+.manage-ghost {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 14px;
+    line-height: 1;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+}
+.manage-ghost:hover {
+    color: var(--accent);
+    background: var(--accent-muted);
+}
+.manage-ghost.is-copied {
+    color: var(--accent);
+}
+/* Labeled variant — fits the JS that injects "Copy"/"Copied" text */
+.manage-ghost--label {
+    width: auto;
+    padding: 0 12px;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.manage-copy .manage-ghost--label {
+    border-left: 1px solid var(--border-light);
+    border-radius: 0;
+}
+.manage-copy .manage-ghost--label:last-child {
+    border-top-right-radius: var(--radius-sm);
+    border-bottom-right-radius: var(--radius-sm);
+}
+
+/* Tracking links table */
+.manage-links td,
+.manage-links th {
+    vertical-align: middle;
+}
+.manage-link-cell {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 360px;
+}
+.manage-link-cell code {
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: transparent;
+    padding: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.manage-link-cell .manage-ghost {
+    flex: 0 0 auto;
+}
+.manage-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.manage-num--zero {
+    color: var(--text-tertiary);
+}
+
+/* Destructive row action: invisible until the row is hovered */
+.manage-row-action {
+    color: var(--text-tertiary);
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease;
+}
+.manage-links tr:hover .manage-row-action,
+.manage-row-action:focus-visible {
+    opacity: 1;
+}
+.manage-row-action:hover {
+    color: var(--danger);
+    background: var(--danger-muted);
+}
+
+/* Inline create-link form */
+.manage-create {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-light);
+}
+.manage-create .form-control {
+    background: var(--bg-inset);
+    max-width: 300px;
+}
+
+/* ========================================================================
+   Loyalty program edit/create form — scoped, minimalist refresh.
+   All rules namespaced under .loyalty-form so nothing leaks to other pages;
+   reuses the global tokens (dark-mode automatic).
+   ======================================================================== */
+.loyalty-form {
+    max-width: 820px;
+}
+
+/* Hairline-divided sections inside a card body */
+.loyalty-form .loyalty-section {
+    padding: 4px 0;
+}
+.loyalty-form .loyalty-section + .loyalty-section {
+    margin-top: 22px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+}
+.loyalty-form .loyalty-field {
+    margin-bottom: 16px;
+}
+.loyalty-form .loyalty-field:last-child {
+    margin-bottom: 0;
+}
+
+/* The tiny uppercase tracked eyebrow, matching .card-header h5 treatment */
+.loyalty-form .loyalty-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+}
+.loyalty-form .loyalty-help {
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Checkbox rows: control + stacked title/help */
+.loyalty-form .loyalty-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    margin: 0;
+}
+.loyalty-form .loyalty-check .form-check-input {
+    margin-top: 2px;
+    flex: 0 0 auto;
+}
+.loyalty-form .loyalty-check__title {
+    display: block;
+    font-size: 13.5px;
+    color: var(--text-primary);
+    font-weight: 400;
+}
+.loyalty-form .loyalty-check .loyalty-help {
+    display: block;
+    margin-top: 1px;
+}
+
+/* Revealed points config (progressive disclosure) */
+.loyalty-form .loyalty-subsection {
+    margin-top: 16px;
+    padding-left: 28px;
+    border-left: 1px solid var(--border-light);
+}
+
+/* Token-correct note (replaces raw Bootstrap .alert-warning) */
+.loyalty-form .loyalty-note {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    background: var(--warning-muted);
+    border: 1px solid rgba(196, 154, 60, 0.22);
+    border-radius: var(--radius-sm);
+    padding: 10px 13px;
+    font-size: 12.5px;
+    font-weight: 300;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+.loyalty-form .loyalty-note .bi {
+    color: var(--warning);
+    margin-top: 1px;
+}
+.loyalty-form .loyalty-note strong {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+.loyalty-form .loyalty-note--danger {
+    background: var(--danger-muted);
+    border-color: rgba(217, 112, 96, 0.22);
+}
+.loyalty-form .loyalty-note--danger .errorlist {
+    margin: 0;
+    padding-left: 1em;
+}
+
+/* Tiers — separated, collapsible cards (accordion) */
+.loyalty-form #tiers-container {
+    padding: 16px;
+}
+.loyalty-form .tier-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--tier-color, var(--border));
+    border-radius: var(--radius);
+    transition: opacity 0.15s;
+}
+.loyalty-form .tier-card + .tier-card {
+    margin-top: 12px;
+}
+.loyalty-form .tier-card--removing {
+    opacity: 0.45;
+}
+.loyalty-form .tier-card--removing .tier-card__title {
+    text-decoration: line-through;
+}
+
+/* Header bar: the toggle (header) grows, the remove button sits at the right. */
+.loyalty-form .tier-card__bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 10px;
+}
+
+/* Collapsed header (the row is the toggle; remove button is a sibling) */
+.loyalty-form .tier-card__header {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    padding: 13px 16px;
+    cursor: pointer;
+    color: var(--text-primary);
+    border-radius: var(--radius);
+}
+.loyalty-form .tier-card__header:hover {
+    background: var(--bg-sidebar-hover);
+}
+.loyalty-form .tier-card__swatch {
+    flex: 0 0 auto;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--border);
+    box-shadow: 0 0 0 1px var(--border) inset;
+}
+.loyalty-form .tier-card__title {
+    flex: 0 0 auto;
+    font-size: 14px;
+    font-weight: 500;
+}
+.loyalty-form .tier-card__rank {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+.loyalty-form .tier-card__summary {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.loyalty-form .tier-card__chevron {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    transition: transform 0.15s;
+}
+.loyalty-form .tier-card--open .tier-card__chevron {
+    transform: rotate(180deg);
+}
+/* When expanded, the divider spans the whole bar (header + remove button) */
+.loyalty-form .tier-card--open .tier-card__bar {
+    border-bottom: 1px solid var(--border-light);
+}
+.loyalty-form .tier-card--open .tier-card__header {
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+.loyalty-form .tier-card--open .tier-card__summary {
+    visibility: hidden;
+}
+
+/* Expanded body */
+.loyalty-form .tier-card__body {
+    padding: 18px 16px;
+}
+.loyalty-form .tier-card__body[hidden] {
+    display: none;
+}
+
+.loyalty-form .tier-row__head {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.loyalty-form .tier-row__name {
+    flex: 1 1 200px;
+}
+.loyalty-form .tier-row__rank {
+    flex: 0 0 84px;
+}
+.loyalty-form .tier-row__color {
+    flex: 0 0 auto;
+}
+.loyalty-form .tier-remove {
+    flex: 0 0 auto;
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: color 0.12s, background 0.12s;
+}
+.loyalty-form .tier-remove:hover {
+    color: var(--danger);
+    background: var(--danger-muted);
+}
+
+/* Color swatch picker (radio-backed, pure-CSS selection) */
+.loyalty-form .color-dots {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    height: 38px;
+}
+.loyalty-form .color-dot-input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+.loyalty-form .color-dot {
+    display: block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    cursor: pointer;
+    margin: 0;
+    box-shadow: 0 0 0 1px var(--border) inset;
+    transition: transform 0.1s, box-shadow 0.1s;
+}
+.loyalty-form .color-dot:hover {
+    transform: scale(1.12);
+}
+.loyalty-form .color-dot-input:checked + .color-dot {
+    box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent);
+}
+.loyalty-form .color-dot-input:focus-visible + .color-dot {
+    box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent);
+}
+.loyalty-form .swatch-blue   { background: #3b82f6; }
+.loyalty-form .swatch-green  { background: #22c55e; }
+.loyalty-form .swatch-red    { background: #ef4444; }
+.loyalty-form .swatch-yellow { background: #eab308; }
+.loyalty-form .swatch-purple { background: #7c3aed; }
+.loyalty-form .swatch-orange { background: #f97316; }
+
+/* Qualifying rules — only the conditions you've added show as compact rows */
+.loyalty-form .rule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.loyalty-form .rule-list:empty {
+    display: none;
+}
+.loyalty-form .rule {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.loyalty-form .rule .form-label {
+    flex: 0 0 130px;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    margin: 0;
+}
+.loyalty-form .rule__input {
+    flex: 0 0 auto;
+}
+.loyalty-form .rule__input .form-control {
+    max-width: 120px;
+}
+.loyalty-form .rule__unit {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    text-transform: none;
+}
+/* Connector text between the two inputs of the attendance (count + window) rule. */
+.loyalty-form .rule__joiner {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+/* Keep the paired attendance inputs compact so the row fits on one line. */
+.loyalty-form .rule[data-rule="events-attended"] .rule__input .form-control {
+    max-width: 72px;
+}
+.loyalty-form .rule-remove {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    transition: color 0.12s, background 0.12s;
+}
+.loyalty-form .rule-remove:hover {
+    color: var(--danger);
+    background: var(--danger-muted);
+}
+
+/* + Add condition (dropdown of the not-yet-added rules) */
+/* The "Add condition" dropdown is absolutely positioned and can extend past
+   the card box; the global `.card { overflow: hidden }` would clip it (cutting
+   off the last menu item for tiers near the bottom of the list). */
+.loyalty-form .card {
+    overflow: visible;
+}
+.loyalty-form .rule-add {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+}
+.loyalty-form .rule-add__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 6px 11px;
+    font-size: 12px;
+    transition: border-color 0.12s, color 0.12s;
+}
+.loyalty-form .rule-add__btn:hover {
+    border-color: var(--text-tertiary);
+    color: var(--text-primary);
+}
+.loyalty-form .rule-add__btn[hidden] {
+    display: none;
+}
+.loyalty-form .rule-empty-hint {
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-tertiary);
+}
+.loyalty-form .rule-empty-hint[hidden] {
+    display: none;
+}
+.loyalty-form .rule-add__menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 200px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+.loyalty-form .rule-add__menu[hidden] {
+    display: none;
+}
+.loyalty-form .rule-add__item {
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 7px 10px;
+    font-size: 13px;
+    font-weight: 300;
+}
+.loyalty-form .rule-add__item:hover {
+    background: var(--bg-sidebar-hover);
+}
+.loyalty-form .rule-add__item[hidden] {
+    display: none;
+}
+
+/* Sticky action bar */
+.loyalty-form .loyalty-actions {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 0 calc(14px + env(safe-area-inset-bottom));
+    margin-top: 8px;
+    background: linear-gradient(to top, var(--bg-page) 70%, transparent);
+}
+
+@media (max-width: 575.98px) {
+    .loyalty-form .loyalty-subsection {
+        padding-left: 14px;
+    }
+    .loyalty-form .tier-row {
+        padding: 16px;
+    }
+}
+
+/* Onboarding "Getting started" checklist (dashboard) */
+.onboarding-step-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+}
+.onboarding-progress {
+    min-width: 160px;
+}
+.onboarding-progress .progress {
+    height: 8px;
+}
+
+/* -- AI SMS plan status progress (plan list + detail) ----------------- */
+/* Segmented bar + dotted counts rolling a plan's steps up into
+   sent / scheduled / draft. Colors reuse the semantic tokens so the
+   bar reads the same as the four-state status badge. */
+.plan-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.plan-progress-bar {
+    display: flex;
+    height: 6px;
+    width: 88px;
+    flex: none;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--bg-inset);
+}
+.plan-progress-seg {
+    display: block;
+    height: 100%;
+    min-width: 3px;
+}
+.plan-progress-seg--sent { background: var(--success); }
+.plan-progress-seg--scheduled { background: var(--info); }
+.plan-progress-seg--draft { background: var(--text-tertiary); }
+.plan-progress-counts {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.plan-progress-counts .pc {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+.plan-progress-counts .pc::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.plan-progress-counts .pc--sent { color: var(--success); }
+.plan-progress-counts .pc--scheduled { color: var(--info); }
+.plan-progress-counts .pc--draft { color: var(--text-secondary); }

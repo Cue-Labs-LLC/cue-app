@@ -1,0 +1,135 @@
+{% comment %}
+Mailchimp provider card for the event detail Marketing → Integrations view.
+Rendered (only when connected) via registry marketing_providers(); inherits the
+event_detail context (mailchimp_connection, mailchimp_campaigns, mailchimp_pending_count).
+{% endcomment %}
+{% load tickets_extras %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Mailchimp</h5>
+        <div class="d-inline-flex gap-2 align-items-center">
+            {% if is_org_admin and mailchimp_pending_count %}
+            <form method="post" action="{% url 'tickets:event_mailchimp_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="email">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ mailchimp_pending_count }})</button>
+            </form>
+            {% endif %}
+            {% if is_org_admin %}
+                {% if mailchimp_connection %}
+                <button type="button"
+                        class="btn btn-sm btn-primary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#mailchimpMatchModal"
+                        data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
+                        data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
+                    <i class="bi bi-envelope-paper"></i> Match Mailchimp campaign
+                </button>
+                {% else %}
+                <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-sm btn-primary">
+                    <i class="bi bi-envelope-paper"></i> Connect Mailchimp
+                </a>
+                {% endif %}
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body">
+        {% if mailchimp_connection %}
+        <p class="text-body-secondary mb-3">
+            Connected account: <strong>{{ org.mailchimp_account_name|default:org.mailchimp_login_email|default:org.mailchimp_account_id }}</strong>
+        </p>
+        <div id="mailchimpApplyFlash" class="alert d-none mb-3" role="alert"></div>
+        <div id="mailchimpLinkedSection"{% if not mailchimp_campaigns %} class="d-none"{% endif %}>
+            <div class="table-responsive mb-3">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Linked Campaign</th>
+                            <th>Sent</th>
+                            <th>Emails</th>
+                            <th>Unique Opens</th>
+                            <th>Clicks</th>
+                            <th>Orders</th>
+                            <th>Revenue</th>
+                            <th>Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="mailchimpCampaignRows">
+                        {% for mailchimp_campaign in mailchimp_campaigns %}
+                        <tr data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                            <td>
+                                <strong>{{ mailchimp_campaign.campaign_title }}</strong>
+                                {% if mailchimp_campaign.subject_line %}
+                                <div class="text-body-secondary small">{{ mailchimp_campaign.subject_line }}</div>
+                                {% endif %}
+                                <div class="text-body-secondary small">{{ mailchimp_campaign.external_id }}</div>
+                            </td>
+                            <td>{{ mailchimp_campaign.send_time_display|default:"Unknown" }}</td>
+                            <td data-field="effective_emails_sent" data-editable="true" data-field-name="manual_emails_sent" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_emails_sent is not None %}{{ mailchimp_campaign.manual_emails_sent }}{% else %}{{ mailchimp_campaign.emails_sent }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_emails_sent }}</td>
+                            <td data-field="effective_unique_opens" data-editable="true" data-field-name="manual_unique_opens" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_unique_opens is not None %}{{ mailchimp_campaign.manual_unique_opens }}{% else %}{{ mailchimp_campaign.unique_opens }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_unique_opens }}</td>
+                            <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_clicks is not None %}{{ mailchimp_campaign.manual_clicks }}{% else %}{{ mailchimp_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_clicks }}</td>
+                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_orders is not None %}{{ mailchimp_campaign.manual_orders }}{% else %}{{ mailchimp_campaign.ecommerce_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_orders }}</td>
+                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_revenue is not None %}{{ mailchimp_campaign.manual_revenue }}{% else %}{{ mailchimp_campaign.ecommerce_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">${{ mailchimp_campaign.effective_revenue|currency }}</td>
+                            <td data-field="status">
+                                <span class="badge {% if mailchimp_campaign.needs_review %}bg-warning text-dark{% elif mailchimp_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if mailchimp_campaign.needs_review %}Re-review{% elif mailchimp_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
+                            </td>
+                            <td class="text-end">
+                                <div class="d-inline-flex gap-1 flex-wrap">
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_unconfirm' event.id mailchimp_campaign.id %}" class="d-inline{% if not mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_confirm' event.id mailchimp_campaign.id %}" class="d-inline{% if mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" data-confirm-text="Remove this linked Mailchimp campaign from the event?">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% if is_org_admin %}
+        <div id="mailchimpInlineSuggestions"
+             {% if mailchimp_campaigns %}class="d-none"{% endif %}
+             data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
+             data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
+            <h6 class="mb-3">Suggested Mailchimp campaigns</h6>
+            <div class="mailchimp-inline-loading py-3 text-center">
+                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
+                <span class="text-body-secondary ms-2">Ranking campaigns…</span>
+            </div>
+            <div class="mailchimp-inline-error alert alert-danger d-none mb-0"></div>
+            <form id="mailchimpInlineForm" method="post" action="" class="d-none">
+                {% csrf_token %}
+                <div class="mailchimp-inline-results"></div>
+                <div class="mt-3 d-flex justify-content-end">
+                    <button type="submit" id="mailchimpInlineApplyButton" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                </div>
+            </form>
+            <p class="mailchimp-inline-empty text-body-secondary mb-0 d-none">
+                No matching Mailchimp campaigns found near this event's dates. Use the Match button above to search again.
+            </p>
+        </div>
+        {% endif %}
+        <p id="mailchimpHelpText" class="mb-0 text-body-secondary{% if not mailchimp_campaigns and is_org_admin %} d-none{% endif %}">
+            Use campaign matching to find Mailchimp email campaigns for this event and save opens, clicks, bounces, unsubscribes, and reported revenue.
+        </p>
+        {% include 'tickets/_integration_cta.html' with connected=True label='Mailchimp' icon='bi-envelope-paper' url_name='tickets:mailchimp_settings' %}
+        {% else %}
+        {% include 'tickets/_integration_cta.html' with connected=False label='Mailchimp' icon='bi-envelope-paper' url_name='tickets:mailchimp_settings' blurb='Connect Mailchimp to match email campaigns and attach campaign results to this event.' %}
+        {% endif %}
+    </div>
+</div>

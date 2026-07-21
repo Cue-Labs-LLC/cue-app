@@ -25,7 +25,7 @@
         <div class="stat-card stat-card--info">
             <div class="stat-label">Settling</div>
             <div class="stat-value">${{ settling_balance|currency }}</div>
-            <div class="stat-sub"><i class="bi bi-clock"></i> Available in 2–7 business days</div>
+            <div class="stat-sub"><i class="bi bi-clock"></i> On its way to your Stripe balance</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
@@ -35,16 +35,16 @@
             {% if stripe_available <= 0 and settling_balance > 0 %}
             <div class="stat-sub"><i class="bi bi-hourglass-split"></i> Incoming funds settling</div>
             {% else %}
-            <div class="stat-sub">Settled and available now</div>
+            <div class="stat-sub">In your Stripe balance, available now</div>
             {% endif %}
         </div>
     </div>
     {% else %}
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--success">
-            <div class="stat-label">Available Balance</div>
-            <div class="stat-value">${{ stripe_available|default:available_balance|currency }}</div>
-            <div class="stat-sub">Ready to withdraw</div>
+            <div class="stat-label">Ready to Withdraw</div>
+            <div class="stat-value">&mdash;</div>
+            <div class="stat-sub">Couldn't reach Stripe — refresh to retry</div>
         </div>
     </div>
     {% endif %}
@@ -188,6 +188,10 @@
                 </div>
             </div>
         </form>
+        <p class="text-muted small mt-2 mb-0">
+            Your sales balance lives in your Stripe account — you can also withdraw it from your
+            Stripe dashboard. Refunds of in-person sales issued there keep the Cue platform fee.
+        </p>
         <script>
         (function () {
             var input = document.getElementById('payout-amount');
@@ -276,7 +280,7 @@
                             {% endif %}
                         </td>
                         <td class="text-muted small">
-                            {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% else %}-{% endif %}
+                            {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% elif payout.origin == 'stripe_dashboard' %}Stripe Dashboard{% else %}-{% endif %}
                         </td>
                     </tr>
                     {% endfor %}
