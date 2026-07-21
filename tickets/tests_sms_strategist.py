@@ -700,9 +700,10 @@ class SMSStrategistViewTests(TestCase):
     def test_full_editor_send_marks_origin_plan_step(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
+        original_body = plan.steps[0]['body']
         # Open in full editor — carries plan_id/step in the session prefill.
         self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
-        # Send from the composer, echoing the plan-linkage hidden fields.
+        # Send from the composer with a body edited after the handoff.
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
             'name': 'From editor', 'body': 'Hello from the editor!',
             'send_mode': 'now', 'event': str(self.event.id), 'audience_scope': 'all',
@@ -712,6 +713,30 @@ class SMSStrategistViewTests(TestCase):
         c = SMSCampaign.objects.get(organization=self.org)
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
+        # The step's body is synced to what actually sent (the composer edit), not the
+        # stale AI-written body it launched with — so the plan matches the campaign.
+        self.assertEqual(plan.steps[0]['body'], c.body)
+        self.assertEqual(plan.steps[0]['body'], 'Hello from the editor!')
+        self.assertNotEqual(plan.steps[0]['body'], original_body)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_mark_launched_syncs_body_and_recomputes_segments(self, mock_openai):
+        # A launched step adopts the campaign's final body (e.g. the minted per-campaign
+        # tracking link) and recomputes its segment/encoding meter to match.
+        from tickets.sms_views import _mark_plan_step_launched
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        sent_body = 'TEMPO IS BACK AT MELROSE ON FRIDAY! Tix: https://cueup.co/t/3P2aZxkU8fve/'
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='sent', body=sent_body,
+            status=SMSCampaign.Status.SENT)
+        _mark_plan_step_launched(self.org, plan.id, 0, campaign.id)
+        plan.refresh_from_db()
+        step = plan.steps[0]
+        self.assertEqual(step['body'], sent_body)
+        self.assertEqual(step['launched_campaign_id'], str(campaign.id))
+        self.assertIn('segments', step)
+        self.assertIn('encoding', step)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_open_in_full_editor_prefills_market(self, mock_openai):

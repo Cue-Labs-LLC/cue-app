@@ -2034,8 +2034,14 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
     duplicate confirm (or a composer send that replays an idempotent campaign) never
     double-stamps. Keying the guard on ``launched_campaign_id`` (not ``launched_at``)
     means a legacy step that predates this feature — marked launched by the old
-    redirect-only behavior but never actually sent — can still be confirmed. Recomputes the
-    plan's derived status (see ``_plan_progress``) after stamping the step.
+    redirect-only behavior but never actually sent — can still be confirmed.
+
+    Also syncs the step's body to the campaign's final sent text, so the plan reflects
+    exactly what went out: edits made inside the full composer after the handoff, plus the
+    per-campaign tracking link minted at send (``_mint_campaign_tracking_link``), which
+    otherwise leave the step showing the stale pre-send body/link. Segments/encoding are
+    recomputed so the plan's meter stays accurate. Recomputes the plan's derived status
+    (see ``_plan_progress``) after stamping the step.
     """
     plan = SMSCampaignPlan.objects.filter(organization=org, id=plan_id).first()
     if not plan:
@@ -2045,8 +2051,15 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
         return
     if steps[step].get('launched_campaign_id'):
         return
+    sent_body = (
+        SMSCampaign.objects.filter(organization=org, id=campaign_id)
+        .values_list('body', flat=True).first()
+    )
+    launched = steps[step]
+    if sent_body is not None:
+        launched = _apply_step_body(launched, sent_body)
     steps[step] = {
-        **steps[step],
+        **launched,
         'launched_at': timezone.now().isoformat(),
         'launched_campaign_id': str(campaign_id),
     }
