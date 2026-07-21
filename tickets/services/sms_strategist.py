@@ -81,6 +81,9 @@ SYSTEM_PROMPT = (
     "prices, names, and links provided. If a detail is missing, write around it rather "
     "than guessing.\n"
     "- Personalize with the audience's context, but do not fabricate personal data.\n"
+    "- Title the plan by its DISTINGUISHING ANGLE (see the 'title' field), so the organizer "
+    "can tell several plans for the same event apart at a glance — not by repeating the "
+    "event name.\n"
 )
 
 
@@ -120,6 +123,15 @@ class PlanStep(BaseModel):
 
 
 class CampaignPlan(BaseModel):
+    title: str = Field(
+        description=(
+            "A short, specific title (max ~60 chars) that lets the organizer tell this plan "
+            "apart from OTHER plans for the same event/segment. Capture the distinct angle — "
+            "audience, objective, urgency, or timing (e.g. 'LA sellout sprint - 4-day "
+            "urgency', 'VIP early-bird re-engagement', 'Final-week last-chance push'). Do NOT "
+            "just repeat the event name, and do NOT include the word 'Plan'."
+        )
+    )
     strategy_summary: str = Field(
         description="2-3 sentences describing the overall sequencing approach and why it fits."
     )
@@ -319,7 +331,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
                            ticket_url='', user=None):
     """Generate a structured multi-touch SMS plan. Returns a dict:
 
-        {'strategy_summary': str, 'steps': [ {order, purpose, audience_label,
+        {'title': str, 'strategy_summary': str, 'steps': [ {order, purpose, audience_label,
          audience_criteria, timing_label, body, rationale, segments, encoding}, ... ],
          'model_name': str}
 
@@ -434,6 +446,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         })
 
     return {
+        'title': result.title,
         'strategy_summary': result.strategy_summary,
         'steps': steps,
         'model_name': model_name,

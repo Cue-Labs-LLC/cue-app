@@ -1525,11 +1525,15 @@ def sms_plan_create(request):
             return render(request, 'tickets/marketing/sms/plan_form.html',
                           _plan_form_context(org, event, criteria))
 
-        if event is not None:
-            name = f'Plan · {event.name}'
-        else:
-            tmp = SMSCampaign(organization=org, filter_criteria=criteria)
-            name = f'Plan · {tmp.audience_summary(org)}'
+        # Prefer the AI's distinctive title (so plans for the same event are told apart);
+        # fall back to the plain "Plan · {event/audience}" label if it comes back blank.
+        name = (result.get('title') or '').strip()
+        if not name:
+            if event is not None:
+                name = f'Plan · {event.name}'
+            else:
+                tmp = SMSCampaign(organization=org, filter_criteria=criteria)
+                name = f'Plan · {tmp.audience_summary(org)}'
 
         plan = SMSCampaignPlan.objects.create(
             organization=org, created_by=request.user, event=event,
@@ -1716,6 +1720,31 @@ def sms_plan_delete(request, pk):
     plan.delete()
     messages.success(request, 'Plan deleted.')
     return redirect('tickets:sms_plan_list')
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_rename(request, pk):
+    """Rename a plan. JSON endpoint for the inline title editor on the plan detail page.
+
+    The name is just a label, so this is allowed in any status and never touches the steps
+    or their launched campaigns.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    name = (request.POST.get('name') or '').strip()
+    if not name:
+        return JsonResponse({'ok': False, 'error': 'Name cannot be empty.'}, status=400)
+
+    plan.name = name[:200]
+    plan.save(update_fields=['name', 'updated_at'])
+    return JsonResponse({'ok': True, 'name': plan.name})
 
 
 def _apply_step_body(step_dict, body):
