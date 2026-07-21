@@ -114,13 +114,13 @@
     <div>
         <h1 class="page-title">
             {{ plan.name }}
-            {% if plan.status == 'in_progress' %}<span class="badge bg-info align-middle">In progress</span>
-            {% else %}<span class="badge bg-secondary align-middle">Draft</span>{% endif %}
+            <span class="align-middle">{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</span>
         </h1>
         <p class="page-subtitle">
             AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
             {% if plan.event %} · for {{ plan.event.name }}{% endif %}
         </p>
+        {% include 'tickets/marketing/sms/_plan_progress.html' with step_count=progress.total sent_count=progress.sent scheduled_count=progress.scheduled draft_count=progress.draft %}
     </div>
     <div class="d-flex gap-2">
         <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0" id="planDeleteForm">

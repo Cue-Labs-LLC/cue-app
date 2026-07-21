@@ -1,0 +1,19 @@
+{% comment %}
+Segmented progress bar + dotted counts for one plan's step rollup.
+Expects: step_count, sent_count, scheduled_count, draft_count.
+Zero buckets are omitted. Renders nothing for an empty plan.
+{% endcomment %}
+{% if step_count %}
+<div class="plan-progress" title="{{ sent_count }} sent · {{ scheduled_count }} scheduled · {{ draft_count }} draft">
+    <span class="plan-progress-bar" aria-hidden="true">
+        {% if sent_count %}<span class="plan-progress-seg plan-progress-seg--sent" style="flex: {{ sent_count }}"></span>{% endif %}
+        {% if scheduled_count %}<span class="plan-progress-seg plan-progress-seg--scheduled" style="flex: {{ scheduled_count }}"></span>{% endif %}
+        {% if draft_count %}<span class="plan-progress-seg plan-progress-seg--draft" style="flex: {{ draft_count }}"></span>{% endif %}
+    </span>
+    <span class="plan-progress-counts">
+        {% if sent_count %}<span class="pc pc--sent">{{ sent_count }} sent</span>{% endif %}
+        {% if scheduled_count %}<span class="pc pc--scheduled">{{ scheduled_count }} scheduled</span>{% endif %}
+        {% if draft_count %}<span class="pc pc--draft">{{ draft_count }} draft</span>{% endif %}
+    </span>
+</div>
+{% endif %}
