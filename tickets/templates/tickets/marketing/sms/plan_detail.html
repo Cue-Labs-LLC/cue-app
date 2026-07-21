@@ -48,6 +48,19 @@
 .plan-timing-display:hover .plan-timing-pencil { opacity: 0.6; }
 .plan-timing-editor { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .plan-timing-input { width: auto; min-width: 210px; font-family: var(--font-mono); }
+/* Inline title rename — same display/editor pattern, sized for the page title. */
+.plan-name-edit { display: inline-flex; align-items: center; }
+.plan-name-display {
+    border: 0; background: transparent; color: inherit; font: inherit;
+    cursor: pointer; padding: 2px 8px; margin-left: -8px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: background 0.12s;
+}
+.plan-name-display:hover { background: var(--bg-inset); }
+.plan-name-pencil { opacity: 0; font-size: 0.55em; transition: opacity 0.12s; }
+.plan-name-display:hover .plan-name-pencil { opacity: 0.55; }
+.plan-name-editor { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-name-input { min-width: 320px; max-width: 640px; font-size: 1.1rem; font-weight: 600; }
 .plan-step-audience { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
 .plan-audience-edit {
     border: 0; background: transparent; color: var(--text-secondary);
@@ -113,7 +126,18 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">
-            {{ plan.name }}
+            <span class="plan-name-edit" data-rename-url="{% url 'tickets:sms_plan_rename' pk=plan.id %}">
+                <button type="button" class="plan-name-display" title="Click to rename">
+                    <span data-plan-name>{{ plan.name }}</span>
+                    <i class="bi bi-pencil plan-name-pencil"></i>
+                </button>
+                <span class="plan-name-editor" hidden>
+                    <input type="text" class="form-control form-control-sm plan-name-input"
+                           maxlength="200" value="{{ plan.name }}" aria-label="Plan name">
+                    <button type="button" class="btn btn-sm btn-primary plan-name-save">Save</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary plan-name-cancel">Cancel</button>
+                </span>
+            </span>
             <span class="align-middle">{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</span>
         </h1>
         <p class="page-subtitle">
@@ -413,6 +437,48 @@ document.addEventListener('DOMContentLoaded', function () {
             labelEl.textContent = data.timing_label;
             input.value = data.send_local;
             close();
+        });
+    });
+
+    // Inline plan rename (title).
+    document.querySelectorAll('.plan-name-edit').forEach(function (wrap) {
+        const display = wrap.querySelector('.plan-name-display');
+        const editor = wrap.querySelector('.plan-name-editor');
+        const input = wrap.querySelector('.plan-name-input');
+        const nameEl = wrap.querySelector('[data-plan-name]');
+
+        function open() { display.hidden = true; editor.hidden = false; input.focus(); input.select(); }
+        function close() { editor.hidden = true; display.hidden = false; }
+
+        display.addEventListener('click', open);
+        editor.querySelector('.plan-name-cancel').addEventListener('click', function () {
+            input.value = nameEl.textContent;
+            close();
+        });
+
+        async function save() {
+            const value = input.value.trim();
+            if (!value) { input.setCustomValidity('Name cannot be empty'); input.reportValidity(); input.setCustomValidity(''); return; }
+            let data;
+            try {
+                const resp = await fetch(wrap.dataset.renameUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({name: value}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) { input.setCustomValidity(data && data.error || 'Could not save'); input.reportValidity(); input.setCustomValidity(''); return; }
+            } catch (e) { return; }
+            nameEl.textContent = data.name;
+            input.value = data.name;
+            document.title = data.name;
+            close();
+        }
+
+        editor.querySelector('.plan-name-save').addEventListener('click', save);
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); save(); }
+            else if (e.key === 'Escape') { input.value = nameEl.textContent; close(); }
         });
     });
 

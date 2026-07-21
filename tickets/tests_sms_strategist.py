@@ -25,6 +25,7 @@ from .sms_views import _plan_step_event, _plan_progress
 
 def _fake_plan():
     return CampaignPlan(
+        title='LA sellout sprint',
         strategy_summary='Three touches ramping to the event.',
         steps=[
             PlanStep(purpose='announcement', audience='All subscribers', offset_days=14, send_time='18:00',
@@ -83,6 +84,8 @@ class SMSStrategistViewTests(TestCase):
         plan = SMSCampaignPlan.objects.get(organization=self.org)
         self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
         self.assertEqual(plan.event_id, self.event.id)
+        # The plan is named by the AI's distinctive title, not the generic "Plan · {event}".
+        self.assertEqual(plan.name, 'LA sellout sprint')
         self.assertEqual(len(plan.steps), 3)
         # Event plans default every step to all subscribers (sell to the whole list).
         for step in plan.steps:
@@ -95,6 +98,24 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(usage.total_tokens, 180)
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 5000)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_blank_ai_title_falls_back_to_event_name(self, mock_openai):
+        # If the model returns no usable title, the plan keeps the generic "Plan · {event}".
+        plan_obj = _fake_plan()
+        plan_obj.title = '   '
+        structured = MagicMock()
+        structured.invoke.return_value = {
+            'raw': MagicMock(usage_metadata={'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}),
+            'parsed': plan_obj, 'parsing_error': None,
+        }
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+        mock_openai.return_value = llm
+
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.assertEqual(plan.name, f'Plan · {self.event.name}')
 
     @patch('langchain_openai.ChatOpenAI')
     def test_event_plan_prioritizes_market_matching_venue_city(self, mock_openai):
@@ -982,6 +1003,53 @@ class SMSStrategistViewTests(TestCase):
         self.org.save(update_fields=['ai_sms_strategist_enabled'])
         self.assertEqual(self.client.post(url).status_code, 404)
         self.assertTrue(SMSCampaignPlan.objects.filter(id=plan.id).exists())
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_rename_updates_name(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        resp = self.client.post(
+            reverse('tickets:sms_plan_rename', kwargs={'pk': plan.id}),
+            {'name': '  VIP early-bird push  '},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {'ok': True, 'name': 'VIP early-bird push'})
+        plan.refresh_from_db()
+        self.assertEqual(plan.name, 'VIP early-bird push')          # trimmed + persisted
+        # And it shows on the detail page + the plans list.
+        detail = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(detail, 'VIP early-bird push')
+        self.assertContains(self.client.get(reverse('tickets:sms_plan_list')), 'VIP early-bird push')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_rename_rejects_empty(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        before = plan.name
+        resp = self.client.post(
+            reverse('tickets:sms_plan_rename', kwargs={'pk': plan.id}), {'name': '   '})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.name, before)                          # unchanged
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_rename_gated_scoped_and_post_only(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        url = reverse('tickets:sms_plan_rename', kwargs={'pk': plan.id})
+        self.assertEqual(self.client.get(url).status_code, 405)       # POST-only
+        # Other org cannot rename this plan.
+        other = Organization.objects.create(name='Other', slug='other-ren',
+                                            sms_marketing_enabled=True, ai_sms_strategist_enabled=True)
+        ouser = User.objects.create_user('or', 'or@test.com', 'pw')
+        UserProfile.objects.create(user=ouser, organization=other, org_role=UserProfile.OrgRole.OWNER)
+        oclient = Client(); oclient.login(username='or@test.com', password='pw'); oclient.get(reverse('tickets:home'))
+        self.assertEqual(oclient.post(url, {'name': 'Hijack'}).status_code, 404)
+        # Feature gate off -> 404.
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        self.assertEqual(self.client.post(url, {'name': 'Nope'}).status_code, 404)
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
