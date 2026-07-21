@@ -1597,16 +1597,28 @@ _LAUNCHED_PILL = {
 }
 
 
+def _resolve_campaign_statuses(org, steps_lists):
+    """Map ``str(campaign_id) → live status`` for every launched step across one or more step
+    lists, in a single query. Accepts a list of steps or a list of step lists."""
+    if steps_lists and isinstance(steps_lists[0], dict):
+        steps_lists = [steps_lists]  # a single steps list was passed
+    ids = [
+        s['launched_campaign_id']
+        for steps in steps_lists for s in (steps or [])
+        if s.get('launched_campaign_id')
+    ]
+    if not ids:
+        return {}
+    return {
+        str(cid): status for cid, status in
+        SMSCampaign.objects.filter(organization=org, id__in=ids).values_list('id', 'status')
+    }
+
+
 def _annotate_launched_status(org, steps):
-    """Attach an accurate launched pill (label/class/icon) to each launched step by
-    resolving its campaign's current status in a single query."""
-    ids = [s['launched_campaign_id'] for s in steps if s.get('launched_campaign_id')]
-    status_by_id = {}
-    if ids:
-        status_by_id = {
-            str(cid): status for cid, status in
-            SMSCampaign.objects.filter(organization=org, id__in=ids).values_list('id', 'status')
-        }
+    """Attach an accurate launched pill (label/class/icon) to each launched step, then return
+    the ``id → status`` map so callers can also roll the steps up without a second query."""
+    status_by_id = _resolve_campaign_statuses(org, steps)
     for s in steps:
         cid = s.get('launched_campaign_id')
         if not cid:
@@ -1617,6 +1629,7 @@ def _annotate_launched_status(org, steps):
         s['launched_label'] = label
         s['launched_pill_class'] = css
         s['launched_icon'] = icon
+    return status_by_id
 
 
 def _audience_label_for(org, criteria):
@@ -1642,8 +1655,10 @@ def sms_plan_detail(request, pk):
         id=pk,
     )
     steps = _decorate_plan_steps(plan.steps, org.get_timezone())
-    _annotate_launched_status(org, steps)
-    context = {'plan': plan, 'steps': steps}
+    status_by_id = _annotate_launched_status(org, steps)
+    progress = _bucket_counts(steps, status_by_id)  # reuses the annotate query — no new query
+    _sync_plan_status(plan, progress['status'])
+    context = {'plan': plan, 'steps': steps, 'progress': progress}
     context.update(_audience_option_lists(org))
     return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
@@ -1667,6 +1682,19 @@ def sms_plan_list(request):
     else:
         status_filter = ''
     page = Paginator(plans, 25).get_page(request.GET.get('page'))
+
+    # Resolve every launched step's live campaign status across the whole page in one query,
+    # then attach each plan's bucket counts + self-heal its stored status on drift.
+    page_plans = list(page.object_list)
+    status_by_id = _resolve_campaign_statuses(org, [p.steps for p in page_plans])
+    for p in page_plans:
+        progress = _bucket_counts(p.steps, status_by_id)
+        p.step_count = progress['total']
+        p.draft_count = progress['draft']
+        p.scheduled_count = progress['scheduled']
+        p.sent_count = progress['sent']
+        _sync_plan_status(p, progress['status'])  # heals p.status in-memory + DB on drift
+
     return render(request, 'tickets/marketing/sms/plan_list.html', {
         'page_obj': page,
         'status_filter': status_filter,
@@ -1930,22 +1958,69 @@ def _resolve_step_send_at(step, org):
     return False, timezone.now()
 
 
-def _plan_all_scheduled(steps):
-    """True when the plan has at least one step and every step has been scheduled/launched
-    (each step carries a launched_campaign_id)."""
+def _step_bucket(step, status_by_id):
+    """Fold one plan step into a rollup bucket from its live campaign status.
+
+    Unlaunched steps — and launched steps whose campaign was canceled/failed (they need the
+    organizer to act again) — count as ``draft``. A queued campaign is ``scheduled``; a
+    sending/sent one is ``sent``.
+    """
+    cid = step.get('launched_campaign_id')
+    if not cid:
+        return 'draft'
+    campaign_status = status_by_id.get(str(cid))
+    if campaign_status in ('sending', 'sent'):
+        return 'sent'
+    if campaign_status == 'scheduled':
+        return 'scheduled'
+    # No campaign id resolved (deleted), or canceled/failed → needs action.
+    return 'draft'
+
+
+def _bucket_counts(steps, status_by_id):
+    """Roll steps up to ``{'total','draft','scheduled','sent','status'}`` given a resolved
+    ``id → campaign status`` map (no query). Status:
+      Sent      — every step delivered.
+      Draft     — nothing launched yet.
+      Scheduled — every step launched, at least one still queued (Case 2: nothing left to do).
+      In progress — some launched, some still in draft (Case 1: steps left to schedule).
+    """
     steps = steps or []
-    return bool(steps) and all(s.get('launched_campaign_id') for s in steps)
+    counts = {'draft': 0, 'scheduled': 0, 'sent': 0}
+    for s in steps:
+        counts[_step_bucket(s, status_by_id)] += 1
+    total = len(steps)
+    if total and counts['sent'] == total:
+        status = SMSCampaignPlan.Status.SENT
+    elif counts['draft'] == total:
+        status = SMSCampaignPlan.Status.DRAFT
+    elif counts['draft'] == 0:
+        status = SMSCampaignPlan.Status.SCHEDULED
+    else:
+        status = SMSCampaignPlan.Status.IN_PROGRESS
+    return {'total': total, **counts, 'status': status}
 
 
-def _save_plan_steps(plan, steps):
-    """Persist ``plan.steps`` and keep the derived status in sync: In progress once every
-    step is scheduled/launched, else Draft. One save; writes status only when it changes.
-    Recompute-based, so it advances on the last launch and never spuriously reverts a
-    fully-scheduled plan (steps can't be un-launched)."""
+def _plan_progress(org, steps):
+    """Bucket counts + derived status for one plan's steps, resolving live campaign status in
+    a single query. See ``_bucket_counts`` for the rules."""
+    return _bucket_counts(steps, _resolve_campaign_statuses(org, steps or []))
+
+
+def _sync_plan_status(plan, desired):
+    """Persist a self-healed derived status when it has drifted (e.g. a scheduled step's
+    campaign sent asynchronously). Write-on-change only; no-op otherwise."""
+    if plan.status != desired:
+        plan.status = desired
+        plan.save(update_fields=['status', 'updated_at'])
+
+
+def _save_plan_steps(org, plan, steps):
+    """Persist ``plan.steps`` and keep the derived status in sync (see ``_plan_progress``).
+    One save; writes status only when it changes."""
     plan.steps = steps
     fields = ['steps', 'updated_at']
-    desired = (SMSCampaignPlan.Status.IN_PROGRESS if _plan_all_scheduled(steps)
-               else SMSCampaignPlan.Status.DRAFT)
+    desired = _plan_progress(org, steps)['status']
     if plan.status != desired:
         plan.status = desired
         fields.append('status')
@@ -1959,8 +2034,8 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
     duplicate confirm (or a composer send that replays an idempotent campaign) never
     double-stamps. Keying the guard on ``launched_campaign_id`` (not ``launched_at``)
     means a legacy step that predates this feature — marked launched by the old
-    redirect-only behavior but never actually sent — can still be confirmed. Advances the
-    plan to In progress once this makes every step scheduled.
+    redirect-only behavior but never actually sent — can still be confirmed. Recomputes the
+    plan's derived status (see ``_plan_progress``) after stamping the step.
     """
     plan = SMSCampaignPlan.objects.filter(organization=org, id=plan_id).first()
     if not plan:
@@ -1975,7 +2050,7 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
         'launched_at': timezone.now().isoformat(),
         'launched_campaign_id': str(campaign_id),
     }
-    _save_plan_steps(plan, steps)
+    _save_plan_steps(org, plan, steps)
 
 
 def _plan_step_event(org, plan, criteria):
@@ -2171,7 +2246,8 @@ def sms_plan_remove_step(request, pk, step):
     steps.pop(step)
     for i, s in enumerate(steps):
         s['order'] = i
-    # Recompute status: removing the last un-scheduled step advances the plan to In progress.
-    _save_plan_steps(plan, steps)
+    # Recompute status: removing the last un-scheduled step can advance the plan (e.g. to
+    # Scheduled when every remaining step is queued).
+    _save_plan_steps(org, plan, steps)
     messages.success(request, 'Removed the message from this plan.')
     return redirect('tickets:sms_plan_detail', pk=plan.id)

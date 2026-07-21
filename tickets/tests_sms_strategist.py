@@ -20,7 +20,7 @@ from .services.sms_strategist import (
     CampaignPlan, PlanStep, generate_campaign_plan,
     _top_prior_campaigns, _recent_campaign_bodies,
 )
-from .sms_views import _plan_step_event
+from .sms_views import _plan_step_event, _plan_progress
 
 
 def _fake_plan():
@@ -757,25 +757,28 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_plan_advances_to_in_progress_when_all_steps_scheduled(self, mock_openai):
+    def test_plan_status_progresses_in_progress_then_scheduled(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
         self.assertEqual(len(plan.steps), 3)
-        # Confirm all but the last — the plan stays Draft.
+        # Nothing launched yet → Draft.
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
+        # Confirm the first two (both scheduled for the future). A draft step remains, so the
+        # plan is now partly underway → In progress.
         for i in (0, 1):
             self.client.post(
                 reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': i}),
                 {'idempotency_key': f'k{i}'},
             )
         plan.refresh_from_db()
-        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
-        # Confirm the last — every step is now scheduled → In progress.
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.IN_PROGRESS)
+        # Confirm the last — every step is scheduled and none is still draft → Scheduled.
         self.client.post(
             reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 2}),
             {'idempotency_key': 'k2'},
         )
         plan.refresh_from_db()
-        self.assertEqual(plan.status, SMSCampaignPlan.Status.IN_PROGRESS)
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.SCHEDULED)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_removing_last_unscheduled_step_advances_status(self, mock_openai):
@@ -787,26 +790,49 @@ class SMSStrategistViewTests(TestCase):
                 {'idempotency_key': f'k{i}'},
             )
         plan.refresh_from_db()
-        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
-        # Remove the only remaining unscheduled step → all remaining are scheduled.
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.IN_PROGRESS)
+        # Remove the only remaining draft step → every remaining step is scheduled → Scheduled.
         self.client.post(reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 2}))
         plan.refresh_from_db()
-        self.assertEqual(plan.status, SMSCampaignPlan.Status.IN_PROGRESS)
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.SCHEDULED)
+
+    def _plan_with_steps(self, name, statuses, stored_status):
+        """Build a plan whose steps map to given campaign statuses.
+
+        ``None`` → an unlaunched (draft) step; any ``SMSCampaign.Status`` value → a launched
+        step linked to a campaign in that state. ``stored_status`` seeds ``plan.status`` so it
+        matches the steps (the list/detail views self-heal, so a mismatch would drift).
+        """
+        steps = []
+        for i, st in enumerate(statuses):
+            step = {'order': i, 'body': 'hi', 'segments': 1}
+            if st is not None:
+                campaign = SMSCampaign.objects.create(
+                    organization=self.org, name=f'{name}{i}', body='hi', status=st)
+                step['launched_campaign_id'] = str(campaign.id)
+            steps.append(step)
+        return SMSCampaignPlan.objects.create(
+            organization=self.org, name=name, steps=steps, status=stored_status)
 
     def test_plan_list_filters_by_status(self):
-        SMSCampaignPlan.objects.create(
-            organization=self.org, name='Draft plan', status=SMSCampaignPlan.Status.DRAFT)
-        SMSCampaignPlan.objects.create(
-            organization=self.org, name='Running plan', status=SMSCampaignPlan.Status.IN_PROGRESS)
+        S = SMSCampaign.Status
+        P = SMSCampaignPlan.Status
+        self._plan_with_steps('Draft plan', [None], P.DRAFT)
+        self._plan_with_steps('Running plan', [S.SCHEDULED, None], P.IN_PROGRESS)
+        self._plan_with_steps('Queued plan', [S.SCHEDULED], P.SCHEDULED)
+        self._plan_with_steps('Done plan', [S.SENT], P.SENT)
+        everyone = {'Draft plan', 'Running plan', 'Queued plan', 'Done plan'}
 
         def names(status=None):
             params = {'status': status} if status else {}
             resp = self.client.get(reverse('tickets:sms_plan_list'), params)
-            return [p.name for p in resp.context['page_obj'].object_list]
+            return {p.name for p in resp.context['page_obj'].object_list} & everyone
 
-        self.assertEqual(set(names('draft')) & {'Draft plan', 'Running plan'}, {'Draft plan'})
-        self.assertEqual(set(names('in_progress')) & {'Draft plan', 'Running plan'}, {'Running plan'})
-        self.assertEqual(set(names()) & {'Draft plan', 'Running plan'}, {'Draft plan', 'Running plan'})
+        self.assertEqual(names('draft'), {'Draft plan'})
+        self.assertEqual(names('in_progress'), {'Running plan'})
+        self.assertEqual(names('scheduled'), {'Queued plan'})
+        self.assertEqual(names('sent'), {'Done plan'})
+        self.assertEqual(names(), everyone)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_plan_detail_badge_and_no_manual_toggle(self, mock_openai):
@@ -815,10 +841,57 @@ class SMSStrategistViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
         self.assertContains(resp, '>Draft<')
         self.assertNotContains(resp, 'Mark as ready')      # manual toggle removed
-        plan.status = SMSCampaignPlan.Status.IN_PROGRESS
-        plan.save(update_fields=['status'])
+
+    def test_plan_detail_badge_reflects_step_mix(self):
+        S = SMSCampaign.Status
+        P = SMSCampaignPlan.Status
+
+        def badge(plan):
+            resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+            return resp.content.decode()
+
+        # One sent + one still draft → In progress, with the step breakdown rendered.
+        partial = self._plan_with_steps('Partial', [S.SENT, None], P.IN_PROGRESS)
+        html = badge(partial)
+        self.assertIn('>In progress<', html)
+        self.assertIn('1 sent', html)
+        self.assertIn('1 draft', html)
+        # Every step scheduled → Scheduled.
+        self.assertIn('>Scheduled<', badge(self._plan_with_steps('Queued', [S.SCHEDULED], P.SCHEDULED)))
+        # Every step sent → Sent.
+        self.assertIn('>Sent<', badge(self._plan_with_steps('Done', [S.SENT], P.SENT)))
+
+    def test_plan_detail_self_heals_status_on_async_send(self):
+        # A Scheduled plan whose campaign sends out-of-band (Celery, not a plan mutation) must
+        # render Sent and persist the corrected status for the filter tabs.
+        S = SMSCampaign.Status
+        plan = self._plan_with_steps('Queued', [S.SCHEDULED], SMSCampaignPlan.Status.SCHEDULED)
+        SMSCampaign.objects.filter(organization=self.org).update(status=S.SENT)
         resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
-        self.assertContains(resp, 'In progress')
+        self.assertIn('>Sent<', resp.content.decode())
+        plan.refresh_from_db()
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.SENT)
+
+    def test_plan_progress_buckets(self):
+        S = SMSCampaign.Status
+        P = SMSCampaignPlan.Status
+
+        def progress(statuses):
+            plan = self._plan_with_steps('P', statuses, P.DRAFT)
+            return _plan_progress(self.org, plan.steps)
+
+        self.assertEqual(_plan_progress(self.org, []),
+                         {'total': 0, 'draft': 0, 'scheduled': 0, 'sent': 0, 'status': P.DRAFT})
+        self.assertEqual(progress([None, None])['status'], P.DRAFT)
+        # Case 1: some scheduled, a draft remains.
+        p1 = progress([S.SCHEDULED, None])
+        self.assertEqual((p1['scheduled'], p1['draft'], p1['status']), (1, 1, P.IN_PROGRESS))
+        # Case 2: all launched, at least one still queued.
+        self.assertEqual(progress([S.SCHEDULED, S.SENT])['status'], P.SCHEDULED)
+        self.assertEqual(progress([S.SENT, S.SENT])['status'], P.SENT)
+        # Canceled/failed launched steps fold into the draft (needs-action) bucket.
+        pc = progress([S.CANCELED, S.SCHEDULED])
+        self.assertEqual((pc['draft'], pc['scheduled'], pc['status']), (1, 1, P.IN_PROGRESS))
 
     def test_manual_status_route_removed(self):
         from django.urls import NoReverseMatch

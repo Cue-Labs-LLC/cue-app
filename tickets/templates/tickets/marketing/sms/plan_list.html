@@ -19,6 +19,8 @@
     <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
     <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
     <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
+    <a href="?status=scheduled" class="btn btn-outline-secondary{% if status_filter == 'scheduled' %} active{% endif %}">Scheduled</a>
+    <a href="?status=sent" class="btn btn-outline-secondary{% if status_filter == 'sent' %} active{% endif %}">Sent</a>
 </div>
 
 <div class="card">
@@ -31,7 +33,7 @@
                         <th>Plan</th>
                         <th>Status</th>
                         <th>Event</th>
-                        <th class="text-end">Steps</th>
+                        <th>Progress</th>
                         <th>Created</th>
                         <th class="text-end"></th>
                     </tr>
@@ -40,9 +42,9 @@
                     {% for plan in page_obj.object_list %}
                     <tr role="button" tabindex="0" onclick="window.location='{% url 'tickets:sms_plan_detail' pk=plan.id %}'">
                         <td>{{ plan.name }}</td>
-                        <td>{% if plan.status == 'in_progress' %}<span class="badge bg-info">In progress</span>{% else %}<span class="badge bg-secondary">Draft</span>{% endif %}</td>
+                        <td>{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</td>
                         <td>{% if plan.event %}{{ plan.event.name }}{% else %}<span class="text-secondary">Segment</span>{% endif %}</td>
-                        <td class="text-end">{{ plan.steps|length }}</td>
+                        <td>{% include 'tickets/marketing/sms/_plan_progress.html' with step_count=plan.step_count sent_count=plan.sent_count scheduled_count=plan.scheduled_count draft_count=plan.draft_count %}</td>
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
                         <td class="text-end" onclick="event.stopPropagation()">
                             <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
