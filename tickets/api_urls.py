@@ -32,6 +32,9 @@ urlpatterns = [
     path('organizer/events/<uuid:event_id>/orders/', api_views.organizer_event_orders, name='api_organizer_event_orders'),
     path('organizer/checkin/', api_views.organizer_checkin, name='api_organizer_checkin'),
     path('organizer/sell/', api_views.organizer_sell, name='api_organizer_sell'),
+    # Same dual-auth view as scanner/receipt/ — the organizer app (Token auth)
+    # posts here; the scanner app (Scanner PIN auth) posts to scanner/receipt/.
+    path('organizer/receipt/', api_views.scanner_receipt, name='api_organizer_receipt'),
 
     # Agent / External API (API key auth, no user session)
     path('v1/events/upcoming/', api_views.agent_upcoming_events, name='api_agent_upcoming_events'),
