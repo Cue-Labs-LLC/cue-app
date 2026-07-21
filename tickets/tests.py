@@ -19714,3 +19714,67 @@ class WebhookUITests(TestCase):
     def test_cross_org_endpoint_404(self):
         self.client.force_login(self.admin)
         self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_edit', args=[self.other_endpoint.id])).status_code, 404)
+
+
+class SetupAppReviewDemoCommandTests(TestCase):
+    """setup_app_review_demo must reconcile an existing phone-OTP profile onto
+    the demo org without tripping UserProfile.phone_number's unique constraint
+    (the exact failure that blocked seeding production)."""
+
+    PHONE = '+15555550100'  # present in APP_REVIEW_TEST_PHONES by default
+
+    def _run(self, *args):
+        from io import StringIO
+        call_command('setup_app_review_demo', *args, stdout=StringIO())
+
+    def test_reconciles_existing_orgless_phone_profile(self):
+        # Mirror what api_phone_verify creates on first sign-in: a user + an
+        # org-less profile that already claims the review phone.
+        u = User.objects.create(username='phoneotp', email='')
+        u.set_unusable_password()
+        u.save()
+        prof = UserProfile.objects.create(user=u, phone_number=self.PHONE)
+        self.assertIsNone(prof.organization_id)
+
+        self._run()
+
+        prof.refresh_from_db()
+        org = Organization.objects.get(slug='demo-events-co')
+        # The existing profile is linked — NOT a second profile for the phone.
+        self.assertEqual(prof.organization_id, org.pk)
+        self.assertEqual(prof.role, UserProfile.Role.ORGANIZER)
+        self.assertEqual(prof.org_role, UserProfile.OrgRole.OWNER)
+        self.assertEqual(UserProfile.objects.filter(phone_number=self.PHONE).count(), 1)
+        self.assertTrue(
+            OrganizationMembership.objects.filter(user=u, organization=org).exists()
+        )
+
+        # Event/ticket meet the /organizer/events/ visibility filters.
+        ev = Event.objects.get(organization=org, name='Demo Event')
+        self.assertEqual(ev.ticketing_type, TICKETING_TYPE_DIRECT)
+        self.assertEqual(ev.status, 'live')
+        self.assertGreaterEqual(ev.start_date, timezone.localdate())
+        tt = SaleableTicketType.objects.get(event=ev, name='General Admission')
+        self.assertEqual(tt.price, Decimal('1.00'))
+        self.assertTrue(tt.is_active)
+
+    def test_creates_fresh_user_when_no_profile(self):
+        self.assertFalse(UserProfile.objects.filter(phone_number=self.PHONE).exists())
+        self._run()
+        prof = UserProfile.objects.get(phone_number=self.PHONE)
+        org = Organization.objects.get(slug='demo-events-co')
+        self.assertEqual(prof.organization_id, org.pk)
+        self.assertTrue(Token.objects.filter(user=prof.user).exists())
+
+    def test_idempotent_second_run(self):
+        self._run()
+        self._run()  # must not raise or duplicate
+        org = Organization.objects.get(slug='demo-events-co')
+        self.assertEqual(Organization.objects.filter(slug='demo-events-co').count(), 1)
+        self.assertEqual(Event.objects.filter(organization=org, name='Demo Event').count(), 1)
+        self.assertEqual(
+            SaleableTicketType.objects.filter(
+                event__organization=org, name='General Admission').count(),
+            1,
+        )
+        self.assertEqual(UserProfile.objects.filter(phone_number=self.PHONE).count(), 1)
