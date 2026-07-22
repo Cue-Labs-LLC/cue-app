@@ -7,6 +7,7 @@ urlpatterns = [
     path('auth/scanner-login/', api_views.scanner_login, name='api_scanner_login'),
     path('auth/phone/start/', api_views.api_phone_start, name='api_phone_start'),
     path('auth/phone/verify/', api_views.api_phone_verify, name='api_phone_verify'),
+    path('auth/org/select/', api_views.api_org_select, name='api_org_select'),
 
     # Scanner (PIN-based guest check-in)
     path('scanner/event/', api_views.scanner_event, name='api_scanner_event'),

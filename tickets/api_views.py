@@ -920,6 +920,19 @@ def api_phone_verify(request):
         or org is None
     )
 
+    memberships = (
+        OrganizationMembership.objects
+        .filter(user=user)
+        .select_related('organization')
+        .order_by('organization__name')
+    )
+    orgs = [
+        {'id': str(m.organization_id), 'name': m.organization.name, 'role': m.org_role}
+        for m in memberships
+    ]
+    if not orgs and org:
+        orgs = [{'id': str(org.pk), 'name': org.name, 'role': profile.org_role}]
+
     return Response({
         'token': token.key,
         'user_type': profile.role,
@@ -927,6 +940,47 @@ def api_phone_verify(request):
         'org_name': org.name if org else '',
         'org_id': str(org.pk) if org else None,
         'profile_incomplete': profile_incomplete,
+        'orgs': orgs,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Org selection (mobile: pick active org after phone verify)
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def api_org_select(request):
+    """
+    POST /api/auth/org/select/
+    Body: {org_id}
+    Sets the caller's active organization. Validates that the user is a member
+    of the requested org, then writes it to profile.organization so that all
+    subsequent token-authenticated API calls scope to this org.
+    """
+    org_id = (request.data.get('org_id') or '').strip()
+    if not org_id:
+        return Response({'error': 'org_id is required'}, status=400)
+
+    membership = (
+        OrganizationMembership.objects
+        .select_related('organization')
+        .filter(user=request.user, organization_id=org_id)
+        .first()
+    )
+    if membership is None:
+        return Response({'error': 'Organization not found or access denied'}, status=400)
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    profile.organization = membership.organization
+    profile.org_role = membership.org_role
+    profile.save(update_fields=['organization', 'org_role'])
+
+    return Response({
+        'org_id': str(membership.organization_id),
+        'org_name': membership.organization.name,
+        'org_role': membership.org_role,
     })
 
 
