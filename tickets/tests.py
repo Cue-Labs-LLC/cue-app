@@ -19989,3 +19989,163 @@ class SetupAppReviewDemoCommandTests(TestCase):
             1,
         )
         self.assertEqual(UserProfile.objects.filter(phone_number=self.PHONE).count(), 1)
+
+
+@override_settings(STRIPE_SECRET_KEY='sk_test_x', STRIPE_CURRENCY='usd',
+                   STRIPE_PUBLISHABLE_KEY='pk_test_x')
+class SMSPlanBannerTopupTests(TestCase):
+    """Inline top-up from the plan step's 'not enough tokens' banner: enriched preview
+    fields, one-click saved-card charge, and the inline Stripe Elements intent/confirm."""
+
+    def setUp(self):
+        from tickets.services.sms_credits import price_per_segment_cents
+        self.price = int(price_per_segment_cents())
+        self.org = Organization.objects.create(
+            name='Banner Topup Org', slug='banner-topup-org',
+            sms_marketing_enabled=True, ai_sms_strategist_enabled=True,
+            sms_credit_balance_cents=0,
+        )
+        self.user = User.objects.create_user(username='banner-owner', password='pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        Customer.objects.create(
+            organization=self.org, email='sub@example.com', name='Sub',
+            phone='+15551230000', sms_opt_in=True, rfm_segment='champions',
+        )
+        self.client.force_login(self.user)
+
+    def _make_plan(self):
+        from .models import SMSCampaignPlan
+        return SMSCampaignPlan.objects.create(
+            organization=self.org, name='Launch Plan',
+            steps=[{'order': 0, 'purpose': 'reminder', 'body': 'Tickets on sale now!',
+                    'audience_criteria': {'rfm_segment': ['champions']}}],
+        )
+
+    def _save_card(self):
+        self.org.stripe_customer_id = 'cus_test'
+        self.org.stripe_pm_id = 'pm_test'
+        self.org.stripe_pm_brand = 'visa'
+        self.org.stripe_pm_last4 = '4242'
+        self.org.save()
+
+    # --- page render -------------------------------------------------------
+
+    def test_plan_detail_page_renders_topup_modal(self):
+        plan = self._make_plan()
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="smsTopupModal"')
+        self.assertContains(resp, 'id="sms-topup-config"')
+        self.assertContains(resp, 'data-confirm-topup')
+
+    # --- preview enrichment ------------------------------------------------
+
+    def test_preview_reports_shortfall_and_recommended_pack(self):
+        plan = self._make_plan()
+        url = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0})
+        resp = self.client.post(url)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['insufficient'])
+        self.assertFalse(data['has_saved_card'])
+        # Balance is 0, so the shortfall equals the whole cost.
+        self.assertEqual(data['shortfall_tokens'], data['cost_tokens'])
+        # Smallest preset (500) covers a single-recipient shortfall.
+        self.assertEqual(data['topup_pack_tokens'], 500)
+        self.assertEqual(data['topup_pack_cents'], 500 * self.price)
+
+    def test_preview_flags_saved_card(self):
+        self._save_card()
+        plan = self._make_plan()
+        url = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0})
+        data = self.client.post(url).json()
+        self.assertTrue(data['has_saved_card'])
+        self.assertEqual(data['card_brand'], 'visa')
+        self.assertEqual(data['card_last4'], '4242')
+
+    # --- one-click saved-card top-up (JSON) --------------------------------
+
+    def test_topup_ajax_without_saved_card_asks_for_card(self):
+        resp = self.client.post(reverse('tickets:sms_credits_topup_ajax'), {'tokens': 500})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['ok'])
+        self.assertTrue(data['needs_card'])
+
+    def test_topup_ajax_charges_saved_card_and_credits(self):
+        self._save_card()
+        fake_pi = MagicMock(id='pi_ajax', status='succeeded', amount_received=500 * self.price)
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            resp = self.client.post(reverse('tickets:sms_credits_topup_ajax'), {'tokens': 500})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['balance_tokens'], 500)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+    # --- inline Stripe Elements intent + confirm ---------------------------
+
+    def test_topup_intent_returns_client_secret(self):
+        self.org.stripe_customer_id = 'cus_test'
+        self.org.save()
+        fake_pi = MagicMock(client_secret='pi_secret_123')
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi) as create:
+            resp = self.client.post(reverse('tickets:sms_credits_topup_intent'), {'tokens': 1000})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['client_secret'], 'pi_secret_123')
+        kwargs = create.call_args.kwargs
+        self.assertEqual(kwargs['amount'], 1000 * self.price)
+        self.assertEqual(kwargs['setup_future_usage'], 'off_session')
+        self.assertEqual(kwargs['metadata']['organization_id'], str(self.org.id))
+
+    def test_topup_intent_rejects_bad_pack(self):
+        resp = self.client.post(reverse('tickets:sms_credits_topup_intent'), {'tokens': 777})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+
+    def _fake_confirmed_pi(self, org_id):
+        return {
+            'id': 'pi_confirm', 'status': 'succeeded', 'payment_method': 'pm_new',
+            'amount_received': 500 * self.price,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(org_id),
+                         'credit_cents': str(500 * self.price), 'flow': 'inline'},
+        }
+
+    def test_topup_confirm_credits_once_and_is_idempotent(self):
+        url = reverse('tickets:sms_credits_topup_confirm')
+        pi = self._fake_confirmed_pi(self.org.id)
+        with patch('stripe.PaymentIntent.retrieve', return_value=pi), \
+                patch('tickets.views._save_org_card_from_pm'):
+            r1 = self.client.post(url, {'payment_intent_id': 'pi_confirm'})
+            r2 = self.client.post(url, {'payment_intent_id': 'pi_confirm'})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.org.refresh_from_db()
+        # Idempotent: the same PaymentIntent id credits exactly once.
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+    def test_topup_confirm_rejects_other_orgs_payment_intent(self):
+        other = Organization.objects.create(name='Other', slug='other-topup-org')
+        pi = self._fake_confirmed_pi(other.id)
+        with patch('stripe.PaymentIntent.retrieve', return_value=pi):
+            resp = self.client.post(reverse('tickets:sms_credits_topup_confirm'),
+                                    {'payment_intent_id': 'pi_confirm'})
+        self.assertEqual(resp.status_code, 404)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+    def test_charge_saved_view_still_redirects(self):
+        """The wallet-page redirect view keeps working after the helper refactor."""
+        self._save_card()
+        fake_pi = MagicMock(id='pi_redir', status='succeeded', amount_received=500 * self.price)
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': 500})
+        self.assertRedirects(resp, reverse('tickets:sms_credits'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
