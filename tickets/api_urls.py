@@ -29,6 +29,7 @@ urlpatterns = [
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),
     path('organizer/events/<uuid:event_id>/ticket-types/', api_views.organizer_ticket_types, name='api_organizer_ticket_types'),
+    path('organizer/events/<uuid:event_id>/checkin/', api_views.organizer_event_checkin, name='api_organizer_event_checkin'),
     path('organizer/events/<uuid:event_id>/checkin-stats/', api_views.organizer_checkin_stats, name='api_organizer_checkin_stats'),
     path('organizer/events/<uuid:event_id>/orders/', api_views.organizer_event_orders, name='api_organizer_event_orders'),
     path('organizer/checkin/', api_views.organizer_checkin, name='api_organizer_checkin'),
