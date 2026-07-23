@@ -1340,6 +1340,94 @@ def organizer_checkin(request):
     }, status=200)
 
 
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def organizer_event_checkin(request, event_id):
+    """
+    POST /api/organizer/events/<uuid:event_id>/checkin/
+    Body: {order_number}
+    Event-scoped check-in for the organizer app. event_id comes from the URL
+    path (unlike /api/organizer/checkin/ which takes it in the body).
+    All four business outcomes (checked_in, already_checked_in, refunded,
+    not_found) return 200 — non-2xx responses are transport errors only.
+    """
+    org = _get_org_from_user(request.user)
+    if org is None:
+        return Response({'error': 'No organization found for this user'}, status=403)
+
+    order_number = request.data.get('order_number', '').strip()
+    if not order_number:
+        return Response({'error': 'order_number is required'}, status=400)
+
+    # 404 if event doesn't exist or belongs to a different org (no data leak).
+    event = get_object_or_404(Event.objects.filter(organization=org), pk=event_id)
+
+    with transaction.atomic():
+        order = (
+            TicketOrder.objects
+            .select_for_update()
+            .filter(
+                customer__organization=org,
+                event=event,
+                order_number=order_number,
+            )
+            .select_related('customer')
+            .prefetch_related('tickets')
+            .first()
+        )
+
+        if order is None:
+            return Response({
+                'status': 'not_found',
+                'order_number': order_number,
+                'customer_name': '',
+            }, status=200)
+
+        if order.refunded_at is not None:
+            return Response({
+                'status': 'refunded',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+            }, status=200)
+
+        if order.checked_in_at is not None:
+            checked_in_count = TicketOrder.objects.filter(
+                event=event,
+                customer__organization=org,
+                checked_in_at__isnull=False,
+            ).count()
+            return Response({
+                'status': 'already_checked_in',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'checked_in_at': order.checked_in_at.isoformat(),
+                'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'checked_in_count': checked_in_count,
+            }, status=200)
+
+        now = timezone.now()
+        order.checked_in_at = now
+        order.checked_in_by = request.user
+        order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        order.tickets.update(scanned_at=now)
+
+    checked_in_count = TicketOrder.objects.filter(
+        event=event,
+        customer__organization=org,
+        checked_in_at__isnull=False,
+    ).count()
+
+    return Response({
+        'status': 'checked_in',
+        'order_number': order.order_number,
+        'customer_name': order.customer.name,
+        'checked_in_at': order.checked_in_at.isoformat(),
+        'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'checked_in_count': checked_in_count,
+    }, status=200)
+
+
 # ---------------------------------------------------------------------------
 # Stripe Terminal — Connection Token
 # ---------------------------------------------------------------------------
