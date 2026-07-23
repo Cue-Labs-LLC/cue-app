@@ -2107,6 +2107,30 @@ class SMSConsentRecord(AuditBaseModel):
         super().save(*args, **kwargs)
 
 
+class SMSCampaignQuerySet(models.QuerySet):
+    def due(self, now=None):
+        """Scheduled campaigns whose send time has arrived — the scheduler's
+        dispatch set. Source of truth shared by the dispatcher and read-only
+        status commands so the two can never disagree about what's pending."""
+        now = now or timezone.now()
+        return self.filter(
+            status=SMSCampaign.Status.SCHEDULED,
+            scheduled_at__lte=now,
+        )
+
+    def stuck(self, now=None, minutes=None):
+        """Campaigns wedged in 'sending' past the recovery threshold (worker
+        died mid-send). Re-dispatch is safe — the orchestrator resends only
+        still-queued recipients."""
+        now = now or timezone.now()
+        if minutes is None:
+            minutes = SMSCampaign.STUCK_SENDING_MINUTES
+        return self.filter(
+            status=SMSCampaign.Status.SENDING,
+            started_at__lte=now - timezone.timedelta(minutes=minutes),
+        )
+
+
 class SMSCampaign(AuditBaseModel):
     """A native marketing-SMS broadcast.
 
@@ -2118,6 +2142,13 @@ class SMSCampaign(AuditBaseModel):
     truth for sent/delivered/failed counts (derived, never incremented here, so
     retried Twilio callbacks can't cause drift).
     """
+    # A campaign stuck in 'sending' longer than this (worker died mid-send) is
+    # re-dispatched by the scheduler; the orchestrator resends only still-queued
+    # recipients. Set comfortably above the worst-case wall-clock of a healthy
+    # max-size send (SMS_CAMPAIGN_MAX_RECIPIENTS under Twilio throttling) so
+    # recovery never fires alongside a slow-but-live send and double-dispatches.
+    STUCK_SENDING_MINUTES = 30
+
     class Status(models.TextChoices):
         DRAFT = 'draft', 'Draft'
         SCHEDULED = 'scheduled', 'Scheduled'
@@ -2125,6 +2156,8 @@ class SMSCampaign(AuditBaseModel):
         SENT = 'sent', 'Sent'
         FAILED = 'failed', 'Failed'
         CANCELED = 'canceled', 'Canceled'
+
+    objects = SMSCampaignQuerySet.as_manager()
 
     organization = models.ForeignKey(
         Organization,
