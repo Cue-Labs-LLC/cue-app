@@ -2118,6 +2118,17 @@ class SMSCampaignQuerySet(models.QuerySet):
             scheduled_at__lte=now,
         )
 
+    def upcoming(self, now=None):
+        """Scheduled campaigns whose send time is still in the future — frozen,
+        charged, and waiting. Not yet dispatchable (that's due()); surfaced for
+        operational visibility so a queued-but-not-due campaign isn't mistaken
+        for a stuck or missing one. Exact complement of due() over SCHEDULED."""
+        now = now or timezone.now()
+        return self.filter(
+            status=SMSCampaign.Status.SCHEDULED,
+            scheduled_at__gt=now,
+        )
+
     def stuck(self, now=None, minutes=None):
         """Campaigns wedged in 'sending' past the recovery threshold (worker
         died mid-send). Re-dispatch is safe — the orchestrator resends only
