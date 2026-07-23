@@ -29,12 +29,20 @@ class Command(BaseCommand):
             action='store_true',
             help='Run inline instead of enqueueing Celery tasks (debugging).',
         )
+        parser.add_argument(
+            '--dry-run',
+            action='store_true',
+            help='Report due and stuck campaigns without dispatching anything.',
+        )
 
     def handle(self, *args, **options):
         now = timezone.now()
         sync = options.get('sync')
+        dry_run = options.get('dry_run')
 
         def dispatch(campaign_id):
+            if dry_run:
+                return
             if sync:
                 send_sms_campaign_task.apply(args=[str(campaign_id)])
             else:
@@ -58,8 +66,16 @@ class Command(BaseCommand):
             dispatch(cid)
             stuck_count += 1
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"SMS scheduler: dispatched {due_count} due, recovered {stuck_count} stuck."
+        if dry_run:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"SMS scheduler (dry run): {due_count} due, {stuck_count} stuck. "
+                    f"Nothing dispatched."
+                )
             )
-        )
+        else:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"SMS scheduler: dispatched {due_count} due, recovered {stuck_count} stuck."
+                )
+            )
