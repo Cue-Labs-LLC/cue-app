@@ -1251,34 +1251,26 @@ def sms_credits_success(request):
     return redirect('tickets:sms_credits')
 
 
-@login_required
-@require_org
-@require_host
-@require_sms_feature
-@require_POST
-def sms_credits_charge_saved(request):
-    """One-click top-up: charge the org's saved card off-session and credit the wallet.
+def _charge_saved_card_for_tokens(org, token_pack):
+    """Charge the org's saved card off-session for a token pack and credit the wallet.
 
-    Credits synchronously on success (idempotent via the PaymentIntent id); the
-    payment_intent.succeeded webhook is a no-op retry under the same id. On any card
-    problem we fall back to the hosted Checkout flow rather than failing hard.
+    Returns ``(ok, code, message)``. On ``ok`` the wallet is already credited (idempotent
+    via the PaymentIntent id). On a stale saved card (``resource_missing``) the local card
+    fields are cleared so the caller can fall back to fresh card entry. ``message`` is a
+    user-facing string; ``code`` is a stable tag the caller branches on
+    (``ok`` / ``invalid_pack`` / ``not_configured`` / ``no_card`` / ``card_declined`` /
+    ``needs_verification`` / ``card_missing`` / ``error``).
+
+    Shared by the wallet page (redirect view) and the plan-banner one-click top-up (JSON).
     """
-    org = get_organization(request)
     from .services.sms_credits import price_per_segment_cents, credit
     from .models import Organization
-    try:
-        token_pack = int(request.POST.get('tokens', '0'))
-    except (TypeError, ValueError):
-        token_pack = 0
     if token_pack not in SMS_CREDIT_PRESETS_TOKENS:
-        messages.error(request, 'Pick a valid token pack.')
-        return redirect('tickets:sms_credits')
+        return False, 'invalid_pack', 'Pick a valid token pack.'
     if not getattr(settings, 'STRIPE_SECRET_KEY', ''):
-        messages.error(request, 'Payments are not configured for this environment.')
-        return redirect('tickets:sms_credits')
+        return False, 'not_configured', 'Payments are not configured for this environment.'
     if not (org.stripe_pm_id and org.stripe_customer_id):
-        messages.error(request, 'No saved card on file. Add one by topping up below.')
-        return redirect('tickets:sms_credits')
+        return False, 'no_card', 'No saved card on file. Add one by topping up below.'
 
     amount_cents = int(token_pack * price_per_segment_cents())
     import stripe as stripe_lib
@@ -1300,11 +1292,10 @@ def sms_credits_charge_saved(request):
         )
     except stripe_lib.error.CardError as e:
         if getattr(e, 'code', '') == 'authentication_required':
-            messages.error(request, 'Your card needs verification. Please top up below to '
-                                    'confirm it once, then one-click will work again.')
-        else:
-            messages.error(request, 'Your saved card was declined. Try another card below.')
-        return redirect('tickets:sms_credits')
+            return (False, 'needs_verification',
+                    'Your card needs verification. Please top up below to '
+                    'confirm it once, then one-click will work again.')
+        return False, 'card_declined', 'Your saved card was declined. Try another card below.'
     except stripe_lib.error.InvalidRequestError as e:
         if getattr(e, 'code', '') == 'resource_missing':
             # The saved PM (or customer) no longer exists at Stripe — clear and fall back.
@@ -1313,26 +1304,179 @@ def sms_credits_charge_saved(request):
             if getattr(e, 'param', '') == 'customer':
                 fields['stripe_customer_id'] = None
             Organization.objects.filter(pk=org.pk).update(**fields)
-            messages.error(request, 'Your saved card is no longer available. Please add a card '
-                                    'by topping up below.')
-            return redirect('tickets:sms_credits')
+            return (False, 'card_missing',
+                    'Your saved card is no longer available. Please add a card '
+                    'by topping up below.')
         logger.exception('Stripe one-click PaymentIntent failed for org %s', org.id)
-        messages.error(request, 'Could not charge your saved card. Please try again.')
-        return redirect('tickets:sms_credits')
+        return False, 'error', 'Could not charge your saved card. Please try again.'
     except Exception:
         logger.exception('Stripe one-click PaymentIntent failed for org %s', org.id)
-        messages.error(request, 'Could not charge your saved card. Please try again.')
-        return redirect('tickets:sms_credits')
+        return False, 'error', 'Could not charge your saved card. Please try again.'
 
     if getattr(pi, 'status', '') != 'succeeded':
-        # e.g. requires_action — hosted Checkout handles SCA.
-        messages.error(request, 'Your card needs verification. Please top up below to confirm it.')
-        return redirect('tickets:sms_credits')
+        # e.g. requires_action — hosted Checkout / inline SCA handles this.
+        return (False, 'needs_verification',
+                'Your card needs verification. Please top up below to confirm it.')
 
     credit(str(org.id), getattr(pi, 'amount_received', None) or amount_cents,
            stripe_checkout_session_id=pi.id, description='Stripe one-click top-up')
-    messages.success(request, 'Payment received — your SMS tokens have been added.')
+    return True, 'ok', 'Payment received — your SMS tokens have been added.'
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_charge_saved(request):
+    """One-click top-up: charge the org's saved card off-session and credit the wallet.
+
+    Credits synchronously on success (idempotent via the PaymentIntent id); the
+    payment_intent.succeeded webhook is a no-op retry under the same id. On any card
+    problem we fall back to the hosted Checkout flow rather than failing hard.
+    """
+    org = get_organization(request)
+    try:
+        token_pack = int(request.POST.get('tokens', '0'))
+    except (TypeError, ValueError):
+        token_pack = 0
+    ok, _code, message = _charge_saved_card_for_tokens(org, token_pack)
+    (messages.success if ok else messages.error)(request, message)
     return redirect('tickets:sms_credits')
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_topup_ajax(request):
+    """JSON one-click top-up for the plan banner: charge the saved card, return the new
+    balance so the confirm panel can refresh in place. ``needs_card`` tells the banner to
+    fall back to the inline card modal."""
+    org = get_organization(request)
+    try:
+        token_pack = int(request.POST.get('tokens', '0'))
+    except (TypeError, ValueError):
+        token_pack = 0
+    ok, code, message = _charge_saved_card_for_tokens(org, token_pack)
+    if ok:
+        org.refresh_from_db(fields=['sms_credit_balance_cents'])
+        from tickets.templatetags.tickets_extras import tokens as _tokens
+        return JsonResponse({
+            'ok': True,
+            'balance_cents': org.sms_credit_balance_cents,
+            'balance_tokens': _tokens(org.sms_credit_balance_cents),
+        })
+    return JsonResponse(
+        {'ok': False, 'error': message,
+         'needs_card': code in {'card_missing', 'no_card', 'needs_verification',
+                                'card_declined'}},
+        status=400,
+    )
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_topup_intent(request):
+    """Create a PaymentIntent for an inline (Stripe Elements) top-up and return its
+    ``client_secret`` so the browser can confirm the card without leaving the page.
+
+    ``setup_future_usage='off_session'`` saves the card so subsequent top-ups become
+    one-click. Crediting happens in ``sms_credits_topup_confirm`` after the browser
+    confirms; the ``payment_intent.succeeded`` webhook is a safe idempotent retry."""
+    org = get_organization(request)
+    from .services.sms_credits import price_per_segment_cents
+    try:
+        token_pack = int(request.POST.get('tokens', '0'))
+    except (TypeError, ValueError):
+        token_pack = 0
+    if token_pack not in SMS_CREDIT_PRESETS_TOKENS:
+        return JsonResponse({'ok': False, 'error': 'Pick a valid token pack.'}, status=400)
+    if not getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        return JsonResponse(
+            {'ok': False, 'error': 'Payments are not configured for this environment.'},
+            status=400,
+        )
+
+    amount_cents = int(token_pack * price_per_segment_cents())
+    import stripe as stripe_lib
+    stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+    intent_kwargs = dict(
+        amount=amount_cents,
+        currency=getattr(settings, 'STRIPE_CURRENCY', 'usd'),
+        setup_future_usage='off_session',
+        metadata={
+            'kind': 'sms_credits',
+            'organization_id': str(org.id),
+            'credit_cents': str(amount_cents),
+            'flow': 'inline',
+        },
+    )
+    # Attach an org Customer so the confirmed card can be reused for one-click later.
+    customer_id = _org_stripe_customer_id(org)
+    if customer_id:
+        intent_kwargs['customer'] = customer_id
+    try:
+        pi = stripe_lib.PaymentIntent.create(**intent_kwargs)
+    except Exception:
+        logger.exception('Stripe inline PaymentIntent create failed for org %s', org.id)
+        return JsonResponse(
+            {'ok': False, 'error': 'Could not start checkout. Please try again.'}, status=502,
+        )
+    return JsonResponse({'ok': True, 'client_secret': pi.client_secret})
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_topup_confirm(request):
+    """Fulfill an inline top-up after the browser confirmed the card. Verifies the
+    PaymentIntent is ours, belongs to THIS org, and succeeded, then saves the card +
+    credits the wallet (idempotent via the PaymentIntent id). Returns the new balance."""
+    org = get_organization(request)
+    pi_id = (request.POST.get('payment_intent_id') or '').strip()
+    if not pi_id:
+        return JsonResponse({'ok': False, 'error': 'Missing payment reference.'}, status=400)
+    if not getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        return JsonResponse(
+            {'ok': False, 'error': 'Payments are not configured for this environment.'},
+            status=400,
+        )
+    import stripe as stripe_lib
+    from .views import _fulfill_sms_credit_payment_intent, _stripe_value
+    stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        pi = stripe_lib.PaymentIntent.retrieve(pi_id)
+    except Exception:
+        logger.exception('Stripe inline PaymentIntent retrieve failed for %s', pi_id)
+        return JsonResponse(
+            {'ok': False, 'error': 'Could not confirm payment. Please try again.'}, status=502,
+        )
+
+    meta = _stripe_value(pi, 'metadata', {}) or {}
+    if (_stripe_value(meta, 'kind') != 'sms_credits'
+            or _stripe_value(meta, 'organization_id') != str(org.id)):
+        # Not our PaymentIntent, or another org's — never credit this wallet.
+        raise Http404()
+    if _stripe_value(pi, 'status') != 'succeeded':
+        return JsonResponse(
+            {'ok': False, 'error': 'Payment not completed. Please try again.'}, status=400,
+        )
+
+    _fulfill_sms_credit_payment_intent(pi)
+    org.refresh_from_db(fields=['sms_credit_balance_cents'])
+    from tickets.templatetags.tickets_extras import tokens as _tokens
+    return JsonResponse({
+        'ok': True,
+        'balance_cents': org.sms_credit_balance_cents,
+        'balance_tokens': _tokens(org.sms_credit_balance_cents),
+    })
 
 
 @login_required
@@ -1662,7 +1806,17 @@ def sms_plan_detail(request, pk):
     status_by_id = _annotate_launched_status(org, steps)
     progress = _bucket_counts(steps, status_by_id)  # reuses the annotate query — no new query
     _sync_plan_status(plan, progress['status'])
-    context = {'plan': plan, 'steps': steps, 'progress': progress}
+    # Token packs + Stripe config so the "not enough tokens" banner can top up inline.
+    from .services.sms_credits import price_per_segment_cents
+    price = price_per_segment_cents()
+    presets = [{'tokens': t, 'cents': int(t * price)} for t in SMS_CREDIT_PRESETS_TOKENS]
+    context = {
+        'plan': plan, 'steps': steps, 'progress': progress,
+        'presets': presets,
+        'stripe_publishable_key': getattr(settings, 'STRIPE_PUBLISHABLE_KEY', ''),
+        'stripe_currency': getattr(settings, 'STRIPE_CURRENCY', 'usd'),
+        'stripe_ready': bool(getattr(settings, 'STRIPE_SECRET_KEY', '')),
+    }
     context.update(_audience_option_lists(org))
     return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
@@ -2157,8 +2311,21 @@ def sms_plan_preview_step(request, pk, step):
     balance_cents = org.sms_credit_balance_cents
     # Balance shown in tokens, formatted exactly like the composer's confirm panel.
     from tickets.templatetags.tickets_extras import tokens as _tokens
+    from .services.sms_credits import price_per_segment_cents
     balance_tokens = _tokens(balance_cents)
     launched_id = target.get('launched_campaign_id')
+
+    # Top-up affordance: how short the wallet is + the pack that covers it, so the plan
+    # banner can offer an inline one-click / card top-up instead of a dead-end warning.
+    shortfall_tokens = max(0, cost_tokens - balance_tokens)
+    has_saved_card = bool(org.stripe_pm_id and org.stripe_customer_id)
+    # Smallest preset that covers the shortfall (else the largest — a big campaign can
+    # exceed the largest pack, so the organizer may need to top up more than once).
+    topup_pack_tokens = next(
+        (p for p in SMS_CREDIT_PRESETS_TOKENS if p >= shortfall_tokens),
+        SMS_CREDIT_PRESETS_TOKENS[-1],
+    )
+    topup_pack_cents = int(topup_pack_tokens * price_per_segment_cents())
 
     return JsonResponse({
         'ok': True,
@@ -2170,6 +2337,12 @@ def sms_plan_preview_step(request, pk, step):
         'balance_cents': balance_cents,
         'balance_tokens': balance_tokens,
         'insufficient': cost_cents > balance_cents,
+        'shortfall_tokens': shortfall_tokens,
+        'has_saved_card': has_saved_card,
+        'topup_pack_tokens': topup_pack_tokens,
+        'topup_pack_cents': topup_pack_cents,
+        'card_brand': org.stripe_pm_brand or '',
+        'card_last4': org.stripe_pm_last4 or '',
         'scheduled': scheduled,
         'schedule_label': format_send_label(send_at) if scheduled else 'now',
         # Fresh per-preview token echoed back on confirm so a double-click can't

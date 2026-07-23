@@ -289,6 +289,9 @@ urlpatterns = [
     path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
     path('marketing/sms/credits/success/', sms_views.sms_credits_success, name='sms_credits_success'),
     path('marketing/sms/credits/charge-saved/', sms_views.sms_credits_charge_saved, name='sms_credits_charge_saved'),
+    path('marketing/sms/credits/topup-ajax/', sms_views.sms_credits_topup_ajax, name='sms_credits_topup_ajax'),
+    path('marketing/sms/credits/topup-intent/', sms_views.sms_credits_topup_intent, name='sms_credits_topup_intent'),
+    path('marketing/sms/credits/topup-confirm/', sms_views.sms_credits_topup_confirm, name='sms_credits_topup_confirm'),
     path('marketing/sms/credits/remove-card/', sms_views.sms_credits_remove_card, name='sms_credits_remove_card'),
     # Marketing SMS — audience + ticket-link helpers
     path('marketing/sms/audience-preview/', sms_views.sms_audience_preview, name='sms_audience_preview'),
