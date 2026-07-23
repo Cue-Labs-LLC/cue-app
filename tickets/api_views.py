@@ -1165,10 +1165,14 @@ def organizer_ticket_types(request, event_id):
 
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
+    # In-person (Tap to Pay) inventory: only paid types. Free types (price 0 or
+    # null) have no valid card-present path — Stripe can't charge below the
+    # per-currency minimum. price__gt=0 excludes both.
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
         is_password_protected=False,
+        price__gt=0,
     )
     on_sale = [t for t in ticket_types if t.is_on_sale()]
 
@@ -1562,6 +1566,21 @@ def _get_or_create_terminal_location(org):
     return location.id
 
 
+def _is_free_ticket_type(tt):
+    """A ticket type is free (not sellable in person) when its unit price is
+    zero or absent. Paid = unit price strictly greater than 0."""
+    return tt.price is None or tt.price <= 0
+
+
+# Per-currency Stripe minimum charge, in minor units (e.g. USD cents). Tap to Pay
+# rejects charges below this, so we validate server-side before hitting Stripe.
+_STRIPE_MIN_CHARGE_CENTS = {'usd': 50}
+
+
+def _stripe_minimum_charge_cents(currency):
+    return _STRIPE_MIN_CHARGE_CENTS.get((currency or '').lower(), 50)
+
+
 def _create_terminal_payment_intent(event, line_items):
     """Validate ticket-type inventory and create a card-present PaymentIntent
     on the merchant's Stripe Connect account.
@@ -1593,11 +1612,20 @@ def _create_terminal_payment_intent(event, line_items):
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found for this event'}, 400
 
+        if _is_free_ticket_type(tt):
+            return {'error': 'free_ticket_not_sellable',
+                    'detail': "Free tickets can't be sold in person."}, 400
+
         remaining = tt.remaining_quantity()
         if remaining is not None and qty > remaining:
             return {'error': f'Only {remaining} tickets remaining for {tt.name}'}, 400
 
         amount_cents += int((tt.price * qty * 100).to_integral_value())
+
+    # Belt-and-suspenders: never hand Stripe a sub-minimum amount (it would throw).
+    from django.conf import settings as django_settings
+    if amount_cents < _stripe_minimum_charge_cents(django_settings.STRIPE_CURRENCY):
+        return {'error': 'amount_below_minimum'}, 400
 
     # Resolve the merchant's Stripe Terminal Location before creating the
     # PaymentIntent — the iOS app needs both to call connectReader.
@@ -1609,7 +1637,6 @@ def _create_terminal_payment_intent(event, line_items):
         return {'error': 'Could not provision a Stripe Terminal location for this merchant.'}, 502
 
     import stripe as stripe_lib
-    from django.conf import settings as django_settings
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
@@ -1734,17 +1761,23 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     for item in line_items:
         tt_id = item.get('ticket_type_id', '')
         qty = int(item.get('quantity', 1))
-        item_name = item.get('name', '')
 
         try:
             tt = SaleableTicketType.objects.get(id=tt_id, event=event)
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found'}, 400
 
-        # Server price, not the client payload — the PI was created from
-        # tt.price, and tickets/orders must record the money that moved.
+        if _is_free_ticket_type(tt):
+            return {'error': 'free_ticket_not_sellable',
+                    'detail': "Free tickets can't be sold in person."}, 400
+
+        # Server price and name, not the client payload — the PI was created
+        # from tt.price, and tickets/orders must record the money that moved.
         expected_cents += int((tt.price * qty * 100).to_integral_value())
-        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': tt.price})
+        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': tt.name, 'price': tt.price})
+
+    if expected_cents < _stripe_minimum_charge_cents(django_settings.STRIPE_CURRENCY):
+        return {'error': 'amount_below_minimum'}, 400
 
     charged_cents = int(getattr(pi, 'amount_received', 0) or 0)
     if charged_cents != expected_cents:
@@ -2217,10 +2250,14 @@ def scanner_ticket_types(request):
         return mismatch
 
     event = request.auth.event
+    # In-person (Tap to Pay) inventory: only paid types. Free types (price 0 or
+    # null) have no valid card-present path — Stripe can't charge below the
+    # per-currency minimum. price__gt=0 excludes both.
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
         is_password_protected=False,
+        price__gt=0,
     )
     on_sale = [t for t in ticket_types if t.is_on_sale()]
 

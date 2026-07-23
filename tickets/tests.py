@@ -2281,6 +2281,117 @@ class MobileAPITests(TestCase):
         self.assertEqual(TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0)
         self.assertFalse(StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists())
 
+    # ------------------------------------------------------------------
+    # Free tickets are not sellable in person (Tap to Pay)
+    # ------------------------------------------------------------------
+
+    def test_organizer_ticket_types_excludes_free(self):
+        # Mixed catalog: only the paid type is offered for in-person sale.
+        paid = SaleableTicketType.objects.create(
+            event=self.event, name='GA', price=Decimal('25.00'),
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.get(
+            f'/api/organizer/events/{self.event.pk}/ticket-types/',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([t['id'] for t in data], [str(paid.pk)])
+
+    def test_organizer_ticket_types_all_free_returns_empty_200(self):
+        # All-free event: empty array, NOT a 404 — app renders its empty state.
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.get(
+            f'/api/organizer/events/{self.event.pk}/ticket-types/',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_scanner_ticket_types_excludes_free(self):
+        paid = SaleableTicketType.objects.create(
+            event=self.event, name='GA', price=Decimal('25.00'),
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        from .models import ScannerSession
+        session = ScannerSession.objects.create(event=self.event)
+        response = self.client.get(
+            f'/api/scanner/ticket-types/?event_id={self.event.pk}',
+            HTTP_AUTHORIZATION=f'Scanner {session.token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([t['id'] for t in data], [str(paid.pk)])
+
+    @patch('stripe.PaymentIntent.create')
+    def test_terminal_payment_intent_rejects_free(self, mock_create):
+        free = SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.post(
+            '/api/stripe/terminal-payment-intent/',
+            data={
+                'event_id': str(self.event.pk),
+                'line_items': [{'ticket_type_id': str(free.pk), 'quantity': 1}],
+            },
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'free_ticket_not_sellable')
+        mock_create.assert_not_called()
+
+    @patch('stripe.PaymentIntent.create')
+    def test_terminal_payment_intent_rejects_below_minimum(self, mock_create):
+        # Paid but sub-minimum ($0.30 < $0.50 USD): reject before hitting Stripe.
+        cheap = SaleableTicketType.objects.create(
+            event=self.event, name='Cheap', price=Decimal('0.30'),
+        )
+        response = self.client.post(
+            '/api/stripe/terminal-payment-intent/',
+            data={
+                'event_id': str(self.event.pk),
+                'line_items': [{'ticket_type_id': str(cheap.pk), 'quantity': 1}],
+            },
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'amount_below_minimum')
+        mock_create.assert_not_called()
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_rejects_free_ticket(self, mock_retrieve):
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 0
+        mock_retrieve.return_value = mock_pi
+
+        free = SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.post(
+            '/api/organizer/sell/',
+            data=self._sell_payload(free),
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'free_ticket_not_sellable')
+        self.assertEqual(
+            TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0,
+        )
+        self.assertFalse(
+            StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists(),
+        )
+
     def test_token_auth_required(self):
         response = self.client.get('/api/organizer/events/')
         self.assertEqual(response.status_code, 401)
