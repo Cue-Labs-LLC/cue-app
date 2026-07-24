@@ -21052,3 +21052,47 @@ class EventDuplicateViewTests(TestCase):
     def test_get_is_not_allowed(self):
         resp = self.client.get(reverse('tickets:event_duplicate', args=[self.source.id]))
         self.assertEqual(resp.status_code, 405)
+
+
+class EventDuplicateCsrfCookieTests(TestCase):
+    """The events list has no rendered {% csrf_token %} (its HTML is cached), so the
+    duplicate modal reads the token from the csrftoken cookie. event_list must therefore
+    set that cookie (@ensure_csrf_cookie) or the real browser POST fails CSRF with 403.
+    Uses a CSRF-enforcing client to reproduce the browser, unlike the default test client.
+    """
+
+    def setUp(self):
+        self.client = Client(enforce_csrf_checks=True)
+        self.org = Organization.objects.create(name='CsrfDupOrg', slug='csrf-dup-org')
+        self.user = User.objects.create_user(
+            username='csrfdup', email='csrfdup@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='csrfdup@test.com', password='pass12345')
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.source = Event.objects.create(
+            organization=self.org, name='CsrfSrc', venue=self.venue,
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+        )
+
+    def test_events_page_sets_csrf_cookie_and_post_succeeds(self):
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+        token = self.client.cookies.get('csrftoken')
+        self.assertIsNotNone(token, 'csrftoken cookie not set on /events/ — browser POST would 403')
+        self.assertTrue(token.value)
+
+        future = (timezone.localdate() + timedelta(days=10)).isoformat() + 'T20:00'
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': future, 'csrfmiddlewaretoken': token.value},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertEqual(
+            Event.objects.filter(organization=self.org, name='CsrfSrc').count(), 2,
+        )

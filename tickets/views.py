@@ -27,7 +27,7 @@ from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
@@ -4840,11 +4840,17 @@ def customer_tag_remove(request, customer_id, tag_id):
 
 # Event Management Views
 
+@ensure_csrf_cookie
 @login_required
 @require_org
 @require_organizer
 def event_list(request):
-    """Display list of all events ordered by most recent start date."""
+    """Display list of all events ordered by most recent start date.
+
+    Decorated with @ensure_csrf_cookie so the csrftoken cookie is always set on this
+    page — its HTML is cached and re-served without a rendered {% csrf_token %}, so the
+    duplicate-event modal reads the token from the cookie (see event_list.html).
+    """
     org = get_organization(request)
 
     search_query = request.GET.get('search', '')
