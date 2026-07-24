@@ -9888,6 +9888,28 @@ class PerTicketQRCheckinTests(TestCase):
         for cid in ('qrcode-0', 'qrcode-1', 'qrcode-2'):
             self.assertIn(f'cid:{cid}', html_body)
 
+    @override_settings(SITE_URL='https://tickets.example.com')
+    def test_confirmation_email_includes_event_time_and_page_link(self):
+        from datetime import time as dt_time
+
+        from django.core import mail
+        from tickets.tasks import send_order_confirmation_email_task
+
+        self.event.start_time = dt_time(20, 0)
+        self.event.timezone = 'America/Los_Angeles'
+        self.event.save(update_fields=['start_time', 'timezone'])
+
+        send_order_confirmation_email_task.apply(args=[str(self.order.id)]).get()
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        html_body = next(b for b, mime in msg.alternatives if mime == 'text/html')
+        expected_url = f'https://tickets.example.com/e/{self.event.public_id}/'
+        for body in (msg.body, html_body):
+            self.assertIn('8:00 PM', body)
+            self.assertIn('PDT', body)
+            self.assertIn(expected_url, body)
+
     def test_ticket_from_other_event_returns_404(self):
         from .utils import ticket_qr_payload
 
