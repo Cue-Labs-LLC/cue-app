@@ -12319,6 +12319,8 @@ def stripe_connect_webhook(request):
             # Direct (in-person) charges live on connected accounts, so their
             # refund events arrive here, not on the platform endpoint.
             _sync_charge_refund(event['data']['object'])
+        elif event_type == 'account.updated':
+            _handle_connect_account_updated(event['data']['object'])
     except Exception:
         logger.exception(
             "Stripe connect webhook handler failed for event %s (%s)",
@@ -12326,6 +12328,48 @@ def stripe_connect_webhook(request):
         )
 
     return HttpResponse(status=200)
+
+
+def _handle_connect_account_updated(account):
+    """Fire the one-time 'Tap to Pay is ready' push when a merchant goes live.
+
+    Stripe emits many account.updated events; the per-org
+    `tap_to_pay_enabled_push_sent` flag guarantees the push is sent exactly
+    once, the first time the card_payments capability reads 'active' in a
+    supported country. Server-driven so it reaches a backgrounded app — the
+    /merchant/status/ poll only runs while the app is foregrounded.
+    """
+    from tickets.api_views import _tap_to_pay_status_from_account
+    from tickets.services.push_notifications.dispatch import fire_tap_to_pay_enabled
+
+    account_id = account.get('id') if isinstance(account, dict) else getattr(account, 'id', None)
+    if not account_id:
+        return
+
+    org = Organization.objects.filter(stripe_account_id=account_id).first()
+    if org is None or org.tap_to_pay_enabled_push_sent:
+        return
+
+    status, _capability_state, _country = _tap_to_pay_status_from_account(account)
+    if status != 'enabled':
+        return
+
+    # Claim the once-only send atomically. Stripe fires account.updated in
+    # bursts as capabilities settle, and requests aren't wrapped in a
+    # transaction (ATOMIC_REQUESTS is off), so a read-check-write guard would
+    # let two concurrent events both fire. The conditional UPDATE lets exactly
+    # one caller flip False->True; everyone else gets 0 rows and bails.
+    claimed = Organization.objects.filter(
+        pk=org.pk, tap_to_pay_enabled_push_sent=False,
+    ).update(tap_to_pay_enabled_push_sent=True)
+    if not claimed:
+        return
+    # Bust the cached status so the next /merchant/status/ poll reflects reality.
+    try:
+        django_cache.delete(f'tap_to_pay_status:{org.pk}')
+    except Exception:
+        pass
+    fire_tap_to_pay_enabled(org)
 
 
 # Stripe payout status → local Payout status. 'pending' matters for

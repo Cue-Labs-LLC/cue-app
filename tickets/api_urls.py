@@ -26,6 +26,9 @@ urlpatterns = [
     path('tap-to-pay/terms-acceptance/', api_views.tap_to_pay_terms_acceptance, name='api_ttp_terms_acceptance'),
     path('merchant/status/', api_views.merchant_status, name='api_merchant_status'),
 
+    # Push notifications (APNs device-token registration)
+    path('notification/device-token/', api_views.register_device_token, name='api_register_device_token'),
+
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),
     path('organizer/events/<uuid:event_id>/ticket-types/', api_views.organizer_ticket_types, name='api_organizer_ticket_types'),

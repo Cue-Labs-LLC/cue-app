@@ -221,6 +221,14 @@ class Organization(BaseModel):
         default=False,
         help_text='True after Stripe confirms details_submitted, charges_enabled, and payouts_enabled.',
     )
+    tap_to_pay_enabled_push_sent = models.BooleanField(
+        default=False,
+        help_text=(
+            "True once the one-time 'Tap to Pay is ready' push has been sent to "
+            "this org's devices. Guards against duplicate sends across the many "
+            "account.updated webhooks Stripe fires."
+        ),
+    )
     stripe_terminal_location_id = models.CharField(
         max_length=64,
         blank=True,
@@ -4013,6 +4021,37 @@ class TapToPayTermsAcceptance(BaseModel):
 
     def __str__(self):
         return f"{self.organization.name} accepted {self.version} at {self.accepted_at:%Y-%m-%d %H:%M}"
+
+
+class DeviceToken(BaseModel):
+    """APNs device token for a Cue organizer's iOS device.
+
+    Tokens rotate: on each registration we keep the newest token for an
+    organizer and drop the rest. Scoped to the organizer's Organization so
+    pushes (launch announcement, 'Tap to Pay is ready') can be fanned out
+    per-org. Tokens are environment-specific — a sandbox (dev-build) token
+    will not deliver against the production APNs host and vice versa.
+    """
+    organizer = models.ForeignKey(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+    )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+        db_index=True,
+    )
+    token = models.CharField(max_length=200, unique=True, db_index=True)
+    platform = models.CharField(max_length=16, default='ios', choices=[('ios', 'iOS')])
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['organization'])]
+
+    def __str__(self):
+        return f"{self.organizer.get_username()} — {self.token[:16]}… ({self.platform})"
 
 
 class ReceiptSend(BaseModel):
