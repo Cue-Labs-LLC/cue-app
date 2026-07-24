@@ -1,4 +1,4 @@
-Cue - Order confirmation
+{% load tz %}Cue - Order confirmation
 
 Hi {{ customer.name }},
 
@@ -6,9 +6,10 @@ Your order for {{ event.name }} is confirmed.
 
 Order number: {{ order.display_order_number }}
 Event: {{ event.name }}{% if event.start_date %}
-Date: {{ event.start_date|date:"N j, Y" }}{% endif %}{% if event.venue %}
+Date: {{ event.start_date|date:"N j, Y" }}{% if event.start_time %} at {% timezone event.timezone %}{{ event.start_datetime|date:"g:i A T" }}{% endtimezone %}{% endif %}{% endif %}{% if event.venue %}
 Venue: {{ event.venue.name }}{% if event.venue.get_display_address %}
-Address: {{ event.venue.get_display_address }}{% endif %}{% endif %}
+Address: {{ event.venue.get_display_address }}{% endif %}{% endif %}{% if event_url %}
+Event page: {{ event_url }}{% endif %}
 
 Tickets:
 {% for ticket in tickets %}  {{ ticket.ticket_type }}    {% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}

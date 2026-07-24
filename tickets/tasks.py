@@ -363,6 +363,12 @@ def send_order_confirmation_email_task(self, order_id):
     except Exception:
         service_fee = Decimal('0.00')
 
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    event_url = (
+        f"{site_url}/e/{order.event.public_id}/"
+        if site_url and order.event.public_id else ''
+    )
+
     context = {
         'order': order,
         'customer': customer,
@@ -371,6 +377,7 @@ def send_order_confirmation_email_task(self, order_id):
         'ticket_qrs': ticket_qrs,
         'show_qr_code': bool(ticket_qrs),
         'service_fee': service_fee,
+        'event_url': event_url,
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
     text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
