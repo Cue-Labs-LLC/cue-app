@@ -1085,9 +1085,12 @@ class MarketEntityReportingTests(TestCase):
         self.assertEqual(response.context['stats']['total'], 1)
         self.assertEqual(response.context['event_from'], '2025-01-01')
         self.assertEqual(response.context['event_to'], '2025-01-31')
-        # Responses list is scoped to the January event only.
-        page_ids = {r.id for r in response.context['page_obj']}
-        self.assertEqual(page_ids, {jan_resp.id})
+        # Responses list is scoped to the January event only. The feed is now a
+        # unified list of normalized dicts (Cue + imported), not model instances.
+        page_rows = list(response.context['page_obj'])
+        self.assertEqual(len(page_rows), 1)
+        self.assertEqual(page_rows[0]['source'], 'Imported')
+        self.assertEqual(page_rows[0]['event_name'], jan_resp.event.name)
         # Market breakdown also respects the date window (Feb/no-market drops out).
         labels = {row['city'] for row in response.context['stats']['city_breakdown']}
         self.assertIn('Central Texas', labels)
@@ -20149,3 +20152,72 @@ class SMSPlanBannerTopupTests(TestCase):
         self.assertRedirects(resp, reverse('tickets:sms_credits'))
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+
+class SurveyAnalyticsServiceTests(TestCase):
+    """SurveyAnalytics combines Cue-native + imported survey responses."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Survey Agg Org', slug='survey-agg-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Agg Venue', city='Austin')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Agg Event', venue=cls.venue,
+            start_date=date(2025, 5, 1),
+        )
+        cls.customer = Customer.objects.create(
+            organization=cls.org, email='agg@example.com', name='Agg Buyer',
+        )
+
+        # Internal (Cue) response: one promoter NPS (10) + one 4-star rating.
+        invitation = SurveyInvitation.objects.create(
+            organization=cls.org, event=cls.event,
+            customer=cls.customer, email=cls.customer.email,
+        )
+        response = SurveyResponse.objects.create(
+            organization=cls.org, event=cls.event,
+            customer=cls.customer, invitation=invitation,
+        )
+        nps_q = SurveyQuestion.objects.create(
+            organization=cls.org, question_text='How likely to recommend?',
+            question_type='nps', position=1,
+        )
+        star_q = SurveyQuestion.objects.create(
+            organization=cls.org, question_text='Rate the event',
+            question_type='star_rating', position=2,
+        )
+        SurveyAnswer.objects.create(response=response, question=nps_q, nps_score=10)
+        SurveyAnswer.objects.create(response=response, question=star_q, star_rating=4)
+
+        # Imported (external) response: one detractor NPS (0) + a text rating.
+        upload = ExternalSurveyUpload.objects.create(
+            organization=cls.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=cls.org, upload=upload, event=cls.event,
+            responded_at=timezone.make_aware(datetime(2025, 5, 3, 9, 0)),
+            email='imported@example.com', overall_rating='Meh', nps_score=0,
+        )
+
+    def test_calculate_merges_internal_and_external(self):
+        from tickets.services.survey.analytics import SurveyAnalytics
+
+        stats = SurveyAnalytics(organization=self.org).calculate()
+
+        # Totals: 1 Cue response + 1 imported response.
+        self.assertEqual(stats['total'], 2)
+        self.assertEqual(stats['internal_total'], 1)
+        self.assertEqual(stats['external_total'], 1)
+
+        # NPS: 1 promoter (10) + 1 detractor (0) → (1 - 1) / 2 * 100 = 0.
+        self.assertEqual(stats['nps_total'], 2)
+        self.assertEqual(stats['promoters'], 1)
+        self.assertEqual(stats['detractors'], 1)
+        self.assertEqual(stats['nps_score'], 0)
+
+        # Star average comes from Cue surveys only.
+        self.assertEqual(stats['avg_star_rating'], 4.0)
+
+        # Rating breakdown stays external-only (free-text scale).
+        self.assertEqual(stats['rating_breakdown'], [{'overall_rating': 'Meh', 'count': 1}])

@@ -1,13 +1,14 @@
 {% extends 'tickets/base.html' %}
 {% load humanize %}
 
-{% block title %}Survey Uploads{% endblock %}
+{% block title %}Survey responses{% endblock %}
 
 {% block content %}
 <div class="page-header d-flex justify-content-between align-items-center">
     <div>
-        <h1 class="page-title">Survey Insights</h1>
-        <p class="page-subtitle">Responses from Cue surveys and imported exports</p>
+        <a href="{% url 'tickets:survey_hub' %}" class="text-decoration-none small text-muted d-inline-block mb-1"><i class="bi bi-arrow-left"></i> Surveys</a>
+        <h1 class="page-title">Survey responses</h1>
+        <p class="page-subtitle">Every response source feeding your surveys — Cue and imported</p>
     </div>
     <div class="d-flex gap-2">
         {% if has_external %}

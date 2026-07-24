@@ -21,12 +21,13 @@
 {% block content %}
 <div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
     <div>
-        <h1 class="page-title">Survey Analytics</h1>
+        <a href="{% url 'tickets:survey_hub' %}" class="text-decoration-none small text-muted d-inline-block mb-1"><i class="bi bi-arrow-left"></i> Surveys</a>
+        <h1 class="page-title">Survey analytics</h1>
         <p class="page-subtitle">
-            {{ stats.total|intcomma }} total response{{ stats.total|pluralize }}
-            {% if stats.nps_total != stats.total %}
-            ({{ stats.nps_total }} with NPS data)
-            {% endif %}
+            All responses — Cue surveys and imported.
+            {{ stats.total|intcomma }} total{% if stats.internal_total and stats.external_total %}
+            ({{ stats.internal_total|intcomma }} Cue · {{ stats.external_total|intcomma }} imported){% endif %}{% if stats.nps_total != stats.total %}
+            · {{ stats.nps_total|intcomma }} with NPS{% endif %}
         </p>
     </div>
     <div class="d-flex gap-2 align-items-center flex-wrap">
@@ -73,27 +74,35 @@
 
 {# --- Stat cards --- #}
 <div class="row g-3 mb-4">
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg">
         <div class="stat-card">
             <div class="stat-label">Total Responses</div>
             <div class="stat-value">{{ stats.total|intcomma }}</div>
+            <div class="stat-sub">{{ stats.internal_total|intcomma }} Cue · {{ stats.external_total|intcomma }} imported</div>
         </div>
     </div>
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Avg Cue Rating <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Average star rating (1–5) from Cue surveys. Imported surveys use their own rating scale, shown in the breakdown below." style="cursor:help; font-size:0.8em;"></i></div>
+            <div class="stat-value">{% if stats.avg_star_rating %}{{ stats.avg_star_rating }}<span class="text-muted" style="font-size:0.6em;">★</span>{% else %}—{% endif %}</div>
+            <div class="stat-sub">from Cue surveys</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
         <div class="stat-card stat-card--success">
             <div class="stat-label">Promoters <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Scored 9–10. Enthusiastic fans likely to recommend the event to others." style="cursor:help; font-size:0.8em;"></i></div>
             <div class="stat-value">{{ stats.promoters_pct }}%</div>
             <div class="stat-sub">{{ stats.promoters }} respondents (9–10)</div>
         </div>
     </div>
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg">
         <div class="stat-card">
             <div class="stat-label">Passives <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Scored 7–8. Satisfied but not enthusiastic - unlikely to actively promote or criticize." style="cursor:help; font-size:0.8em;"></i></div>
             <div class="stat-value">{{ stats.passives_pct }}%</div>
             <div class="stat-sub">{{ stats.passives }} respondents (7–8)</div>
         </div>
     </div>
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg">
         <div class="stat-card stat-card--accent">
             <div class="stat-label">Detractors <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Scored 0–6. Unhappy respondents who may discourage others from attending." style="cursor:help; font-size:0.8em;"></i></div>
             <div class="stat-value">{{ stats.detractors_pct }}%</div>
@@ -141,7 +150,7 @@
     {# Rating breakdown #}
     <div class="col-lg-4">
         <div class="card h-100">
-            <div class="card-header"><strong>Overall Rating Breakdown</strong></div>
+            <div class="card-header"><strong>Overall Rating Breakdown</strong> <small class="text-muted">imported surveys</small></div>
             <div class="card-body">
                 {% if stats.rating_breakdown %}
                 <div style="height: 260px; position: relative;">
@@ -245,6 +254,7 @@
                 <thead>
                     <tr>
                         <th>Date</th>
+                        <th>Source</th>
                         <th class="d-none d-md-table-cell">City</th>
                         <th class="d-none d-sm-table-cell">Rating</th>
                         <th>NPS <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="NPS score given by the respondent (0–10). 9–10 = Promoter, 7–8 = Passive, 0–6 = Detractor." style="cursor:help;"></i></th>
@@ -256,9 +266,16 @@
                 <tbody>
                     {% for resp in page_obj %}
                     <tr>
-                        <td class="text-nowrap">{{ resp.responded_at|date:"M j, Y" }}</td>
-                        <td class="d-none d-md-table-cell">{{ resp.event.venue.city|default:"-" }}</td>
-                        <td class="d-none d-sm-table-cell">{{ resp.overall_rating|default:"-" }}</td>
+                        <td class="text-nowrap">{{ resp.date|date:"M j, Y" }}</td>
+                        <td>
+                            {% if resp.source == 'Cue survey' %}
+                            <span class="badge bg-primary-subtle text-primary-emphasis">Cue survey</span>
+                            {% else %}
+                            <span class="badge bg-secondary-subtle text-secondary-emphasis">Imported</span>
+                            {% endif %}
+                        </td>
+                        <td class="d-none d-md-table-cell">{{ resp.city|default:"-" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ resp.rating|default:"-" }}</td>
                         <td>
                             {% if resp.nps_score is not None %}
                             <span class="badge {% if resp.nps_score >= 9 %}bg-success{% elif resp.nps_score >= 7 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
@@ -266,16 +283,16 @@
                             </span>
                             {% else %}-{% endif %}
                         </td>
-                        <td>{{ resp.event.name|default:"-" }}</td>
-                        <td class="d-none d-md-table-cell text-nowrap">{{ resp.event.start_date|date:"M j, Y"|default:"-" }}</td>
+                        <td>{{ resp.event_name|default:"-" }}</td>
+                        <td class="d-none d-md-table-cell text-nowrap">{{ resp.event_date|date:"M j, Y"|default:"-" }}</td>
                         <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                            title="{{ resp.text_feedback }}">
-                            {{ resp.text_feedback|default:"-" }}
+                            title="{{ resp.feedback }}">
+                            {{ resp.feedback|default:"-" }}
                         </td>
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="7" class="text-center text-muted py-3">No responses found.</td>
+                        <td colspan="8" class="text-center text-muted py-3">No responses found.</td>
                     </tr>
                     {% endfor %}
                 </tbody>

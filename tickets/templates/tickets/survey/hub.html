@@ -2,77 +2,167 @@
 
 {% block title %}Surveys{% endblock %}
 
+{% block extra_head %}
+<style>
+    .sv-rows {
+        border-top: 1px solid var(--border);
+        margin: 28px 0 48px;
+    }
+    .sv-row {
+        display: flex;
+        align-items: baseline;
+        gap: 32px;
+        padding: 22px 2px;
+        border-bottom: 1px solid var(--border);
+    }
+    .sv-row__key {
+        flex: 0 0 168px;
+        color: var(--text-primary);
+        font-weight: 500;
+    }
+    .sv-row__body {
+        flex: 1 1 auto;
+        color: var(--text-secondary);
+        font-size: 14px;
+        line-height: 1.5;
+    }
+    .sv-row__note {
+        margin-top: 4px;
+        font-size: 13px;
+        color: var(--text-tertiary);
+    }
+    .sv-row__body a,
+    .sv-row__note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .sv-row__body a:hover,
+    .sv-row__note a:hover { color: var(--accent); }
+    .sv-row__actions {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 20px;
+    }
+    .sv-link {
+        font-size: 14px;
+        color: var(--text-primary);
+        text-decoration: none;
+        white-space: nowrap;
+    }
+    .sv-link--muted { color: var(--text-tertiary); }
+    .sv-link:hover,
+    .sv-link:focus-visible { color: var(--accent); }
+
+    .sv-section {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    .sv-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .sv-table th {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-tertiary);
+        text-align: left;
+        padding: 0 12px 10px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .sv-table td {
+        padding: 15px 12px 15px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 14px;
+        vertical-align: middle;
+    }
+    .sv-table tr:last-child td { border-bottom: none; }
+    .sv-table .sv-name { color: var(--text-primary); font-weight: 500; }
+    .sv-table .sv-date { color: var(--text-secondary); }
+    .sv-table .sv-count { font-family: var(--font-mono); color: var(--text-secondary); }
+    .sv-table .sv-actions-col { text-align: right; white-space: nowrap; }
+    .sv-table .sv-actions-col .sv-link { margin-left: 18px; }
+
+    @media (max-width: 640px) {
+        .sv-row { flex-direction: column; gap: 10px; }
+        .sv-row__key { flex-basis: auto; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
-    <h1>Surveys</h1>
-    <p class="text-muted mb-0">Build the questions attendees answer after your events, and review the results.</p>
-</div>
-
-<div class="row g-3 mb-4">
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-body d-flex align-items-start justify-content-between">
-                <div>
-                    <h5 class="mb-1"><i class="bi bi-clipboard-check me-1"></i> Default survey</h5>
-                    <p class="text-muted small mb-2">{{ org_question_count }} question{{ org_question_count|pluralize }} sent for every event unless customized.</p>
-                    <a href="{% url 'tickets:survey_builder' %}" class="btn btn-sm btn-outline-primary">Edit questions</a>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card h-100">
-            <div class="card-body">
-                <h5 class="mb-1"><i class="bi bi-upload me-1"></i> External surveys</h5>
-                <p class="text-muted small mb-2">Import survey responses collected elsewhere (e.g. Typeform CSV).</p>
-                <a href="{% url 'tickets:survey_upload_list' %}" class="btn btn-sm btn-outline-secondary">Uploads</a>
-                <a href="{% url 'tickets:survey_analytics' %}" class="btn btn-sm btn-outline-secondary">Analytics</a>
-                <div class="mt-2 small">
-                    {% if org.typeform_access_token %}
-                    <span class="text-body-secondary"><i class="bi bi-check-circle-fill" style="color: var(--success);"></i> Typeform connected · <a href="{% url 'tickets:typeform_settings' %}">Manage in Integrations</a></span>
-                    {% else %}
-                    <a href="{% url 'tickets:typeform_settings' %}"><i class="bi bi-plug"></i> Connect Typeform in Integrations</a> to stream responses automatically.
-                    {% endif %}
-                </div>
-            </div>
-        </div>
+    <div>
+        <h1>Surveys</h1>
+        <p class="text-muted mb-0">Your post-event survey and its results.</p>
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header"><h5 class="mb-0">Events</h5></div>
-    <div class="card-body p-0">
-        {% if events %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th>Event</th>
-                        <th>Date</th>
-                        <th class="text-center">Responses</th>
-                        <th class="text-end"></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for event in events %}
-                    <tr>
-                        <td><strong>{{ event.name }}</strong></td>
-                        <td class="text-muted">{{ event.start_date|date:"M j, Y" }}</td>
-                        <td class="text-center">
-                            {% if event.response_count %}{{ event.response_count }}{% if event.invitation_count %} / {{ event.invitation_count }}{% endif %}{% else %}<span class="text-muted">—</span>{% endif %}
-                        </td>
-                        <td class="text-end">
-                            <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-link text-decoration-none">Build</a>
-                            <a href="{% url 'tickets:event_detail' event.id %}?tab=surveys" class="btn btn-sm btn-link text-decoration-none">Results</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+<div class="sv-rows">
+    <div class="sv-row">
+        <div class="sv-row__key">Default survey</div>
+        <div class="sv-row__body">
+            {{ org_question_count }} question{{ org_question_count|pluralize }}, sent automatically after each event.
         </div>
-        {% else %}
-        <div class="p-5 text-center text-muted">No events yet.</div>
-        {% endif %}
+        <div class="sv-row__actions">
+            <a class="sv-link" href="{% url 'tickets:survey_builder' %}">Edit</a>
+            <a class="sv-link sv-link--muted" href="{% url 'tickets:survey_preview' %}">Preview</a>
+        </div>
+    </div>
+    <div class="sv-row">
+        <div class="sv-row__key">Imported responses</div>
+        <div class="sv-row__body">
+            Add a Typeform export or CSV file.
+            <div class="sv-row__note">
+                {% if org.typeform_access_token %}
+                Typeform connected · <a href="{% url 'tickets:typeform_settings' %}">Manage</a>
+                {% else %}
+                <a href="{% url 'tickets:typeform_settings' %}">Connect Typeform</a> to sync automatically.
+                {% endif %}
+            </div>
+        </div>
+        <div class="sv-row__actions">
+            <a class="sv-link" href="{% url 'tickets:survey_upload_create' %}">Import</a>
+            <a class="sv-link sv-link--muted" href="{% url 'tickets:survey_upload_list' %}">View all</a>
+        </div>
     </div>
 </div>
+
+<div class="sv-section">
+    <div class="stat-label mb-0">By event</div>
+    <a class="sv-link sv-link--muted" href="{% url 'tickets:survey_analytics' %}">View analytics &rarr;</a>
+</div>
+
+{% if events %}
+<div class="table-responsive">
+    <table class="sv-table">
+        <thead>
+            <tr>
+                <th>Event</th>
+                <th>Date</th>
+                <th>Responses</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in events %}
+            <tr>
+                <td class="sv-name">{{ event.name }}</td>
+                <td class="sv-date">{{ event.start_date|date:"M j, Y" }}</td>
+                <td class="sv-count">{% if event.response_count %}{{ event.response_count }}{% if event.invitation_count %} / {{ event.invitation_count }}{% endif %}{% else %}—{% endif %}</td>
+                <td class="sv-actions-col">
+                    <a class="sv-link sv-link--muted" href="{% url 'tickets:event_survey_builder' event.id %}">Build</a>
+                    <a class="sv-link" href="{% url 'tickets:event_detail' event.id %}?tab=surveys">Results</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty-state">
+    <p class="mb-0">No events yet. Once you add events, they'll appear here to build and review surveys.</p>
+</div>
+{% endif %}
 {% endblock %}
