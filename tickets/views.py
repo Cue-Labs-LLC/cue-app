@@ -12161,21 +12161,29 @@ def stripe_webhook(request):
         return HttpResponse(status=400)
 
     event_type = event['type']
-    if event_type == 'payment_intent.succeeded':
-        pi = event['data']['object']
-        # SMS-wallet top-up PIs carry metadata.kind == 'sms_credits' and have no
-        # StripeCheckoutSession row; route them to the wallet handler, not ticketing.
-        pi_meta = _stripe_value(pi, 'metadata', {}) or {}
-        if _stripe_value(pi_meta, 'kind') == 'sms_credits':
-            _fulfill_sms_credit_payment_intent(pi)
-        else:
-            _fulfill_payment_intent(pi)
-    elif event_type == 'payment_intent.payment_failed':
-        _fail_payment_intent(event['data']['object'])
-    elif event_type == 'checkout.session.completed':
-        _fulfill_sms_credit_checkout(event['data']['object'])
-    elif event_type == 'charge.refunded':
-        _sync_charge_refund(event['data']['object'])
+    # Best-effort dispatch: an unexpected handler failure must never escape as a
+    # 500, or Stripe retries the same event for days. Log the traceback and ack.
+    try:
+        if event_type == 'payment_intent.succeeded':
+            pi = event['data']['object']
+            # SMS-wallet top-up PIs carry metadata.kind == 'sms_credits' and have no
+            # StripeCheckoutSession row; route them to the wallet handler, not ticketing.
+            pi_meta = _stripe_value(pi, 'metadata', {}) or {}
+            if _stripe_value(pi_meta, 'kind') == 'sms_credits':
+                _fulfill_sms_credit_payment_intent(pi)
+            else:
+                _fulfill_payment_intent(pi)
+        elif event_type == 'payment_intent.payment_failed':
+            _fail_payment_intent(event['data']['object'])
+        elif event_type == 'checkout.session.completed':
+            _fulfill_sms_credit_checkout(event['data']['object'])
+        elif event_type == 'charge.refunded':
+            _sync_charge_refund(event['data']['object'])
+    except Exception:
+        logger.exception(
+            "Stripe webhook handler failed for event %s (%s)",
+            event.get('id'), event_type,
+        )
 
     return HttpResponse(status=200)
 
@@ -12301,14 +12309,67 @@ def stripe_connect_webhook(request):
         return HttpResponse(status=400)
 
     event_type = event['type']
-    if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
-        _handle_stripe_payout_event(event)
-    elif event_type == 'charge.refunded':
-        # Direct (in-person) charges live on connected accounts, so their
-        # refund events arrive here, not on the platform endpoint.
-        _sync_charge_refund(event['data']['object'])
+    # Best-effort dispatch: an unexpected handler failure must never escape as a
+    # 500, or Stripe retries the same event every few hours for days. Log the
+    # traceback (which pinpoints the real trigger) and ack with 200.
+    try:
+        if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
+            _handle_stripe_payout_event(event)
+        elif event_type == 'charge.refunded':
+            # Direct (in-person) charges live on connected accounts, so their
+            # refund events arrive here, not on the platform endpoint.
+            _sync_charge_refund(event['data']['object'])
+        elif event_type == 'account.updated':
+            _handle_connect_account_updated(event['data']['object'])
+    except Exception:
+        logger.exception(
+            "Stripe connect webhook handler failed for event %s (%s)",
+            event.get('id'), event_type,
+        )
 
     return HttpResponse(status=200)
+
+
+def _handle_connect_account_updated(account):
+    """Fire the one-time 'Tap to Pay is ready' push when a merchant goes live.
+
+    Stripe emits many account.updated events; the per-org
+    `tap_to_pay_enabled_push_sent` flag guarantees the push is sent exactly
+    once, the first time the card_payments capability reads 'active' in a
+    supported country. Server-driven so it reaches a backgrounded app — the
+    /merchant/status/ poll only runs while the app is foregrounded.
+    """
+    from tickets.api_views import _tap_to_pay_status_from_account
+    from tickets.services.push_notifications.dispatch import fire_tap_to_pay_enabled
+
+    account_id = account.get('id') if isinstance(account, dict) else getattr(account, 'id', None)
+    if not account_id:
+        return
+
+    org = Organization.objects.filter(stripe_account_id=account_id).first()
+    if org is None or org.tap_to_pay_enabled_push_sent:
+        return
+
+    status, _capability_state, _country = _tap_to_pay_status_from_account(account)
+    if status != 'enabled':
+        return
+
+    # Claim the once-only send atomically. Stripe fires account.updated in
+    # bursts as capabilities settle, and requests aren't wrapped in a
+    # transaction (ATOMIC_REQUESTS is off), so a read-check-write guard would
+    # let two concurrent events both fire. The conditional UPDATE lets exactly
+    # one caller flip False->True; everyone else gets 0 rows and bails.
+    claimed = Organization.objects.filter(
+        pk=org.pk, tap_to_pay_enabled_push_sent=False,
+    ).update(tap_to_pay_enabled_push_sent=True)
+    if not claimed:
+        return
+    # Bust the cached status so the next /merchant/status/ poll reflects reality.
+    try:
+        django_cache.delete(f'tap_to_pay_status:{org.pk}')
+    except Exception:
+        pass
+    fire_tap_to_pay_enabled(org)
 
 
 # Stripe payout status → local Payout status. 'pending' matters for
@@ -12372,11 +12433,17 @@ def _handle_stripe_payout_event(event):
         logger.warning("Stripe payout webhook missing 'account' field: %s", _stripe_value(event, 'id'))
         return
 
-    try:
-        org = Organization.objects.get(stripe_account_id=connected_account_id)
-    except Organization.DoesNotExist:
+    # stripe_account_id is not unique, so .get() could raise MultipleObjectsReturned
+    # on duplicate org rows. Take the first and log if there's more than one.
+    orgs = list(Organization.objects.filter(stripe_account_id=connected_account_id)[:2])
+    if not orgs:
         logger.warning("Stripe payout webhook for unknown account: %s", connected_account_id)
         return
+    if len(orgs) > 1:
+        logger.error(
+            "Multiple orgs share stripe_account_id %s; using first", connected_account_id
+        )
+    org = orgs[0]
 
     payout = None
     if stripe_payout_id:
@@ -12401,6 +12468,14 @@ def _handle_stripe_payout_event(event):
             logger.info(
                 "Ignoring unmatched Stripe payout without id/amount (org %s): %s",
                 org.id, stripe_payout_id,
+            )
+            return
+        if stripe_payout_amount < 0:
+            # Stripe's automatic "withdrawal to cover a negative balance" is not an
+            # organizer payout — don't pollute Payout history with a negative row.
+            logger.info(
+                "Ignoring negative-balance-recovery payout %s (org %s, amount %s)",
+                stripe_payout_id, org.id, stripe_payout_amount,
             )
             return
         payout, created = Payout.objects.get_or_create(

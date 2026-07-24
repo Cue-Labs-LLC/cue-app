@@ -26,6 +26,7 @@ from .models import (
     SMSConsentRecord,
     SMSCreditTransaction,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
+    DeviceToken,
 )
 
 
@@ -903,11 +904,12 @@ class OrganizationAdmin(admin.ModelAdmin):
     ]
     prepopulated_fields = {'slug': ('name',)}
     inlines = [OrganizationMembershipInline]
+    actions = ['send_tap_to_pay_ready_push']
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
         ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
-        ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
+        ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete', 'tap_to_pay_enabled_push_sent')}),
         ('Meta Ads', {
             'fields': (
                 'meta_ads_user_id',
@@ -928,6 +930,31 @@ class OrganizationAdmin(admin.ModelAdmin):
         }),
         ('Metadata', {'fields': ('id', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
+
+    @admin.action(description="Send 'Tap to Pay is ready' push to devices")
+    def send_tap_to_pay_ready_push(self, request, queryset):
+        """Manual fallback for the account.updated webhook trigger."""
+        from tickets.services.push_notifications.dispatch import fire_tap_to_pay_enabled
+
+        sent = 0
+        for org in queryset:
+            fire_tap_to_pay_enabled(org)
+            sent += 1
+        self.message_user(
+            request,
+            f"Enqueued 'Tap to Pay is ready' push for {sent} organization(s).",
+            messages.SUCCESS,
+        )
+
+
+@admin.register(DeviceToken)
+class DeviceTokenAdmin(admin.ModelAdmin):
+    list_display = ['organizer', 'organization', 'platform', 'created_at', 'updated_at']
+    list_filter = ['platform', 'organization', 'created_at']
+    search_fields = ['organizer__username', 'organizer__email', 'organization__name', 'token']
+    list_select_related = ['organizer', 'organization']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organizer', 'organization']
 
 
 @admin.register(FeatureFlagSettings)

@@ -14,6 +14,10 @@ class Command(BaseCommand):
     This command DISPATCHES. To inspect what's pending without sending anything,
     use the read-only ``sms_campaign_status`` command instead. Both read the same
     ``SMSCampaign.objects.due()`` / ``.stuck()`` helpers so they never disagree.
+
+    Campaigns are dispatched soonest-linked-event first (``.due()`` is urgency-ordered),
+    so under the shared daily carrier-cap budget a day-of/day-before blast claims today's
+    allowance ahead of an evergreen one.
     """
     help = "Dispatch scheduled marketing SMS campaigns that are due; recover stuck sends."
 

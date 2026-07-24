@@ -28,6 +28,7 @@ from rest_framework.response import Response
 
 from .models import (
     Customer,
+    DeviceToken,
     Event,
     EventCustomFieldValue,
     EventExpense,
@@ -2509,6 +2510,75 @@ def _send_receipt_email_for_intent(summary, to_email):
         return 'failed', str(exc)[:1000]
 
 
+@api_view(['POST'])
+def register_device_token(request):
+    """
+    POST /api/notification/device-token/
+    Authorization: Token <organizer_token>
+    Body: {"token": "<hex>", "platform": "ios"}
+
+    Upsert the caller's APNs device token. Tokens rotate, so we keep the newest
+    token for the organizer and drop the rest. Returns 204 No Content. (The
+    route simply 404s before this endpoint is deployed — the app swallows that,
+    so a gradual rollout is safe.)
+    """
+    token = (request.data.get('token') or '').strip()
+    platform = (request.data.get('platform') or 'ios').strip() or 'ios'
+    if not token:
+        logger.info("device-token register rejected (missing token) user=%s", request.user.pk)
+        return Response({'error': 'token is required'}, status=400)
+
+    org = _get_org_from_user(request.user)
+    if org is None:
+        logger.info("device-token register rejected (no org) user=%s", request.user.pk)
+        return Response({'error': 'No organization for this user'}, status=403)
+
+    # The token string is globally unique — reassign it to this organizer/org
+    # (it may have been registered by someone else on a reused device), then
+    # drop this organizer's other (now-stale) tokens.
+    _dt, created = DeviceToken.objects.update_or_create(
+        token=token,
+        defaults={'organizer': request.user, 'organization': org, 'platform': platform},
+    )
+    DeviceToken.objects.filter(organizer=request.user).exclude(token=token).delete()
+    logger.info(
+        "device-token registered user=%s org=%s platform=%s created=%s token=%s…",
+        request.user.pk, org.pk, platform, created, token[:12],
+    )
+    return Response(status=204)
+
+
+def _tap_to_pay_status_from_account(account):
+    """Derive Tap to Pay facts from a Stripe Account (SDK object or plain dict).
+
+    Shared by the /merchant/status/ resolver and the account.updated webhook so
+    the two never drift. Returns (status, capability_state, country) where
+    status is 'pending' | 'enabled' | 'unsupported'.
+    """
+    from django.conf import settings as django_settings
+    from .views import _read_stripe_capability
+
+    if account is None:
+        return 'pending', 'unknown', ''
+
+    if isinstance(account, dict):
+        capabilities = account.get('capabilities')
+        country = (account.get('country') or '').upper()
+    else:
+        capabilities = getattr(account, 'capabilities', None)
+        country = (getattr(account, 'country', '') or '').upper()
+
+    card_cap = _read_stripe_capability(capabilities, 'card_payments')
+    capability_state = card_cap or 'unrequested'
+
+    status = 'pending'
+    if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
+        status = 'unsupported'
+    elif card_cap == 'active':
+        status = 'enabled'
+    return status, capability_state, country
+
+
 def _resolve_tap_to_pay_facts(org):
     """Inspect the org's Stripe Connect account and return a dict of facts.
 
@@ -2548,17 +2618,7 @@ def _resolve_tap_to_pay_facts(org):
         if account is None:
             capability_state = 'unknown'
         else:
-            from .views import _read_stripe_capability
-            card_cap = _read_stripe_capability(
-                getattr(account, 'capabilities', None), 'card_payments',
-            )
-            capability_state = card_cap or 'unrequested'
-            country = (getattr(account, 'country', '') or '').upper()
-
-            if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
-                status = 'unsupported'
-            elif card_cap == 'active':
-                status = 'enabled'
+            status, capability_state, country = _tap_to_pay_status_from_account(account)
 
     facts = {
         'status': status,

@@ -221,6 +221,14 @@ class Organization(BaseModel):
         default=False,
         help_text='True after Stripe confirms details_submitted, charges_enabled, and payouts_enabled.',
     )
+    tap_to_pay_enabled_push_sent = models.BooleanField(
+        default=False,
+        help_text=(
+            "True once the one-time 'Tap to Pay is ready' push has been sent to "
+            "this org's devices. Guards against duplicate sends across the many "
+            "account.updated webhooks Stripe fires."
+        ),
+    )
     stripe_terminal_location_id = models.CharField(
         max_length=64,
         blank=True,
@@ -2108,15 +2116,26 @@ class SMSConsentRecord(AuditBaseModel):
 
 
 class SMSCampaignQuerySet(models.QuerySet):
+    def by_urgency(self):
+        """Order soonest-linked-event first (event-less campaigns last, then oldest
+        scheduled). Under the shared daily carrier-cap budget, time-sensitive blasts
+        (day-of / day-before an event) should consume today's allowance ahead of
+        evergreen ones — so the dispatcher sends and the recovery pass resumes in this
+        order. See tickets/services/sms_limits.py."""
+        return self.order_by(
+            F('event__start_date').asc(nulls_last=True),
+            'scheduled_at',
+        )
+
     def due(self, now=None):
         """Scheduled campaigns whose send time has arrived — the scheduler's
-        dispatch set. Source of truth shared by the dispatcher and read-only
-        status commands so the two can never disagree about what's pending."""
+        dispatch set, ordered by urgency. Source of truth shared by the dispatcher
+        and read-only status commands so the two can never disagree about what's pending."""
         now = now or timezone.now()
         return self.filter(
             status=SMSCampaign.Status.SCHEDULED,
             scheduled_at__lte=now,
-        )
+        ).by_urgency()
 
     def upcoming(self, now=None):
         """Scheduled campaigns whose send time is still in the future — frozen,
@@ -2139,7 +2158,7 @@ class SMSCampaignQuerySet(models.QuerySet):
         return self.filter(
             status=SMSCampaign.Status.SENDING,
             started_at__lte=now - timezone.timedelta(minutes=minutes),
-        )
+        ).by_urgency()
 
 
 class SMSCampaign(AuditBaseModel):
@@ -2211,6 +2230,10 @@ class SMSCampaign(AuditBaseModel):
     # browser retry) reuses the same key, so the unique constraint stops a second
     # campaign from being created, charged, and sent.
     idempotency_key = models.CharField(max_length=64, null=True, blank=True)
+    # Human-readable reason a campaign ended in FAILED (e.g. the daily carrier cap was
+    # reached at send time). Surfaced on the campaign detail page so the organizer knows
+    # to shrink + reschedule. Blank for non-failed campaigns.
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
@@ -2263,7 +2286,7 @@ class SMSCampaign(AuditBaseModel):
         Postgres (prod). Numbers outside SMS_ALLOWED_COUNTRY_PREFIXES are excluded here
         — before scheduling/charging — since Twilio Geo Permissions would block them
         (Error 21408) and they aren't billable."""
-        from tickets.sms import normalize_phone, sms_country_allowed
+        from tickets.sms import normalize_phone, sms_country_allowed, is_plausible_e164
         org = organization or self.organization
         suppressed = PhoneSuppression.suppressed_phones(org)
         seen = set()
@@ -2271,6 +2294,10 @@ class SMSCampaign(AuditBaseModel):
         for customer in self.candidate_customers(org).only('id', 'phone'):
             phone = normalize_phone(customer.phone)
             if not phone or phone in seen or phone in suppressed:
+                continue
+            if not is_plausible_e164(phone):
+                # Malformed number (e.g. a double country code → '+111…'); Twilio would
+                # reject it (21211). Drop before scheduling/charging.
                 continue
             if not sms_country_allowed(phone):
                 continue
@@ -4013,6 +4040,37 @@ class TapToPayTermsAcceptance(BaseModel):
 
     def __str__(self):
         return f"{self.organization.name} accepted {self.version} at {self.accepted_at:%Y-%m-%d %H:%M}"
+
+
+class DeviceToken(BaseModel):
+    """APNs device token for a Cue organizer's iOS device.
+
+    Tokens rotate: on each registration we keep the newest token for an
+    organizer and drop the rest. Scoped to the organizer's Organization so
+    pushes (launch announcement, 'Tap to Pay is ready') can be fanned out
+    per-org. Tokens are environment-specific — a sandbox (dev-build) token
+    will not deliver against the production APNs host and vice versa.
+    """
+    organizer = models.ForeignKey(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+    )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+        db_index=True,
+    )
+    token = models.CharField(max_length=200, unique=True, db_index=True)
+    platform = models.CharField(max_length=16, default='ios', choices=[('ios', 'iOS')])
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['organization'])]
+
+    def __str__(self):
+        return f"{self.organizer.get_username()} — {self.token[:16]}… ({self.platform})"
 
 
 class ReceiptSend(BaseModel):
