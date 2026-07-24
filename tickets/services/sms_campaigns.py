@@ -34,6 +34,31 @@ class AudienceTooLargeError(CampaignSendError):
         super().__init__(f'Audience of {count} exceeds the cap of {cap}.')
 
 
+class DailyCapExceededError(CampaignSendError):
+    """The send would push its day past the shared daily carrier cap. Blocked at compose time
+    so the organizer can trim the list rather than have delivery silently deferred."""
+
+    def __init__(self, count, allowed, cap, send_date):
+        self.count = count
+        self.allowed = allowed  # recipients that would fit the day's remaining budget
+        self.cap = cap
+        self.send_date = send_date
+        super().__init__(f'Send of {count} exceeds the daily cap ({allowed} of {cap} available).')
+
+    def user_message(self):
+        when = self.send_date.strftime('%b %d')
+        if self.allowed <= 0:
+            return (
+                f'The daily send limit for {when} is already fully booked. '
+                f'Reschedule this campaign for another day.'
+            )
+        return (
+            f'This send of {self.count} recipients would exceed the daily send limit for '
+            f'{when}. Reduce the recipient list to about {self.allowed} or fewer, or schedule '
+            f'it for another day.'
+        )
+
+
 @dataclass
 class CampaignSendResult:
     """Outcome of a finalize call. ``created`` is False on an idempotent replay
@@ -56,10 +81,12 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
     cover the cost — nothing is written in either case. Idempotent on
     ``idempotency_key``: a duplicate returns the existing campaign with ``created=False``.
     """
+    from django.utils import timezone
     from tickets.models import SMSCampaign, SMSMessageRecipient
     from tickets.sms import extract_first_url
     from tickets.sms_views import _mint_campaign_tracking_link, send_sms_campaign_task
     from tickets.services.sms_credits import charge, plan_campaign_footers
+    from tickets.services.sms_limits import daily_capacity_for, daily_segment_cap, fit_within_budget
 
     # Resolve the audience up front so cap/empty are rejected before any write.
     recipients = SMSCampaign(
@@ -81,7 +108,8 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
     cost_tokens = sum(footer_plan[r['phone']][1] for r in recipients)
 
     # Idempotency: if this exact confirm already produced a campaign, return it
-    # rather than charging/sending again.
+    # rather than charging/sending again (and without re-running the cap block below,
+    # which could spuriously reject a legitimate replay).
     existing = SMSCampaign.objects.filter(
         organization=org, idempotency_key=idempotency_key,
     ).first()
@@ -91,6 +119,16 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
             cost_cents=cost_cents, cost_tokens=cost_tokens,
             scheduled=scheduled, created=False,
         )
+
+    # Block a send that would push its send day past the shared daily carrier cap — up front,
+    # so the organizer trims the list, rather than deferring delivery to the next day. Day-aware:
+    # measured against the cap minus what's sent today + already scheduled for that day.
+    capacity = daily_capacity_for(send_at)
+    if capacity is not None:
+        segs = [footer_plan[r['phone']][1] for r in recipients]
+        allowed = fit_within_budget(segs, capacity)
+        if allowed < count:
+            raise DailyCapExceededError(count, allowed, daily_segment_cap(), timezone.localdate(send_at))
 
     try:
         with transaction.atomic():

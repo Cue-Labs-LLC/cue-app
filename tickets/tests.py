@@ -4801,6 +4801,394 @@ class SMSComplianceGuardTests(TestCase):
         )
 
 
+class SMSThroughputGuardTests(TestCase):
+    """Carrier-throughput guards on the send path: paced (staggered) dispatch to avoid
+    burst spam-filtering (Error 30007), an account-wide daily segment cap that BLOCKS an
+    oversize send at compose time (day-aware) so the organizer trims the list, a send-time
+    fail+refund for the rare race the block can't see, urgency-first ordering, and dropping
+    malformed numbers before they reach Twilio (Error 21211)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Throughput Org', slug='throughput-org', sms_marketing_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='LA')
+
+    def _campaign(self, n_recipients, segments=1, status=None):
+        from .models import SMSCampaign, SMSMessageRecipient
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            status=status or SMSCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(
+                campaign=campaign, phone=f'+1555000{i:04d}',
+                status=SMSMessageRecipient.Status.QUEUED, segments=segments,
+            ) for i in range(n_recipients)
+        ])
+        return campaign
+
+    def _opted_in(self, n):
+        return [
+            Customer.objects.create(
+                organization=self.org, email=f'c{i}@example.com', name=f'C{i}',
+                phone=f'+1555{i:07d}', sms_opt_in=True,
+            ) for i in range(n)
+        ]
+
+    def _finalize(self, custs, *, scheduled, send_at, key):
+        from .services.sms_campaigns import finalize_campaign_send
+        return finalize_campaign_send(
+            self.org, name='Blast', body='Tickets!', criteria={},
+            manual_include_ids=[str(c.id) for c in custs], event=None,
+            scheduled=scheduled, send_at=send_at, user=None, idempotency_key=key, cap=5000,
+        )
+
+    # --- Malformed-number validation (Error 21211) ---
+
+    def test_is_plausible_e164(self):
+        from .sms import is_plausible_e164
+        self.assertTrue(is_plausible_e164('+15551234567'))
+        self.assertTrue(is_plausible_e164('+447700900000'))  # UK, 12 digits
+        self.assertFalse(is_plausible_e164('+1116267769618'))  # double country code
+        self.assertFalse(is_plausible_e164('+1555123'))        # +1 but not 11 digits
+        self.assertFalse(is_plausible_e164('5551234567'))      # no '+'
+        self.assertFalse(is_plausible_e164('+1abc'))
+        self.assertFalse(is_plausible_e164(''))
+
+    def test_materialize_drops_malformed_numbers(self):
+        from .models import SMSCampaign
+        good = Customer.objects.create(
+            organization=self.org, email='g@example.com', name='Good',
+            phone='+15551230000', sms_opt_in=True,
+        )
+        # A number that already carried a country code, so normalize prepends a stray '+1'.
+        bad = Customer.objects.create(
+            organization=self.org, email='b@example.com', name='Bad',
+            phone='116267769618', sms_opt_in=True,
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            manual_include_ids=[str(good.id), str(bad.id)],
+        )
+        phones = {r['phone'] for r in campaign.materialize()}
+        self.assertIn('+15551230000', phones)
+        self.assertNotIn('+1116267769618', phones)
+
+    # --- fit_within_budget ---
+
+    def test_fit_within_budget(self):
+        from .services.sms_limits import fit_within_budget
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], None), 5)  # disabled
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], 0), 0)
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], 2), 2)
+        self.assertEqual(fit_within_budget([2, 2, 2], 5), 2)
+        # First recipient always progresses even if its segments exceed the budget.
+        self.assertEqual(fit_within_budget([3, 1], 1), 1)
+
+    # --- Paced dispatch (staggered chord) ---
+
+    @override_settings(SMS_SEND_RATE_PER_SEC=5, SMS_CHUNK_SIZE=10, SMS_DAILY_SEGMENT_CAP=0)
+    def test_dispatch_staggers_chunks_by_countdown(self):
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(25)
+        captured = {}
+
+        def fake_chord(header):
+            captured['header'] = header
+            return lambda callback: None
+
+        with patch('celery.chord', side_effect=fake_chord):
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+
+        header = captured['header']
+        # 25 recipients / chunk_size 10 -> 3 chunks.
+        self.assertEqual(len(header), 3)
+        countdowns = [sig.options.get('countdown') for sig in header]
+        # chunk idx * chunk_size / rate = 0, 10/5=2, 20/5=4.
+        self.assertEqual(countdowns, [0, 2, 4])
+
+    # --- Day-aware capacity ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_daily_capacity_is_day_aware(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_limits import segments_scheduled_for, daily_capacity_for
+        tomorrow = timezone.now() + timedelta(days=1)
+        c = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=c, phone=f'+1557{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(7)
+        ])
+        d = timezone.localdate(tomorrow)
+        self.assertEqual(segments_scheduled_for(d), 7)
+        self.assertEqual(daily_capacity_for(tomorrow), 93)  # 100 - 7 booked
+        self.assertEqual(segments_scheduled_for(d, exclude_campaign_id=c.id), 0)
+
+    # --- Compose-time block ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=6)
+    def test_finalize_blocks_send_now_over_today_budget(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_campaigns import DailyCapExceededError
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        # Pre-consume 4 of today's 6-segment budget with an already-sent recipient.
+        pre = SMSCampaign.objects.create(organization=self.org, name='pre', body='hi')
+        SMSMessageRecipient.objects.create(
+            campaign=pre, phone='+15559990000', segments=4, twilio_sid='SMx',
+            status=SMSMessageRecipient.Status.SENT, sent_at=timezone.now(),
+        )
+        before = SMSCampaign.objects.count()
+        with self.assertRaises(DailyCapExceededError):
+            self._finalize(custs, scheduled=False, send_at=timezone.now(), key='k1')
+        self.assertEqual(SMSCampaign.objects.count(), before)  # nothing created/charged
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=6)
+    def test_finalize_blocks_future_send_day_aware(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_campaigns import DailyCapExceededError
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        tomorrow = timezone.now() + timedelta(days=1)
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=booked, phone=f'+1558{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(5)
+        ])  # books 5 of tomorrow's 6
+        custs = self._opted_in(5)
+        with self.assertRaises(DailyCapExceededError):
+            self._finalize(custs, scheduled=True, send_at=tomorrow, key='k2')
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_finalize_allows_within_cap(self):
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        result = self._finalize(custs, scheduled=False, send_at=timezone.now(), key='k3')
+        self.assertTrue(result.created)
+        self.assertEqual(result.recipient_count, 5)
+
+    def test_daily_cap_exceeded_error_message_prompts_to_reduce(self):
+        from .services.sms_campaigns import DailyCapExceededError
+        exc = DailyCapExceededError(count=20, allowed=5, cap=100, send_date=timezone.localdate())
+        self.assertIn('20', exc.user_message())
+        self.assertIn('5', exc.user_message())
+        self.assertIn('Reduce', exc.user_message())
+        # Fully booked → tell them to pick another day, no "reduce to 0".
+        full = DailyCapExceededError(count=20, allowed=0, cap=100, send_date=timezone.localdate())
+        self.assertIn('another day', full.user_message())
+
+    # --- Send-time last resort (fail + refund, no defer) ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_send_time_fails_and_refunds_when_over_budget(self):
+        from .models import SMSCampaign
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(5, segments=1)
+        with patch('tickets.services.sms_limits.remaining_daily_budget', return_value=2), \
+                patch('tickets.services.sms_credits.refund_campaign') as mock_refund, \
+                patch('celery.chord') as mock_chord:
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+        mock_chord.assert_not_called()  # never partially dispatched
+        mock_refund.assert_called_once()
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SMSCampaign.Status.FAILED)
+        self.assertTrue(campaign.failure_reason)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_send_time_dispatches_all_when_within_budget(self):
+        from .models import SMSCampaign
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(5, segments=1)
+        captured = {}
+
+        def fake_chord(header):
+            captured['header'] = header
+            return lambda callback: None
+
+        with patch('tickets.services.sms_limits.remaining_daily_budget', return_value=100), \
+                patch('celery.chord', side_effect=fake_chord):
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+        dispatched = sum(len(sig.args[1]) for sig in captured['header'])
+        self.assertEqual(dispatched, 5)  # all recipients dispatched, none dropped
+        campaign.refresh_from_db()
+        self.assertNotEqual(campaign.status, SMSCampaign.Status.FAILED)
+
+    def test_segments_used_today_counts_only_sent_today(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_limits import segments_used_today
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Hi',
+        )
+        # Sent today with a SID -> counts.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000001', segments=2, twilio_sid='SM1',
+            status=SMSMessageRecipient.Status.SENT, sent_at=timezone.now(),
+        )
+        # Queued (never sent) -> excluded.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000002', segments=5,
+            status=SMSMessageRecipient.Status.QUEUED,
+        )
+        # Sent yesterday -> excluded.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000003', segments=3, twilio_sid='SM3',
+            status=SMSMessageRecipient.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=1),
+        )
+        self.assertEqual(segments_used_today(), 2)
+
+    # --- Urgency-first ordering ---
+
+    def test_due_orders_soonest_event_first(self):
+        from .models import SMSCampaign
+        soon_event = Event.objects.create(
+            organization=self.org, name='Soon', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1),
+        )
+        later_event = Event.objects.create(
+            organization=self.org, name='Later', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=30),
+        )
+        later = SMSCampaign.objects.create(
+            organization=self.org, name='Later Blast', body='Hi', event=later_event,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        soon = SMSCampaign.objects.create(
+            organization=self.org, name='Soon Blast', body='Hi', event=soon_event,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        no_event = SMSCampaign.objects.create(
+            organization=self.org, name='Evergreen', body='Hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        ordered = list(SMSCampaign.objects.due().values_list('id', flat=True))
+        self.assertEqual(
+            ordered, [soon.id, later.id, no_event.id],  # soonest event first, null last
+        )
+
+    # --- Compose-time block surfaces during review (before confirm) ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_composer_review_warns_before_confirm(self):
+        from .models import SMSCampaign
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)  # so insufficient-credits doesn't preempt
+        self._opted_in(5)
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        user = User.objects.create_user(username='cmp', email='cmp@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        c = Client()
+        c.login(username='cmp@example.com', password='pw')
+        c.get(reverse('tickets:home'))  # warm org cache
+        # Review step (no 'confirm'): 5 recipients vs a cap of 2.
+        resp = c.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Blast', 'body': 'Tickets!', 'send_mode': 'now',
+            'audience_scope': 'all', 'event': str(ev.id),
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['daily_cap_block'])  # warned in the confirm bar
+        self.assertIn('Reduce', resp.context['daily_cap_block'])
+        # Nothing was created — the block is shown, not committed.
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+
+    def _preview_client(self):
+        user = User.objects.create_user(
+            username=f'preview-{uuid.uuid4().hex[:8]}',
+            email=f'preview-{uuid.uuid4().hex[:8]}@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        c = Client()
+        c.force_login(user)
+        c.get(reverse('tickets:home'))  # warm org cache
+        return c
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=17)
+    def test_audience_preview_warns_when_daily_cap_exceeded(self):
+        custs = self._opted_in(20)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'now',
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 20)
+        self.assertTrue(data['daily_cap_blocked'])
+        self.assertEqual(data['daily_cap_allowed'], 17)
+        self.assertEqual(data['daily_cap'], 17)
+        self.assertIn('Reduce', data['daily_cap_message'])
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=17)
+    def test_audience_preview_is_day_aware_for_scheduled_send(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        tomorrow = timezone.now() + timedelta(days=1)
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='Booked', body='Booked',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(
+                campaign=booked, phone=f'+1555999{i:04d}',
+                status=SMSMessageRecipient.Status.QUEUED, segments=1,
+            ) for i in range(10)
+        ])
+        custs = self._opted_in(10)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'schedule',
+            'scheduled_at': timezone.localtime(tomorrow).strftime('%Y-%m-%dT%H:%M'),
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 10)
+        self.assertTrue(data['daily_cap_blocked'])
+        self.assertEqual(data['daily_cap_allowed'], 7)
+        self.assertIn('7 or fewer', data['daily_cap_message'])
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=0)
+    def test_audience_preview_omits_daily_warning_when_cap_disabled(self):
+        custs = self._opted_in(20)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'now',
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 20)
+        self.assertFalse(data['daily_cap_blocked'])
+        self.assertIsNone(data['daily_cap_allowed'])
+        self.assertIsNone(data['daily_cap'])
+
+
 class SMSCampaignLinkEventTests(TestCase):
     """Linking an already-sent SMS campaign to an event (and clearing it)."""
 

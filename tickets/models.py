@@ -2108,15 +2108,26 @@ class SMSConsentRecord(AuditBaseModel):
 
 
 class SMSCampaignQuerySet(models.QuerySet):
+    def by_urgency(self):
+        """Order soonest-linked-event first (event-less campaigns last, then oldest
+        scheduled). Under the shared daily carrier-cap budget, time-sensitive blasts
+        (day-of / day-before an event) should consume today's allowance ahead of
+        evergreen ones — so the dispatcher sends and the recovery pass resumes in this
+        order. See tickets/services/sms_limits.py."""
+        return self.order_by(
+            F('event__start_date').asc(nulls_last=True),
+            'scheduled_at',
+        )
+
     def due(self, now=None):
         """Scheduled campaigns whose send time has arrived — the scheduler's
-        dispatch set. Source of truth shared by the dispatcher and read-only
-        status commands so the two can never disagree about what's pending."""
+        dispatch set, ordered by urgency. Source of truth shared by the dispatcher
+        and read-only status commands so the two can never disagree about what's pending."""
         now = now or timezone.now()
         return self.filter(
             status=SMSCampaign.Status.SCHEDULED,
             scheduled_at__lte=now,
-        )
+        ).by_urgency()
 
     def upcoming(self, now=None):
         """Scheduled campaigns whose send time is still in the future — frozen,
@@ -2139,7 +2150,7 @@ class SMSCampaignQuerySet(models.QuerySet):
         return self.filter(
             status=SMSCampaign.Status.SENDING,
             started_at__lte=now - timezone.timedelta(minutes=minutes),
-        )
+        ).by_urgency()
 
 
 class SMSCampaign(AuditBaseModel):
@@ -2211,6 +2222,10 @@ class SMSCampaign(AuditBaseModel):
     # browser retry) reuses the same key, so the unique constraint stops a second
     # campaign from being created, charged, and sent.
     idempotency_key = models.CharField(max_length=64, null=True, blank=True)
+    # Human-readable reason a campaign ended in FAILED (e.g. the daily carrier cap was
+    # reached at send time). Surfaced on the campaign detail page so the organizer knows
+    # to shrink + reschedule. Blank for non-failed campaigns.
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
@@ -2263,7 +2278,7 @@ class SMSCampaign(AuditBaseModel):
         Postgres (prod). Numbers outside SMS_ALLOWED_COUNTRY_PREFIXES are excluded here
         — before scheduling/charging — since Twilio Geo Permissions would block them
         (Error 21408) and they aren't billable."""
-        from tickets.sms import normalize_phone, sms_country_allowed
+        from tickets.sms import normalize_phone, sms_country_allowed, is_plausible_e164
         org = organization or self.organization
         suppressed = PhoneSuppression.suppressed_phones(org)
         seen = set()
@@ -2271,6 +2286,10 @@ class SMSCampaign(AuditBaseModel):
         for customer in self.candidate_customers(org).only('id', 'phone'):
             phone = normalize_phone(customer.phone)
             if not phone or phone in seen or phone in suppressed:
+                continue
+            if not is_plausible_e164(phone):
+                # Malformed number (e.g. a double country code → '+111…'); Twilio would
+                # reject it (21211). Drop before scheduling/charging.
                 continue
             if not sms_country_allowed(phone):
                 continue

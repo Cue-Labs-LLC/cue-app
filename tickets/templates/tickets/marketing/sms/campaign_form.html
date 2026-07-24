@@ -627,6 +627,10 @@
                         </span>
                         <a href="{% url 'tickets:sms_credits' %}" class="btn btn-primary"><i class="bi bi-wallet2"></i> Add tokens</a>
                     </div>
+                    {% elif daily_cap_block %}
+                    <div class="sms-confirm" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
+                        <span class="sms-confirm-text">{{ daily_cap_block }}</span>
+                    </div>
                     {% else %}
                     <div class="sms-confirm">
                         <span class="sms-confirm-text">
@@ -794,6 +798,7 @@
         if (body) {
             body.addEventListener('input', render);
             body.addEventListener('input', invalidateConfirm);  // cost depends on the body
+            body.addEventListener('input', queueRefreshAudience);  // segments affect daily-cap fit
         }
         render();
 
@@ -804,7 +809,11 @@
             if (wrap) wrap.style.display = (checked && checked.value === 'schedule') ? '' : 'none';
         }
         document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
-            el.addEventListener('change', syncSchedule);
+            el.addEventListener('change', function () {
+                syncSchedule();
+                invalidateConfirm();
+                queueRefreshAudience();
+            });
         });
         syncSchedule();
 
@@ -839,9 +848,15 @@
                 .then(function (j) {
                     countEl.textContent = j.count;
                     pulse();
-                    if (noteEl) noteEl.textContent = j.exceeds_cap
-                        ? 'Exceeds the ' + j.cap + ' cap — narrow the audience.'
-                        : 'Only opted-in, contactable, non-opted-out customers are counted.';
+                    if (noteEl) {
+                        if (j.daily_cap_blocked && j.daily_cap_message) {
+                            noteEl.textContent = j.daily_cap_message;
+                        } else if (j.exceeds_cap) {
+                            noteEl.textContent = 'Exceeds the ' + j.cap + ' cap — narrow the audience.';
+                        } else {
+                            noteEl.textContent = 'Only opted-in, contactable, non-opted-out customers are counted.';
+                        }
+                    }
                     // Warn when a prefill selection has non-subscribers that will be silently skipped.
                     if (prefillGapEl && prefillCount > 0 && !j.exceeds_cap) {
                         var reachable = parseInt(j.count, 10) || 0;
@@ -857,7 +872,23 @@
                 })
                 .catch(function () { countEl.textContent = '?'; });
         }
+        var audienceRefreshTimer = null;
+        function queueRefreshAudience() {
+            clearTimeout(audienceRefreshTimer);
+            audienceRefreshTimer = setTimeout(refreshAudience, 250);
+        }
         if (refreshBtn) refreshBtn.addEventListener('click', refreshAudience);
+        var scheduledAt = form ? form.querySelector('[name="scheduled_at"]') : null;
+        if (scheduledAt) {
+            scheduledAt.addEventListener('input', function () {
+                invalidateConfirm();
+                queueRefreshAudience();
+            });
+            scheduledAt.addEventListener('change', function () {
+                invalidateConfirm();
+                refreshAudience();
+            });
+        }
 
         // Per-group "N selected" + Clear, driven off the hidden checkboxes.
         function syncGroup(group) {

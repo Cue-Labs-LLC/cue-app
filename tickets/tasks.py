@@ -969,28 +969,58 @@ def send_sms_campaign_task(self, campaign_id):
     # "Unsent" == QUEUED with no twilio_sid. A row that carries a SID was already
     # accepted by Twilio, so it must never be re-sent — even if a stale callback
     # regressed its status to QUEUED. Recovery and finalize share this predicate.
-    queued_ids = [
-        str(i) for i in SMSMessageRecipient.objects.filter(
+    queued = list(
+        SMSMessageRecipient.objects.filter(
             campaign=campaign, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
-        ).values_list('id', flat=True)
-    ]
-    if not queued_ids:
+        ).values_list('id', 'segments')
+    )
+    if not queued:
         _finalize_sms_campaign(campaign.id)
         return
 
-    chunk_size = 100
-    header = [
-        send_sms_chunk_task.s(str(campaign.id), queued_ids[i:i + chunk_size])
-        for i in range(0, len(queued_ids), chunk_size)
-    ]
+    # Daily carrier-cap last resort. The composer blocks oversize sends up front (day-aware),
+    # so a campaign should fit its day by the time it dispatches. If a race the composer can't
+    # see (simultaneous confirms, a reschedule onto a full day) leaves this day over budget,
+    # fail the WHOLE campaign — never partially, never deferred, so the shared cap is never
+    # exceeded — refund it, and record a reason so the organizer can shrink + reschedule.
+    from tickets.services.sms_limits import remaining_daily_budget, fit_within_budget
+    budget = remaining_daily_budget()
+    if budget is not None and fit_within_budget([seg for _, seg in queued], budget) < len(queued):
+        from tickets.services.sms_credits import refund_campaign
+        reason = ('Daily send limit for this date was reached before the campaign dispatched. '
+                  'Reduce the recipient list and reschedule.')
+        SMSCampaign.objects.filter(id=campaign.id).update(
+            status=SMSCampaign.Status.FAILED, failure_reason=reason,
+        )
+        refund_campaign(campaign, description='Daily send limit reached')
+        logger.warning(
+            "SMS campaign %s failed: daily cap reached at send time (%d recipient(s), budget %s)",
+            campaign_id, len(queued), budget,
+        )
+        return
+    queued_ids = [str(rid) for rid, _ in queued]
+
+    # Pace dispatch to roughly SMS_SEND_RATE_PER_SEC by staggering chunk start times,
+    # rather than blasting the whole audience at once (a burst gets carrier-filtered as
+    # spam — Error 30007). chunk N starts at ~N*chunk_size/rate seconds. In eager mode
+    # (dev) countdowns are ignored and everything runs inline.
+    rate = max(1, getattr(settings, 'SMS_SEND_RATE_PER_SEC', 5))
+    chunk_size = max(1, getattr(settings, 'SMS_CHUNK_SIZE', 10))
+    header = []
+    for idx, start in enumerate(range(0, len(queued_ids), chunk_size)):
+        delay = int(idx * chunk_size / rate)
+        header.append(
+            send_sms_chunk_task.s(str(campaign.id), queued_ids[start:start + chunk_size])
+            .set(countdown=delay)
+        )
     chord(header)(finalize_sms_campaign_task.s(str(campaign.id)))
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=30, rate_limit='3/s')
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_sms_chunk_task(self, campaign_id, recipient_ids):
     """Send one chunk of a campaign. Per-recipient failure is isolated — one bad
-    number never aborts the chunk. Global throughput is metered by the Twilio
-    Messaging Service queue plus this task's rate_limit."""
+    number never aborts the chunk. Global throughput is paced by the orchestrator, which
+    staggers chunk start times to hold ~SMS_SEND_RATE_PER_SEC (see send_sms_campaign_task)."""
     import secrets
     from django.conf import settings
     from django.urls import reverse, NoReverseMatch

@@ -73,6 +73,25 @@ def normalize_phone(raw: str) -> str:
     return phone
 
 
+def is_plausible_e164(phone: str) -> bool:
+    """True if `phone` looks like a valid E.164 number worth sending to.
+
+    normalize_phone() is permissive — it passes malformed input through as '+<digits>'
+    (e.g. a number that already had a country code gets a stray '+1' prepended → '+111…')
+    and Twilio then rejects it with Error 21211, which needlessly dings the account's
+    compliance score. This drops those before scheduling/charging. Rules: '+' followed by
+    8–15 digits (E.164 max is 15), and a US/CA '+1' number must be exactly 11 digits total
+    (+1 plus 10). Expects an already-normalized number (see normalize_phone)."""
+    if not phone or not phone.startswith('+'):
+        return False
+    digits = phone[1:]
+    if not digits.isdigit() or not (8 <= len(digits) <= 15):
+        return False
+    if digits.startswith('1') and len(digits) != 11:
+        return False
+    return True
+
+
 # Explicit opt-out phrasing ("Reply STOP", "Text STOP anytime", …). Only this
 # suppresses the auto-appended footer — a casual "stop by the bar" must not strip
 # the compliance disclosure. Mirrored in campaign_form.html's live meter.

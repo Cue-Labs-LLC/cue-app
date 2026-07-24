@@ -290,6 +290,24 @@ SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '3
 SMS_ALLOWED_COUNTRY_PREFIXES = tuple(
     p.strip() for p in os.environ.get('SMS_ALLOWED_COUNTRY_PREFIXES', '+1').split(',') if p.strip()
 )
+# Target outbound throughput for a marketing-SMS campaign, in messages/second. The
+# orchestrator staggers chunk dispatch to hold roughly this rate instead of blasting the
+# whole audience at once — a burst from a low-trust-score number gets carrier-filtered as
+# spam (Twilio Error 30007). Keep low on a single sending number; raise only alongside a
+# multi-number Messaging Service pool. At 5/s a 1,800-recipient send finishes in ~6 min.
+SMS_SEND_RATE_PER_SEC = int(os.environ.get('SMS_SEND_RATE_PER_SEC', '5'))
+# Recipients per chunk task. Small chunks make the paced-dispatch staggering (above)
+# smooth; each chunk still sends its recipients sequentially.
+SMS_CHUNK_SIZE = int(os.environ.get('SMS_CHUNK_SIZE', '10'))
+# Account-wide daily ceiling on SMS segments handed to carriers, protecting the brand's
+# T-Mobile A2P daily cap (2,000 segments/day at a low trust score, shared across ALL orgs on
+# the account). A send that would push its send day past this cap is BLOCKED at compose time
+# (day-aware: cap minus what's already sent today + already scheduled for that day) so the
+# organizer trims the recipient list instead of having delivery silently deferred. A rare
+# race the composer can't see fails the campaign at send time with a refund. Counts all
+# segments conservatively (we can't cheaply tell which recipients are T-Mobile). Set to 0 to
+# disable the guard. Raise as the brand's trust score / cap grows.
+SMS_DAILY_SEGMENT_CAP = int(os.environ.get('SMS_DAILY_SEGMENT_CAP', '2000'))
 # Lookback window (days) for the daily AI event-summary auto-regeneration scan. Only
 # events that ended within this many days are re-examined for data changes; changes to
 # older events stop triggering regeneration. Bounds daily cost/work — widen if organizers
