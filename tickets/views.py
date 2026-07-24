@@ -4681,7 +4681,7 @@ def customer_detail(request, customer_id):
     for order in orders:
         timeline_items.append({
             'kind': 'order', 'ts': order.order_date or order.created_at, 'obj': order,
-            'url': reverse('tickets:event_detail', args=[order.event_id]),
+            'url': reverse('tickets:order_detail', args=[order.id]),
         })
     if sms_marketing_enabled:
         for msg in sms_messages:
