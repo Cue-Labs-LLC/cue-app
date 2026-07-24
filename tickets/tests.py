@@ -20385,3 +20385,142 @@ class TapToPayEnabledPushTriggerTests(TestCase):
             _handle_connect_account_updated({'id': 'acct_unknown',
                                              'capabilities': {'card_payments': 'active'}})
         self.assertFalse(mock_fire.called)
+
+
+class APNsSenderTests(TestCase):
+    """Direct tests for apns.send() — host selection, headers, status classification.
+
+    These exercise the real send() path (URL build, header assembly, response
+    classification) that every other push test mocks out. _provider_token is
+    stubbed so we don't need a real EC key; httpx.Client is faked so no network.
+    """
+
+    def _run_send(self, status_code, reason=None, use_sandbox=True, configured=True):
+        from tickets.services.push_notifications import apns
+
+        captured = {}
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = status_code
+        fake_resp.json.return_value = {'reason': reason} if reason else {}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                captured['client_kwargs'] = k
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, url, headers=None, content=None):
+                captured['url'] = url
+                captured['headers'] = headers
+                captured['content'] = content
+                return fake_resp
+
+        creds = dict(
+            APNS_KEY_ID='KEY123', APNS_TEAM_ID='TEAM123',
+            APNS_BUNDLE_ID='co.cueup.cue', APNS_AUTH_KEY='dummy-pem',
+            APNS_USE_SANDBOX=use_sandbox,
+        )
+        if not configured:
+            creds.update(APNS_KEY_ID='', APNS_AUTH_KEY='', APNS_KEY_PATH='')
+
+        with override_settings(**creds), \
+                patch.object(apns, '_provider_token', return_value='fake-jwt'), \
+                patch('httpx.Client', FakeClient):
+            result = apns.send('devtok', {'aps': {'alert': {'title': 't'}}})
+        return result, captured
+
+    def test_sandbox_host_and_headers(self):
+        result, cap = self._run_send(200, use_sandbox=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(cap['url'], 'https://api.sandbox.push.apple.com/3/device/devtok')
+        self.assertEqual(cap['headers']['apns-topic'], 'co.cueup.cue')
+        self.assertEqual(cap['headers']['authorization'], 'bearer fake-jwt')
+        self.assertEqual(cap['headers']['apns-push-type'], 'alert')
+
+    def test_production_host(self):
+        _result, cap = self._run_send(200, use_sandbox=False)
+        self.assertEqual(cap['url'], 'https://api.push.apple.com/3/device/devtok')
+
+    def test_410_is_stale(self):
+        result, _cap = self._run_send(410)
+        self.assertTrue(result.stale)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.transient)
+
+    def test_400_bad_device_token_is_stale(self):
+        result, _cap = self._run_send(400, reason='BadDeviceToken')
+        self.assertTrue(result.stale)
+
+    def test_400_other_reason_not_stale(self):
+        result, _cap = self._run_send(400, reason='PayloadTooLarge')
+        self.assertFalse(result.stale)
+
+    def test_503_is_transient(self):
+        result, _cap = self._run_send(503)
+        self.assertTrue(result.transient)
+        self.assertFalse(result.stale)
+
+    def test_429_is_transient(self):
+        result, _cap = self._run_send(429)
+        self.assertTrue(result.transient)
+
+    def test_unconfigured_is_skipped(self):
+        result, cap = self._run_send(200, configured=False)
+        self.assertTrue(result.skipped)
+        self.assertFalse(result.ok)
+        self.assertNotIn('url', cap)  # never attempted the send
+
+
+class TapToPayEnabledPushConcurrencyTests(TestCase):
+    """The once-only guard must be atomic (A1) and skip unsupported countries."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Race Org', slug='race-org',
+            stripe_account_id='acct_race', tap_to_pay_enabled_push_sent=False,
+        )
+
+    def _account(self, card_state='active', country='US'):
+        return {'id': 'acct_race', 'country': country,
+                'capabilities': {'card_payments': card_state}}
+
+    def test_atomic_claim_blocks_concurrent_winner(self):
+        """Genuinely exercise the conditional UPDATE: a concurrent event claims the
+        flag AFTER this call's read-check but BEFORE its UPDATE. The UPDATE then
+        matches 0 rows and no push fires. A plain read-check-write guard would
+        double-fire here — this proves the atomic claim closes the race."""
+        from tickets.views import _handle_connect_account_updated
+
+        def claim_flag_midway(account):
+            # Stand in for a concurrent account.updated winning the claim between
+            # our read-check (flag was False) and our UPDATE.
+            Organization.objects.filter(pk=self.org.pk).update(tap_to_pay_enabled_push_sent=True)
+            return ('enabled', 'active', 'US')
+
+        with patch('tickets.api_views._tap_to_pay_status_from_account', side_effect=claim_flag_midway), \
+                patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.assertFalse(mock_fire.called)
+
+    def test_single_event_fires_once(self):
+        from tickets.views import _handle_connect_account_updated
+
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.assertEqual(mock_fire.call_count, 1)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.tap_to_pay_enabled_push_sent)
+
+    def test_unsupported_country_does_not_fire(self):
+        from tickets.views import _handle_connect_account_updated
+
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account(country='IN'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
+        self.assertFalse(mock_fire.called)

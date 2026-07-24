@@ -12354,8 +12354,16 @@ def _handle_connect_account_updated(account):
     if status != 'enabled':
         return
 
-    org.tap_to_pay_enabled_push_sent = True
-    org.save(update_fields=['tap_to_pay_enabled_push_sent'])
+    # Claim the once-only send atomically. Stripe fires account.updated in
+    # bursts as capabilities settle, and requests aren't wrapped in a
+    # transaction (ATOMIC_REQUESTS is off), so a read-check-write guard would
+    # let two concurrent events both fire. The conditional UPDATE lets exactly
+    # one caller flip False->True; everyone else gets 0 rows and bails.
+    claimed = Organization.objects.filter(
+        pk=org.pk, tap_to_pay_enabled_push_sent=False,
+    ).update(tap_to_pay_enabled_push_sent=True)
+    if not claimed:
+        return
     # Bust the cached status so the next /merchant/status/ poll reflects reality.
     try:
         django_cache.delete(f'tap_to_pay_status:{org.pk}')
