@@ -19,6 +19,36 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
     <style>.toastify { width: min(360px, calc(100vw - 32px)); }</style>
+    <style>
+        .impersonation-banner {
+            position: sticky;
+            top: 0;
+            z-index: 1030;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            padding: 10px 16px;
+            background: #b42318;
+            color: #fff;
+            font-size: 0.9rem;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+        }
+        .impersonation-banner__label { display: inline-flex; align-items: center; gap: 8px; }
+        .impersonation-banner__form { margin: 0; }
+        .impersonation-banner__stop {
+            border: 1px solid #fff;
+            background: #fff;
+            color: #b42318;
+            font-weight: 600;
+            font-size: 0.82rem;
+            padding: 4px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .impersonation-banner__stop:hover { background: rgba(255, 255, 255, 0.88); }
+    </style>
     <script async defer src="https://tools.luckyorange.com/core/lo.js?site-id=b8f766b4"></script>
     {% block extra_css %}{% endblock %}
     {% block extra_head %}{% endblock %}
@@ -147,7 +177,7 @@
                 <div class="sidebar-section-label">Configure</div>
                 <ul class="sidebar-nav">
                     <li>
-                        <a href="{% url 'tickets:settings_overview' %}" class="sidebar-link{% if '/settings/' in request.path or '/formats/' in request.path or '/venues/' in request.path or '/members/' in request.path or '/income-sources/' in request.path or '/customers/tags/' in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:settings_overview' %}" class="sidebar-link{% if '/settings/' in request.path or '/formats/' in request.path or '/venues/' in request.path or '/markets/' in request.path or '/members/' in request.path or '/income-sources/' in request.path or '/customers/tags/' in request.path %} active{% endif %}">
                             <i class="bi bi-gear"></i> Settings
                         </a>
                     </li>
@@ -166,9 +196,15 @@
                     </li>
                     {% if user_role == 'attendee' %}
                     <li>
+                        {% if organizer_waitlist_approved %}
+                        <a href="{% url 'tickets:create_organization' %}" class="sidebar-link{% if '/create-organization/' in request.path %} active{% endif %}">
+                            <i class="bi bi-gear"></i> Set up organization
+                        </a>
+                        {% else %}
                         <a href="{% url 'tickets:become_organizer' %}" class="sidebar-link{% if '/become-organizer/' in request.path %} active{% endif %}">
                             <i class="bi bi-briefcase"></i> Become an Organizer
                         </a>
+                        {% endif %}
                     </li>
                     {% endif %}
                 </ul>
@@ -222,6 +258,18 @@
 
         <!-- Main Content -->
         <main class="main-wrapper">
+{% if is_impersonating %}
+            <div class="impersonation-banner">
+                <span class="impersonation-banner__label">
+                    <i class="bi bi-eye-fill"></i>
+                    Impersonating <strong>{{ user.get_full_name|default:user.email }}</strong>
+                </span>
+                <form method="post" action="{% url 'tickets:admin_impersonate_stop' %}" class="impersonation-banner__form">
+                    {% csrf_token %}
+                    <button type="submit" class="impersonation-banner__stop">Stop impersonating</button>
+                </form>
+            </div>
+{% endif %}
             <div class="topbar d-lg-none">
                 <button class="mobile-toggle" id="mobileToggle" type="button" aria-label="Open navigation">
                     <i class="bi bi-list"></i>

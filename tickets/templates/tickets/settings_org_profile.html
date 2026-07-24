@@ -26,7 +26,7 @@
 <div class="page-header">
     <div>
         <h1>Organization Profile</h1>
-        <p class="page-header-subtitle">Your organization's public-facing identity — photo, description, and website.</p>
+        <p class="page-header-subtitle">Your organization's public-facing identity — photo, description, website, and social links.</p>
     </div>
     <div class="page-header-actions">
         <a href="{% url 'tickets:public_org_profile' org.slug %}" target="_blank" rel="noopener noreferrer"
@@ -60,10 +60,32 @@
 
             {% if org.website %}
             <a href="{{ org.website }}" target="_blank" rel="noopener noreferrer"
-               style="font-size: 0.8rem; word-break: break-all; color: var(--text-secondary); text-decoration: none;">
+               style="font-size: 0.8rem; word-break: break-all; color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 8px;">
                 <i class="bi bi-link-45deg"></i>
                 {{ org.website|truncatechars:40 }}
             </a>
+            {% endif %}
+            {% if org.instagram_url or org.youtube_url or org.tiktok_url %}
+            <div style="display: flex; justify-content: center; gap: 12px; margin-top: 4px;">
+                {% if org.instagram_url %}
+                <a href="{{ org.instagram_url }}" target="_blank" rel="noopener noreferrer"
+                   style="color: var(--text-secondary); text-decoration: none; font-size: 1rem;" aria-label="Instagram">
+                    <i class="bi bi-instagram"></i>
+                </a>
+                {% endif %}
+                {% if org.youtube_url %}
+                <a href="{{ org.youtube_url }}" target="_blank" rel="noopener noreferrer"
+                   style="color: var(--text-secondary); text-decoration: none; font-size: 1rem;" aria-label="YouTube">
+                    <i class="bi bi-youtube"></i>
+                </a>
+                {% endif %}
+                {% if org.tiktok_url %}
+                <a href="{{ org.tiktok_url }}" target="_blank" rel="noopener noreferrer"
+                   style="color: var(--text-secondary); text-decoration: none; font-size: 1rem;" aria-label="TikTok">
+                    <i class="bi bi-tiktok"></i>
+                </a>
+                {% endif %}
+            </div>
             {% endif %}
         </div>
     </div>
@@ -143,7 +165,7 @@
                     </div>
                 </div>
 
-                <div class="mb-4">
+                <div class="mb-3">
                     <label class="form-label" for="{{ form.website.id_for_label }}">Website</label>
                     <input type="url" name="website" id="{{ form.website.id_for_label }}"
                            class="form-control{% if form.website.errors %} is-invalid{% endif %}"
@@ -151,6 +173,51 @@
                            placeholder="https://yourwebsite.com">
                     {% if form.website.errors %}
                         {% for error in form.website.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label" for="{{ form.instagram_url.id_for_label }}">
+                        <i class="bi bi-instagram"></i> Instagram
+                    </label>
+                    <input type="url" name="instagram_url" id="{{ form.instagram_url.id_for_label }}"
+                           class="form-control{% if form.instagram_url.errors %} is-invalid{% endif %}"
+                           value="{{ form.instagram_url.value|default:'' }}"
+                           placeholder="https://instagram.com/yourhandle">
+                    {% if form.instagram_url.errors %}
+                        {% for error in form.instagram_url.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label" for="{{ form.youtube_url.id_for_label }}">
+                        <i class="bi bi-youtube"></i> YouTube
+                    </label>
+                    <input type="url" name="youtube_url" id="{{ form.youtube_url.id_for_label }}"
+                           class="form-control{% if form.youtube_url.errors %} is-invalid{% endif %}"
+                           value="{{ form.youtube_url.value|default:'' }}"
+                           placeholder="https://youtube.com/@yourchannel">
+                    {% if form.youtube_url.errors %}
+                        {% for error in form.youtube_url.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label" for="{{ form.tiktok_url.id_for_label }}">
+                        <i class="bi bi-tiktok"></i> TikTok
+                    </label>
+                    <input type="url" name="tiktok_url" id="{{ form.tiktok_url.id_for_label }}"
+                           class="form-control{% if form.tiktok_url.errors %} is-invalid{% endif %}"
+                           value="{{ form.tiktok_url.value|default:'' }}"
+                           placeholder="https://tiktok.com/@yourhandle">
+                    {% if form.tiktok_url.errors %}
+                        {% for error in form.tiktok_url.errors %}
                         <div class="invalid-feedback">{{ error }}</div>
                         {% endfor %}
                     {% endif %}

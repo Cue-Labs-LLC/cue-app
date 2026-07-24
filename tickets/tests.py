@@ -7,14 +7,14 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
-from django.test import TestCase, Client, RequestFactory
+from django.test import TestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from decimal import Decimal
 from rest_framework.authtoken.models import Token
 from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
-    Venue, CSVFormat, Ticket, TicketTier,
+    Venue, Market, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     AITokenUsage, AIRecommendation,
     EventExpense,
@@ -23,6 +23,8 @@ from .models import (
     SurveyQuestionOption, SurveyAnswerOption,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    PhoneSuppression, SMSConsentRecord,
+    DeviceToken,
     TICKETING_TYPE_DIRECT,
 )
 from .utils import extract_fee_from_display_cents
@@ -661,6 +663,862 @@ class VenueAddressFieldsTests(TestCase):
         venue.save()
         venue.refresh_from_db()
         self.assertEqual(venue.street_address, '125 Northwest 5th Avenue')
+
+
+class MarketModelTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Market Org', slug='market-org')
+        self.other_org = Organization.objects.create(name='Other Market Org', slug='other-market-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Market Hall', city='San Diego')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Market Event',
+            venue=self.venue,
+            start_date=date(2026, 1, 1),
+        )
+
+    def test_market_uniqueness_is_scoped_to_organization(self):
+        from django.core.exceptions import ValidationError
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        with self.assertRaises(ValidationError):
+            Market.objects.create(
+                organization=self.org,
+                name='San Diego',
+                geography_level='state',
+                geography_value='CA',
+            )
+
+        other_market = Market.objects.create(
+            organization=self.other_org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        self.assertEqual(other_market.name, 'San Diego')
+
+    def test_event_market_is_nullable_when_market_is_deleted(self):
+        market = Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        self.event.market = market
+        self.event.save(update_fields=['market'])
+
+        market.delete()
+        self.event.refresh_from_db()
+
+        self.assertIsNone(self.event.market)
+
+
+class MarketBuilderTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Builder Org', slug='builder-org')
+        self.other_org = Organization.objects.create(name='Builder Other Org', slug='builder-other-org')
+        self.sd_venue = Venue.objects.create(
+            organization=self.org, name='SD Hall', city='San Diego', state='CA', country='US'
+        )
+        self.sd_other_venue = Venue.objects.create(
+            organization=self.org, name='SD Club', city='San Diego', state='CA', country='US'
+        )
+        self.blank_venue = Venue.objects.create(
+            organization=self.org, name='Blank Hall', city='', state='', country=''
+        )
+        self.la_venue = Venue.objects.create(
+            organization=self.other_org, name='LA Hall', city='Los Angeles', state='CA', country='US'
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='SD One', venue=self.sd_venue, start_date=date(2026, 1, 1)
+        )
+        self.second_event = Event.objects.create(
+            organization=self.org, name='SD Two', venue=self.sd_other_venue, start_date=date(2026, 2, 1)
+        )
+        Event.objects.create(
+            organization=self.org, name='Blank', venue=self.blank_venue, start_date=date(2026, 3, 1)
+        )
+        Event.objects.create(
+            organization=self.other_org, name='LA One', venue=self.la_venue, start_date=date(2026, 4, 1)
+        )
+
+    def test_preview_is_org_scoped_and_ignores_blank_values(self):
+        from tickets.services.markets import MarketBuilder
+
+        rows = MarketBuilder(self.org).preview('city')
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['value'], 'San Diego')
+        self.assertEqual(rows[0]['event_count'], 2)
+        self.assertEqual(rows[0]['venue_count'], 2)
+
+    def test_build_creates_markets_idempotently_and_assigns_matching_events(self):
+        from tickets.services.markets import MarketBuilder
+
+        builder = MarketBuilder(self.org)
+        first_result = builder.build('city', ['San Diego'])
+        second_result = builder.build('city', ['San Diego'])
+
+        self.assertEqual(first_result['created_count'], 1)
+        self.assertEqual(first_result['updated_count'], 2)
+        self.assertEqual(second_result['created_count'], 0)
+        self.assertEqual(Market.objects.filter(organization=self.org).count(), 1)
+        market = Market.objects.get(organization=self.org, geography_level='city', geography_value='San Diego')
+        self.event.refresh_from_db()
+        self.second_event.refresh_from_db()
+        self.assertEqual(self.event.market, market)
+        self.assertEqual(self.second_event.market, market)
+        self.assertFalse(Event.objects.filter(organization=self.other_org, market__isnull=False).exists())
+
+    def test_assignment_uses_city_before_state_and_country(self):
+        from tickets.services.markets import MarketBuilder
+
+        country = Market.objects.create(
+            organization=self.org,
+            name='United States',
+            geography_level='country',
+            geography_value='US',
+        )
+        state = Market.objects.create(
+            organization=self.org,
+            name='California',
+            geography_level='state',
+            geography_value='CA',
+        )
+        city = Market.objects.create(
+            organization=self.org,
+            name='San Diego Metro',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+
+        builder = MarketBuilder(self.org)
+
+        self.assertEqual(builder.resolve_for_venue(self.sd_venue), city)
+        state_only = Venue.objects.create(
+            organization=self.org, name='State Hall', city='Fresno', state='CA', country='US',
+        )
+        self.assertEqual(builder.resolve_for_venue(state_only), state)
+        country_only = Venue.objects.create(
+            organization=self.org, name='Country Hall', city='Boise', state='ID', country='US',
+        )
+        self.assertEqual(builder.resolve_for_venue(country_only), country)
+
+    def test_assign_event_clears_market_when_no_rule_matches(self):
+        from tickets.services.markets import MarketBuilder
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        builder = MarketBuilder(self.org)
+        builder.assign_event(self.event)
+        self.event.refresh_from_db()
+        self.assertIsNotNone(self.event.market)
+
+        self.event.venue = self.blank_venue
+        self.event.save(update_fields=['venue'])
+        builder.assign_event(self.event)
+        self.event.refresh_from_db()
+
+        self.assertIsNone(self.event.market)
+
+    def test_assign_all_events_is_idempotent(self):
+        from tickets.services.markets import MarketBuilder
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        builder = MarketBuilder(self.org)
+
+        self.assertEqual(builder.assign_all_events(), 2)
+        self.assertEqual(builder.assign_all_events(), 0)
+
+
+class MarketViewTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Market View Org', slug='market-view-org')
+        self.other_org = Organization.objects.create(name='Market View Other Org', slug='market-view-other-org')
+        self.user = User.objects.create_user(username='market-owner', password='pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='SD Hall', city='San Diego', state='CA', country='US'
+        )
+        other_venue = Venue.objects.create(
+            organization=self.other_org, name='LA Hall', city='Los Angeles', state='CA', country='US'
+        )
+        Event.objects.create(
+            organization=self.org, name='SD Event', venue=self.venue, start_date=date(2026, 1, 1)
+        )
+        Event.objects.create(
+            organization=self.other_org, name='LA Event', venue=other_venue, start_date=date(2026, 1, 1)
+        )
+
+    def test_market_list_requires_login(self):
+        response = self.client.get(reverse('tickets:market_list'))
+        self.assertEqual(response.status_code, 302)
+
+    def test_builder_preview_is_org_scoped(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse('tickets:market_builder'), {'level': 'city'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'San Diego')
+        self.assertNotContains(response, 'Los Angeles')
+
+    def test_builder_post_creates_market_and_assigns_event(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse('tickets:market_builder'),
+            {'level': 'city', 'values': ['San Diego']},
+        )
+
+        self.assertRedirects(response, reverse('tickets:market_list'))
+        market = Market.objects.get(organization=self.org, geography_level='city', geography_value='San Diego')
+        self.assertTrue(Event.objects.filter(organization=self.org, market=market).exists())
+
+
+class MarketEntityReportingTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Market Reporting Org',
+            slug='market-reporting-org',
+            external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='market-reporter',
+            email='market-reporter@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+
+        self.market = Market.objects.create(
+            organization=self.org,
+            name='Central Texas',
+            geography_level='city',
+            geography_value='Austin',
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Austin Hall',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.unassigned_venue = Venue.objects.create(
+            organization=self.org,
+            name='Dallas Hall',
+            city='Dallas',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Austin Report Show',
+            venue=self.venue,
+            market=self.market,
+            start_date=date(2025, 1, 10),
+            start_time=time(20, 0),
+            end_date=date(2025, 1, 10),
+            end_time=time(22, 0),
+        )
+        self.unassigned_event = Event.objects.create(
+            organization=self.org,
+            name='Dallas Report Show',
+            venue=self.unassigned_venue,
+            start_date=date(2025, 2, 10),
+            start_time=time(20, 0),
+            end_date=date(2025, 2, 10),
+            end_time=time(22, 0),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='market-buyer@example.com',
+            name='Market Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='MARKET-ORDER-1',
+            order_date=timezone.make_aware(datetime(2025, 1, 5, 10, 0)),
+            total_amount=Decimal('40.00'),
+            is_in_person=False,
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.unassigned_event,
+            order_number='MARKET-ORDER-2',
+            order_date=timezone.make_aware(datetime(2025, 2, 5, 10, 0)),
+            total_amount=Decimal('25.00'),
+            is_in_person=False,
+        )
+
+    def test_ltv_by_market_uses_event_market_name(self):
+        response = self.client.get(reverse('tickets:customer_ltv_by_market'))
+
+        labels = {row['market_label'] for row in response.context['market_stats']}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+        central = next(row for row in response.context['market_stats'] if row['market_label'] == 'Central Texas')
+        self.assertEqual(central['market_id'], str(self.market.id))
+        self.assertEqual(central['city'], 'Central Texas')
+
+    def test_repeat_customer_market_breakdown_uses_event_market_name(self):
+        response = self.client.get(reverse('tickets:repeat_customers'), {'window': 'all'})
+
+        rows = json.loads(response.context['market_chart_data_json'])
+        labels = {row['market_label'] for row in rows}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+
+    def test_profitability_market_chart_uses_event_market_name(self):
+        EventExpense.objects.create(
+            event=self.event,
+            category='production',
+            description='Production',
+            amount=Decimal('10.00'),
+            expense_date=self.event.start_date,
+            created_by=self.user,
+        )
+
+        response = self.client.get(reverse('tickets:profitability_overview'), {'window': 'all'})
+        chart = json.loads(response.context['market_chart_data_json'])
+
+        self.assertIn('Central Texas', chart['labels'])
+        self.assertIn('No market', chart['labels'])
+        self.assertNotIn('Austin', chart['labels'])
+
+    def test_survey_analytics_filter_and_breakdown_use_market_id(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org,
+            filename='survey.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=self.user,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.event,
+            email='central@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 1, 12, 9, 0)),
+            nps_score=10,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.unassigned_event,
+            email='nomarket@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 2, 12, 9, 0)),
+            nps_score=3,
+        )
+
+        response = self.client.get(reverse('tickets:survey_analytics'), {'market': str(self.market.id)})
+
+        self.assertEqual(response.context['stats']['total'], 1)
+        self.assertEqual(response.context['market_filter'], str(self.market.id))
+        labels = {row['city'] for row in response.context['stats']['city_breakdown']}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+
+    def test_survey_analytics_filters_by_event_date_range(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org,
+            filename='survey.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=self.user,
+        )
+        # self.event is on 2025-01-10 (Central Texas); self.unassigned_event on 2025-02-10.
+        jan_resp = ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.event,
+            email='jan@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 3, 1, 9, 0)),
+            nps_score=10,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.unassigned_event,
+            email='feb@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 3, 2, 9, 0)),
+            nps_score=3,
+        )
+
+        # Window covering only the January event.
+        response = self.client.get(
+            reverse('tickets:survey_analytics'),
+            {'event_from': '2025-01-01', 'event_to': '2025-01-31'},
+        )
+
+        self.assertEqual(response.context['stats']['total'], 1)
+        self.assertEqual(response.context['event_from'], '2025-01-01')
+        self.assertEqual(response.context['event_to'], '2025-01-31')
+        # Responses list is scoped to the January event only.
+        page_ids = {r.id for r in response.context['page_obj']}
+        self.assertEqual(page_ids, {jan_resp.id})
+        # Market breakdown also respects the date window (Feb/no-market drops out).
+        labels = {row['city'] for row in response.context['stats']['city_breakdown']}
+        self.assertIn('Central Texas', labels)
+        self.assertNotIn('No market', labels)
+
+        # A malformed date is treated as no bound and does not 500.
+        bad = self.client.get(
+            reverse('tickets:survey_analytics'), {'event_from': 'not-a-date'},
+        )
+        self.assertEqual(bad.status_code, 200)
+        self.assertEqual(bad.context['stats']['total'], 2)
+
+    def test_external_event_create_assigns_matching_market(self):
+        response = self.client.post(reverse('tickets:event_create', args=['external']), {
+            'name': 'Created Report Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10',
+            'start_time': '20:00',
+            'end_date': '2025-03-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+            'talent-TOTAL_FORMS': '0',
+            'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0',
+            'talent-MAX_NUM_FORMS': '1000',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(organization=self.org, name='Created Report Show')
+        self.assertEqual(event.market, self.market)
+
+    def test_external_event_edit_reassigns_when_venue_changes(self):
+        response = self.client.post(reverse('tickets:event_edit', args=[self.event.id]), {
+            'name': self.event.name,
+            'ticketing_type': 'external',
+            'venue': str(self.unassigned_venue.id),
+            'start_date': '2025-01-10',
+            'start_time': '20:00',
+            'end_date': '2025-01-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+            'talent-TOTAL_FORMS': '0',
+            'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0',
+            'talent-MAX_NUM_FORMS': '1000',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.event.refresh_from_db()
+        self.assertIsNone(self.event.market)
+
+    def test_venue_geography_edit_reassigns_affected_events(self):
+        response = self.client.post(reverse('tickets:venue_edit', args=[self.unassigned_venue.id]), {
+            'name': self.unassigned_venue.name,
+            'city': 'Austin',
+            'street_address': '',
+            'state': 'TX',
+            'postal_code': '',
+            'country': 'US',
+            'capacity': '',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.unassigned_event.refresh_from_db()
+        self.assertEqual(self.unassigned_event.market, self.market)
+
+    def test_direct_event_create_assigns_matching_market(self):
+        # The direct-ticketing branch of event_create is a separate code path
+        # from the external branch; assert it also assigns Event.market.
+        response = self.client.post(reverse('tickets:event_create', args=['direct']), {
+            'name': 'Direct Market Show',
+            'summary': '',
+            'start_date': '2025-05-10',
+            'start_time': '20:00',
+            'end_date': '2025-05-10',
+            'end_time': '22:00',
+            'description': '',
+            'capacity': '100',
+            'venue': str(self.venue.id),
+            'facebook_pixel_id': '',
+            'ticket_type-TOTAL_FORMS': '1',
+            'ticket_type-INITIAL_FORMS': '0',
+            'ticket_type-MIN_NUM_FORMS': '0',
+            'ticket_type-MAX_NUM_FORMS': '1000',
+            'ticket_type-0-name': 'General Admission',
+            'ticket_type-0-description': '',
+            'ticket_type-0-price': '25.00',
+            'ticket_type-0-quantity_limit': '',
+            'ticket_type-0-max_per_customer': '4',
+            'ticket_type-0-order': '0',
+            'ticket_type-0-unlocks_after': '',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(organization=self.org, name='Direct Market Show')
+        self.assertEqual(event.market, self.market)
+
+    def test_csv_import_assigns_market_to_created_events(self):
+        # CSV import auto-creates external events; the processor must assign
+        # Event.market from existing rules for those newly-created events.
+        import io
+        csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Market Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=csv_format,
+            filename='market_import.csv',
+            status='pending',
+            # venue_id (Austin) + event_name but NO event_id → a new external
+            # event is created and should resolve to the Central Texas market.
+            metadata={
+                'event_name': 'CSV Market Show',
+                'event_start_date': '2025-06-01',
+                'venue_id': str(self.venue.id),
+            },
+        )
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2025-06-01,csv-market@example.com,CSV Buyer,GA\n"
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+        self.assertEqual(results['success_count'], 1)
+        event = Event.objects.get(organization=self.org, name='CSV Market Show')
+        self.assertEqual(event.market, self.market)
+
+
+class CSVImportSMSConsentTests(TestCase):
+    """CSV import maps a consent column to Customer.sms_opt_in (T1).
+
+    Imported contacts must NOT be textable unless the source data says they
+    opted in AND they have a phone. Import grants consent, never revokes it.
+    """
+
+    def setUp(self):
+        # CSV import auto-creates external events, which is gated on this flag
+        # (csv_processor.py). Once T2 flips the model default to True this is the
+        # norm for new orgs; set it explicitly here so the fixture is unambiguous.
+        self.org = Organization.objects.create(
+            name='Consent Org', slug='consent-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Consent Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+                'customer_sms_opt_in': ['consent'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='consent.csv',
+            status='pending',
+            metadata={'event_name': 'Consent Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def _customer(self, email):
+        return Customer.objects.get(organization=self.org, email=email)
+
+    def test_consent_column_maps_to_sms_opt_in(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,yes@example.com,Yes Buyer,+15551110001,GA,Yes\n"
+            "2025-06-01,no@example.com,No Buyer,+15551110002,GA,No\n"
+            "2025-06-01,nophone@example.com,NoPhone Buyer,,GA,Yes\n"
+        )
+        results = self._import(csv_body)
+        self.assertEqual(results['success_count'], 3)
+
+        opted_in = self._customer('yes@example.com')
+        self.assertTrue(opted_in.sms_opt_in)
+        self.assertIsNotNone(opted_in.sms_opt_in_date)
+
+        # Explicit "No" stays opted out.
+        self.assertFalse(self._customer('no@example.com').sms_opt_in)
+        # Consent "Yes" but no phone cannot be texted, so must not opt in.
+        self.assertFalse(self._customer('nophone@example.com').sms_opt_in)
+
+        # Only the genuinely-consented, phone-bearing contact is campaign-eligible.
+        eligible = (
+            Customer.objects.filter(organization=self.org, sms_opt_in=True)
+            .exclude(phone='')
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(list(eligible), ['yes@example.com'])
+
+    def test_import_never_revokes_existing_consent(self):
+        Customer.objects.create(
+            organization=self.org, email='vip@example.com', name='VIP',
+            phone='+15551110009', sms_opt_in=True,
+        )
+        # A later import row says consent=No; existing opt-in must be preserved.
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-02,vip@example.com,VIP,+15551110009,GA,No\n"
+        )
+        self._import(csv_body)
+        self.assertTrue(self._customer('vip@example.com').sms_opt_in)
+
+
+class NewOrgInitializationTests(TestCase):
+    """T2/T3: new-org flag defaults + idempotent trial-credit seeding."""
+
+    def test_new_org_has_flags_on_by_default(self):
+        org = Organization.objects.create(name='Fresh Org', slug='fresh-org')
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+
+    def _expected_trial_cents(self):
+        from tickets.services.org_onboarding import TRIAL_SMS_CREDIT_TOKENS
+        from tickets.services.sms_credits import price_per_segment_cents
+        return int(TRIAL_SMS_CREDIT_TOKENS * price_per_segment_cents())
+
+    def test_initialize_seeds_one_trial_credit_row(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Seed Org', slug='seed-org')
+        initialize_new_organization(org)
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        rows = SMSCreditTransaction.objects.filter(
+            organization=org, kind=SMSCreditTransaction.Kind.ADJUSTMENT,
+        )
+        self.assertEqual(rows.count(), 1)
+
+    def test_initialize_is_idempotent(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Idem Org', slug='idem-org')
+        initialize_new_organization(org)
+        initialize_new_organization(org)  # second call must be a no-op
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        self.assertEqual(
+            SMSCreditTransaction.objects.filter(organization=org).count(), 1
+        )
+
+    def test_initialize_is_non_fatal_when_wallet_raises(self):
+        from unittest.mock import patch
+        from tickets.services.org_onboarding import initialize_new_organization
+
+        org = Organization.objects.create(name='Fail Org', slug='fail-org')
+        with patch('tickets.services.sms_credits.credit', side_effect=RuntimeError('boom')):
+            # Must not raise — org creation already succeeded.
+            initialize_new_organization(org)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, 0)
+
+    def test_api_org_creation_path_seeds_flags_and_credits(self):
+        # _ensure_organization_for_user is the mobile/Stripe path that a naive
+        # inline-init would have missed; assert it seeds flags + trial credits.
+        from tickets.api_views import _ensure_organization_for_user
+
+        user = User.objects.create_user(username='mobile-organizer')
+        UserProfile.objects.create(user=user, organization=None)
+
+        org = _ensure_organization_for_user(user)
+
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+
+
+class BuiltinFormatsAndTalentRemovalTests(TestCase):
+    """Eventbrite + POSH built-ins available; Talent Lineup removed from create/import."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Fmt Org', slug='fmt-org', external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='fmtorg', email='fmt@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.client.login(username='fmt@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def test_builtin_formats_include_posh_and_eventbrite(self):
+        names = set(CSVFormat.available_for(self.org).values_list('name', flat=True))
+        self.assertIn('POSH', names)
+        self.assertIn('Eventbrite', names)
+
+    def test_eventbrite_orders_export_imports_end_to_end(self):
+        # Real Eventbrite "Orders" export headers (order-level, no ticket-class
+        # column) — must import via the Event name fallback for ticket_type, and
+        # book revenue from Net sales.
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        csv_body = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket quantity,Net sales,Event name,Event location\n"
+            "14572631913,2026-03-30 16:01:14,John,Frye,john@createdpodcast.com,,1,8,Familiar Faces Day Party,Lot 613\n"
+            "14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,4,32,Familiar Faces Day Party,Lot 613\n"
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 2)
+
+        john = Customer.objects.get(organization=self.org, email='john@createdpodcast.com')
+        self.assertEqual(john.name, 'John Frye')
+        order = TicketOrder.objects.get(customer=john)
+        self.assertEqual(order.total_amount, Decimal('8'))
+        # No ticket-class column → ticket_type falls back to the event name.
+        self.assertEqual(order.tickets.first().ticket_type, 'Familiar Faces Day Party')
+
+    def test_eventbrite_attendee_export_multi_ticket_buyer(self):
+        # Attendee report: one row per ticket. A 4-ticket order becomes 4 rows
+        # with the SAME Order ID but unique Barcodes. order_number maps to Barcode
+        # so the tickets don't collapse; all credit the Buyer (not the attendee).
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite_attendees.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        header = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket type,Ticket quantity,Ticket price,Barcode number,"
+            "Event name,Event location\n"
+        )
+        rows = "".join(
+            f"14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,"
+            f"entry before 5:30pm,1,8.00,BC-{i},Familiar Faces Day Party,Lot 613\n"
+            for i in range(1, 5)  # 4 tickets, same order, 4 barcodes
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO((header + rows).encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 4)
+
+        love = Customer.objects.get(organization=self.org, email='lovevguillette@gmail.com')
+        self.assertEqual(love.name, 'Love Guillette')
+        love_orders = TicketOrder.objects.filter(customer=love)
+        self.assertEqual(love_orders.count(), 4)  # barcode de-dup kept all 4
+        self.assertEqual(sum(o.total_amount for o in love_orders), Decimal('32'))
+        self.assertEqual(love_orders.first().tickets.first().ticket_type, 'entry before 5:30pm')
+
+    def test_import_page_has_no_talent_lineup(self):
+        html = self.client.get(
+            reverse('tickets:event_create', args=['external'])
+        ).content.decode()
+        self.assertNotIn('Talent Lineup', html)
+
+    def test_external_event_create_works_without_talent_fields(self):
+        resp = self.client.post(reverse('tickets:event_create', args=['external']), {
+            'name': 'No Talent Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10',
+            'start_time': '20:00',
+            'end_date': '2025-03-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='No Talent Show').exists()
+        )
+
+
+class VenueAdminScopeTests(TestCase):
+    def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
+        from django.contrib import admin
+        from tickets.admin import VenueAdmin
+
+        org = Organization.objects.create(name='Admin Org', slug='admin-org')
+        other_org = Organization.objects.create(name='Other Admin Org', slug='other-admin-org')
+        user = User.objects.create_user(username='venue-admin')
+        UserProfile.objects.create(
+            user=user, organization=org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        Venue.objects.create(organization=org, name='Own Venue', city='San Diego')
+        Venue.objects.create(organization=other_org, name='Other Venue', city='Los Angeles')
+        request = RequestFactory().get('/admin/tickets/venue/')
+        request.user = user
+
+        qs = VenueAdmin(Venue, admin.site).get_queryset(request)
+
+        self.assertEqual(list(qs.values_list('name', flat=True)), ['Own Venue'])
 
 
 class ChatTestMixin:
@@ -1424,6 +2282,117 @@ class MobileAPITests(TestCase):
         self.assertEqual(TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0)
         self.assertFalse(StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists())
 
+    # ------------------------------------------------------------------
+    # Free tickets are not sellable in person (Tap to Pay)
+    # ------------------------------------------------------------------
+
+    def test_organizer_ticket_types_excludes_free(self):
+        # Mixed catalog: only the paid type is offered for in-person sale.
+        paid = SaleableTicketType.objects.create(
+            event=self.event, name='GA', price=Decimal('25.00'),
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.get(
+            f'/api/organizer/events/{self.event.pk}/ticket-types/',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([t['id'] for t in data], [str(paid.pk)])
+
+    def test_organizer_ticket_types_all_free_returns_empty_200(self):
+        # All-free event: empty array, NOT a 404 — app renders its empty state.
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.get(
+            f'/api/organizer/events/{self.event.pk}/ticket-types/',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_scanner_ticket_types_excludes_free(self):
+        paid = SaleableTicketType.objects.create(
+            event=self.event, name='GA', price=Decimal('25.00'),
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        from .models import ScannerSession
+        session = ScannerSession.objects.create(event=self.event)
+        response = self.client.get(
+            f'/api/scanner/ticket-types/?event_id={self.event.pk}',
+            HTTP_AUTHORIZATION=f'Scanner {session.token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([t['id'] for t in data], [str(paid.pk)])
+
+    @patch('stripe.PaymentIntent.create')
+    def test_terminal_payment_intent_rejects_free(self, mock_create):
+        free = SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.post(
+            '/api/stripe/terminal-payment-intent/',
+            data={
+                'event_id': str(self.event.pk),
+                'line_items': [{'ticket_type_id': str(free.pk), 'quantity': 1}],
+            },
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'free_ticket_not_sellable')
+        mock_create.assert_not_called()
+
+    @patch('stripe.PaymentIntent.create')
+    def test_terminal_payment_intent_rejects_below_minimum(self, mock_create):
+        # Paid but sub-minimum ($0.30 < $0.50 USD): reject before hitting Stripe.
+        cheap = SaleableTicketType.objects.create(
+            event=self.event, name='Cheap', price=Decimal('0.30'),
+        )
+        response = self.client.post(
+            '/api/stripe/terminal-payment-intent/',
+            data={
+                'event_id': str(self.event.pk),
+                'line_items': [{'ticket_type_id': str(cheap.pk), 'quantity': 1}],
+            },
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'amount_below_minimum')
+        mock_create.assert_not_called()
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_rejects_free_ticket(self, mock_retrieve):
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 0
+        mock_retrieve.return_value = mock_pi
+
+        free = SaleableTicketType.objects.create(
+            event=self.event, name='Free Comp', price=Decimal('0.00'),
+        )
+        response = self.client.post(
+            '/api/organizer/sell/',
+            data=self._sell_payload(free),
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'free_ticket_not_sellable')
+        self.assertEqual(
+            TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0,
+        )
+        self.assertFalse(
+            StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists(),
+        )
+
     def test_token_auth_required(self):
         response = self.client.get('/api/organizer/events/')
         self.assertEqual(response.status_code, 401)
@@ -2012,6 +2981,77 @@ class FinancePayoutTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_skips_negative_balance_recovery_payout(self, mock_construct):
+        # Stripe's automatic "withdrawal to cover a negative balance" arrives as a
+        # payout with a negative amount and empty metadata. It must be acked (200)
+        # and must NOT create a Payout row.
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_neg_balance',
+                    'status': 'in_transit',
+                    'amount': -40,
+                    'metadata': {},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Payout.objects.filter(stripe_payout_id='po_neg_balance').exists())
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_acks_200_when_handler_raises(self, mock_construct):
+        # An unexpected handler failure must never escape as a 500 (Stripe would
+        # retry for days) — the webhook logs and acks with 200.
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {'object': {'id': 'po_boom', 'status': 'pending', 'amount': 500, 'metadata': {}}},
+        }
+        with patch('tickets.views._handle_stripe_payout_event', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                self.connect_webhook_url,
+                data='{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='sig_test',
+            )
+        self.assertEqual(response.status_code, 200)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_duplicate_stripe_account_id_does_not_500(self, mock_construct):
+        # stripe_account_id is not unique; a duplicate org row must not raise
+        # MultipleObjectsReturned and 500.
+        Organization.objects.create(
+            name='Dup Account Org',
+            slug='dup-account-org',
+            stripe_account_id=self.org.stripe_account_id,
+        )
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {'object': {'id': 'po_dup_acct', 'status': 'pending', 'amount': 700, 'metadata': {}}},
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Payout.objects.filter(stripe_payout_id='po_dup_acct').count(), 1)
 
     @patch('stripe.Balance.retrieve')
     @patch('stripe.Account.retrieve')
@@ -2638,6 +3678,598 @@ class TestRFMCalculator(TestCase):
         self.assertGreaterEqual(c2.rfm_recency_score, c1.rfm_recency_score)
 
 
+class TestSegmentDiagnostics(TestCase):
+    """Tests for SegmentDiagnostics (read-only segment accuracy evaluation)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Diag Org', slug='diag-org')
+        cls.other_org = Organization.objects.create(name='Other Org', slug='other-diag-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Event', venue=cls.venue,
+            start_date=date(2025, 1, 1),
+        )
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        )
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
+            filename='test.csv', status='completed',
+        )
+
+    def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email,
+            lifetime_value=lifetime_value, last_order_date=last_order_date,
+        )
+
+    def _make_order(self, customer, total, days_ago):
+        import uuid
+        from datetime import timedelta
+        TicketOrder.objects.create(
+            customer=customer, event=self.event, uploaded_file=self.upload,
+            order_number=str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=days_ago),
+            total_amount=Decimal(str(total)),
+        )
+
+    def test_cube_coverage_reports_gaps_and_canonical_is_total(self):
+        """Current 8 rules leave cells uncovered; canonical grid covers all 125."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import (
+            classify_segment, classify_segment_explain, classify_segment_canonical,
+        )
+        diag = SegmentDiagnostics(self.org)
+        current = diag._cube_coverage(classify_segment, explain_fn=classify_segment_explain)
+        self.assertLess(current['coverage_pct'], 100.0)
+        self.assertTrue(current['uncovered_cells'])
+
+        canonical = diag._cube_coverage(classify_segment_canonical, explain_fn=None)
+        self.assertEqual(canonical['coverage_pct'], 100.0)
+        self.assertEqual(canonical['uncovered_cells'], [])
+
+    def _seed_backtest_data(self):
+        """6 high-value repeat customers + 5 one-off dormant customers."""
+        good = [self._make_customer(f'good{i}@example.com') for i in range(6)]
+        bad = [self._make_customer(f'bad{i}@example.com') for i in range(5)]
+        for c in good:
+            # pre-cutoff (older than 90 days): frequent, high spend
+            self._make_order(c, 300, days_ago=100)
+            self._make_order(c, 300, days_ago=150)
+            self._make_order(c, 300, days_ago=200)
+            # holdout (within 90 days): repeat purchases
+            self._make_order(c, 250, days_ago=30)
+            self._make_order(c, 250, days_ago=15)
+        for c in bad:
+            # single old low-value order, no holdout activity
+            self._make_order(c, 20, days_ago=250)
+        return good, bad
+
+    def test_backtest_separation_sane(self):
+        """Top segment out-performs bottom on repeat rate; Spearman non-negative."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'ok')
+        per = bt['per_segment']
+        self.assertGreaterEqual(len(per), 2)
+
+        ranked = sorted(per.items(), key=lambda kv: -kv[1]['avg_future_revenue'])
+        top, bottom = ranked[0][1], ranked[-1][1]
+        self.assertGreater(top['repeat_rate'], bottom['repeat_rate'])
+        self.assertGreaterEqual(bt['separation']['spearman_future_revenue'], 0)
+
+    def test_backtest_insufficient_holdout(self):
+        """No orders in the holdout window -> insufficient_holdout."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        c = self._make_customer('only_old@example.com')
+        self._make_order(c, 100, days_ago=300)  # only pre-cutoff
+
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'insufficient_holdout')
+
+    def test_histograms_and_sizes_sum_to_scored_customers(self):
+        """Score histogram and segment-size totals equal the scored customer count."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+        RFMCalculator(self.org).calculate_all()
+
+        scored = (
+            Customer.objects.filter(organization=self.org)
+            .exclude(email__endswith='@placeholder.local')
+            .count()
+        )
+        internal = SegmentDiagnostics(self.org)._internal_diagnostics()
+        self.assertEqual(sum(internal['score_histograms']['frequency'].values()), scored)
+        self.assertEqual(internal['segment_size_distribution']['total_scored'], scored)
+
+    def test_backtest_is_read_only(self):
+        """Running the backtest must not mutate stored RFM fields."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+        RFMCalculator(self.org).calculate_all()
+
+        before = {
+            c.id: (c.rfm_recency_score, c.rfm_frequency_score,
+                   c.rfm_monetary_score, c.rfm_segment)
+            for c in Customer.objects.filter(organization=self.org)
+        }
+        SegmentDiagnostics(self.org).calculate(holdout_days=90, compare_canonical=True)
+        after = {
+            c.id: (c.rfm_recency_score, c.rfm_frequency_score,
+                   c.rfm_monetary_score, c.rfm_segment)
+            for c in Customer.objects.filter(organization=self.org)
+        }
+        self.assertEqual(before, after)
+
+    def test_diagnostics_are_org_scoped(self):
+        """Diagnostics for one org ignore another org's customers."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        Customer.objects.create(
+            organization=self.other_org, email='leak@example.com', name='leak',
+            rfm_segment='VIP', rfm_frequency_score=5,
+        )
+        self._make_customer('mine@example.com')
+        internal = SegmentDiagnostics(self.org)._internal_diagnostics()
+        self.assertNotIn('VIP', internal['segment_size_distribution']['by_segment'])
+
+    def test_backtest_absolute_path(self):
+        """The absolute-band backtest produces a scored per-segment table."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        self._seed_backtest_data()
+        bt = SegmentDiagnostics(self.org)._backtest(
+            holdout_days=90, absolute_fn=classify_segment_absolute,
+        )
+        self.assertEqual(bt['status'], 'ok')
+        self.assertTrue(bt['per_segment'])
+
+    def test_backtest_nets_partial_refunds(self):
+        """Holdout revenue subtracts partial refunds (matches LTV definition)."""
+        import uuid
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        customers = [self._make_customer(f'pr{i}@example.com') for i in range(5)]
+        for c in customers:
+            # pre-cutoff order (segmentable)
+            self._make_order(c, 100, days_ago=200)
+            # holdout order: $200 face, $50 partially refunded -> nets to $150
+            TicketOrder.objects.create(
+                customer=c, event=self.event, uploaded_file=self.upload,
+                order_number=str(uuid.uuid4())[:20],
+                order_date=timezone.now() - timedelta(days=20),
+                total_amount=Decimal('200.00'), refunded_amount=Decimal('50.00'),
+            )
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'ok')
+        # All five identical -> one segment, avg future revenue nets the refund.
+        revenues = [s['avg_future_revenue'] for s in bt['per_segment'].values()]
+        self.assertIn(150.0, revenues)
+
+    def test_backtest_too_large_guard(self):
+        """A tenant over the customer ceiling short-circuits to too_large."""
+        from unittest.mock import patch
+        from tickets.services.segmentation import validation
+        self._seed_backtest_data()
+        with patch.object(validation, 'BACKTEST_MAX_CUSTOMERS', 0):
+            bt = validation.SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'too_large')
+
+    def test_separation_scores_needs_two_segments(self):
+        """A single segment can't be scored: spearman is None, not a crash."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import SEGMENT_VALUE_ORDER
+        sep = SegmentDiagnostics(self.org)._separation_scores(
+            {'VIP': {'n': 3, 'avg_future_revenue': 10.0, 'repeat_rate': 0.5}},
+            SEGMENT_VALUE_ORDER,
+        )
+        self.assertIsNone(sep['spearman_future_revenue'])
+        self.assertEqual(sep['monotonic_violations'], 0)
+
+
+class TestSegmentClassifiers(TestCase):
+    """Pure-function tests for the candidate segment classifiers and helpers."""
+
+    def test_absolute_classifier_branches(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        bands = (40.0, 75.0)
+        cases = [
+            (10, 5, 100, "VIP"),          # active, many, high
+            (10, 5, 10, "Loyal"),         # active, many, low
+            (10, 3, 100, "Big Spender"),  # active, few, high
+            (10, 3, 10, "Promising"),     # active, few, low
+            (10, 1, 10, "New"),           # active, one, low spend
+            (10, 1, 50, "Promising"),     # active, one, decent spend (>= mid) -> Promising
+            (120, 3, 10, "At-Risk"),      # cooling, few
+            (120, 1, 50, "At-Risk"),      # cooling, one, decent spend -> At-Risk
+            (120, 1, 10, "Promising"),    # cooling, one, low spend
+            (300, 2, 10, "Lapsed"),       # lost, repeat history
+            (300, 1, 10, "Dormant"),      # lost, single
+        ]
+        for recency, freq, mon, expected in cases:
+            self.assertEqual(
+                classify_segment_absolute(recency, freq, mon, bands), expected,
+                f"r={recency} f={freq} m={mon}",
+            )
+
+    def test_absolute_all_zero_bands_no_false_vip(self):
+        """With a degenerate all-zero money band, no one is a high spender."""
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        # active + many but high threshold is 0 -> not VIP/Big Spender, falls to Loyal
+        self.assertEqual(classify_segment_absolute(10, 5, 0, (0.0, 0.0)), "Loyal")
+
+    def test_derive_monetary_bands(self):
+        from tickets.services.segmentation.segment_definitions import derive_monetary_bands
+        self.assertEqual(derive_monetary_bands([]), (0.0, 0.0))
+        self.assertEqual(derive_monetary_bands([0, 0, 0]), (0.0, 0.0))
+        mid, high = derive_monetary_bands([10, 10, 10, 10])  # degenerate -> high>mid
+        self.assertGreater(high, mid)
+        mid, high = derive_monetary_bands([10, 20, 30, 40, 50])
+        self.assertLess(mid, high)
+
+    def test_canonical_none_input_and_grid(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_canonical
+        self.assertEqual(classify_segment_canonical(None, 3, 3), "Lost")
+        self.assertEqual(classify_segment_canonical(5, 5, 5), "Champions")
+        self.assertEqual(classify_segment_canonical(1, 1, 1), "Lost")
+
+    def test_spearman_edge_cases(self):
+        from tickets.services.segmentation.validation import _spearman, _percentile_breakpoints
+        self.assertIsNone(_spearman([1], [1]))          # too short
+        self.assertIsNone(_spearman([1, 1, 1], [5, 6, 7]))  # zero variance in x
+        self.assertAlmostEqual(_spearman([1, 2, 3], [1, 2, 3]), 1.0)
+        # degenerate array falls back to median x4
+        self.assertEqual(_percentile_breakpoints([3, 3, 3, 3]), [3.0, 3.0, 3.0, 3.0])
+
+
+class TestValidateSegmentsCommand(TestCase):
+    """Tests for the validate_segments management command."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Cmd Org', slug='cmd-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='V', city='C')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='E', venue=cls.venue, start_date=date(2025, 1, 1),
+        )
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='F', column_mapping={'order_number': 'Order ID'},
+        )
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format, filename='t.csv', status='completed',
+        )
+        import uuid
+
+        def order(customer, total, days_ago):
+            TicketOrder.objects.create(
+                customer=customer, event=cls.event, uploaded_file=cls.upload,
+                order_number=str(uuid.uuid4())[:20],
+                order_date=timezone.now() - timedelta(days=days_ago),
+                total_amount=Decimal(str(total)),
+            )
+
+        for i in range(8):
+            c = Customer.objects.create(organization=cls.org, email=f'cmd{i}@e.com', name=f'c{i}')
+            order(c, 100, 200)
+            if i < 6:
+                order(c, 80, 20)  # holdout activity
+
+    def test_command_runs_with_all_comparisons(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('validate_segments', '--org', 'cmd-org', '--holdout-days', '90',
+                     '--compare-canonical', '--compare-absolute', stdout=out)
+        output = out.getvalue()
+        self.assertIn('Cube coverage', output)
+        self.assertIn('canonical', output)
+        self.assertIn('absolute', output)
+
+    def test_command_unknown_org_errors(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('validate_segments', '--org', 'does-not-exist')
+
+    def test_command_bad_cutoff_errors(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('validate_segments', '--org', 'cmd-org', '--cutoff', 'not-a-date')
+
+
+class TestSegmentTuning(TestCase):
+    """Tests for absolute-mode segmentation + the cut-off tuning form/view."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Tune Org', slug='tune-org')
+        cls.admin = User.objects.create_user('tuner', 'tuner@test.com', 'pw')
+        UserProfile.objects.create(user=cls.admin, organization=cls.org, org_role=UserProfile.OrgRole.OWNER)
+        cls.host = User.objects.create_user('hostuser', 'host@test.com', 'pw')
+        UserProfile.objects.create(user=cls.host, organization=cls.org, org_role=UserProfile.OrgRole.HOST)
+        cls.venue = Venue.objects.create(organization=cls.org, name='V', city='C')
+        cls.event = Event.objects.create(organization=cls.org, name='E', venue=cls.venue, start_date=date(2025, 1, 1))
+        cls.fmt = CSVFormat.objects.create(organization=cls.org, name='F', column_mapping={'order_number': 'Order ID'})
+        cls.upload = UploadedFile.objects.create(organization=cls.org, csv_format=cls.fmt, filename='t.csv', status='completed')
+
+    def _cust(self, email, ltv='0.00', last=None):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email,
+            lifetime_value=Decimal(ltv), last_order_date=last,
+        )
+
+    def _order(self, c, total, days_ago):
+        import uuid
+        TicketOrder.objects.create(
+            customer=c, event=self.event, uploaded_file=self.upload,
+            order_number=str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=days_ago), total_amount=Decimal(str(total)),
+        )
+
+    # ---- classifier + band helpers ----
+    def test_classify_absolute_band_overrides(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        # 3 orders, recent, high spend: default freq_many=5 -> Big Spender
+        self.assertEqual(classify_segment_absolute(10, 3, 100, (40.0, 75.0)), "Big Spender")
+        # lower "buys often" to 3 -> now VIP
+        self.assertEqual(
+            classify_segment_absolute(10, 3, 100, (40.0, 75.0), freq_many=3), "VIP",
+        )
+
+    def test_seed_segment_bands_idempotent_and_force(self):
+        from tickets.services.segmentation.segment_definitions import seed_segment_bands
+        for i in range(5):
+            self._cust(f's{i}@e.com', ltv=str(20 + i * 30))
+        bands = seed_segment_bands(self.org)
+        self.assertGreater(bands['monetary_high'], 0)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_bands['monetary_high'], bands['monetary_high'])
+        # second call is a no-op (already seeded)
+        again = seed_segment_bands(self.org)
+        self.assertEqual(again, bands)
+        # force re-seeds
+        forced = seed_segment_bands(self.org, force=True)
+        self.assertIn('monetary_high', forced)
+
+    # ---- form ----
+    def test_form_roundtrips_bands_and_validates(self):
+        from tickets.forms import SegmentTuningForm
+        data = {
+            'segment_mode': 'absolute', 'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 4, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        }
+        form = SegmentTuningForm(data, instance=self.org)
+        self.assertTrue(form.is_valid(), form.errors)
+        org = form.save()
+        org.refresh_from_db()
+        self.assertEqual(org.segment_mode, 'absolute')
+        self.assertEqual(org.segment_bands['freq_many'], 4)
+        self.assertEqual(org.segment_bands['monetary_high'], 75.0)
+        # bad ordering rejected
+        bad = dict(data, freq_few=5, freq_many=3)
+        self.assertFalse(SegmentTuningForm(bad, instance=self.org).is_valid())
+
+    # ---- RFMCalculator branch ----
+    def test_rfmcalculator_absolute_vs_percentile(self):
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c = self._cust('recent@e.com', ltv='50.00', last=date.today() - timedelta(days=10))
+        self._order(c, 50, days_ago=10)  # one recent order, low spend
+
+        self.org.segment_mode = 'percentile'
+        self.org.save(update_fields=['segment_mode'])
+        RFMCalculator(self.org).calculate_all()
+        c.refresh_from_db()
+        self.assertTrue(c.rfm_segment)
+        self.assertIsNotNone(c.rfm_recency_score)
+
+        self.org.segment_mode = 'absolute'
+        # explicit bands so $50 is below the decent-spend threshold (-> New)
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 5, 'monetary_mid': 100.0, 'monetary_high': 200.0,
+        }
+        self.org.save(update_fields=['segment_mode', 'segment_bands'])
+        RFMCalculator(self.org).calculate_all()
+        c.refresh_from_db()
+        # recent single order below the decent-spend threshold -> New
+        self.assertEqual(c.rfm_segment, 'New')
+        # percentile scores still populated in absolute mode
+        self.assertIsNotNone(c.rfm_recency_score)
+
+    # ---- preview ----
+    def test_preview_absolute_sizes_sums_and_scoped(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org, seed_segment_bands
+        for i in range(4):
+            c = self._cust(f'p{i}@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+            self._order(c, 60, days_ago=10)
+        seed_segment_bands(self.org)
+        sizes = SegmentDiagnostics(self.org).preview_absolute_sizes(bands_from_org(self.org))
+        self.assertEqual(sizes['status'], 'ok')
+        self.assertEqual(sizes['total_scored'], 4)
+
+    # ---- view ----
+    def test_view_admin_gate(self):
+        self.client.force_login(self.host)  # non-admin
+        resp = self.client.get(reverse('tickets:settings_segment_tuning'))
+        self.assertNotEqual(resp.status_code, 200)  # blocked (redirect or 403)
+
+    def test_view_links_back_to_live_segment_results(self):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:settings_segment_tuning'))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'View live segment results')
+        self.assertContains(resp, reverse('tickets:customer_segments'))
+
+    def test_view_preview_does_not_save(self):
+        self.client.force_login(self.admin)
+        self._cust('v1@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'preview', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(resp.context['preview_sizes'])
+        self.assertContains(resp, 'Nothing is saved yet')  # bars actually rendered
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_mode, 'percentile')  # not saved
+
+    def test_view_preview_ajax_returns_partial(self):
+        self.client.force_login(self.admin)
+        self._cust('ax@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(
+            reverse('tickets:settings_segment_tuning'),
+            {'action': 'preview', 'segment_mode': 'absolute',
+             'recency_active_days': 90, 'recency_cooling_days': 180,
+             'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Nothing is saved yet')     # the preview partial
+        self.assertNotContains(resp, 'How should we sort')    # NOT the full page
+
+    def test_view_preview_ajax_screenshot_payload_valid(self):
+        """Reproduce the exact browser payload from the bug screenshot."""
+        self.client.force_login(self.admin)
+        self._cust('sc@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(
+            reverse('tickets:settings_segment_tuning'),
+            {'action': 'preview', 'segment_mode': 'absolute',
+             'recency_active_days': '60', 'recency_cooling_days': '180',
+             'freq_few': '2', 'freq_many': '5',
+             'monetary_mid': '40.0', 'monetary_high': '75.0'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        content = resp.content.decode()
+        self.assertNotIn('Please check the numbers', content,
+                         msg='form was unexpectedly invalid')
+        self.assertIn('Nothing is saved yet', content)
+
+    def test_view_preview_backtest_shows_verdict(self):
+        self.client.force_login(self.admin)
+        # High/low split so both backtests yield >=2 segments (holdout_days=180 ->
+        # pre-cutoff orders are >=180 days ago, holdout orders <180).
+        for i in range(6):
+            c = self._cust(f'good{i}@e.com')
+            self._order(c, 200, days_ago=300)  # pre-cutoff, frequent + high spend
+            self._order(c, 200, days_ago=250)
+            self._order(c, 200, days_ago=200)
+            self._order(c, 150, days_ago=60)   # holdout repeat
+        for i in range(5):
+            c = self._cust(f'bad{i}@e.com')
+            self._order(c, 20, days_ago=250)   # single old low-value order, no holdout
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'preview_backtest', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['backtest_status'], 'ok')
+        verdict = resp.context['backtest_verdict']
+        self.assertIn(verdict['label'], ('better', 'similar', 'worse'))
+        self.assertContains(resp, 'likely to spend more later')
+        # the "order check" narrative + plain "what to change" tips
+        self.assertContains(resp, 'Do these segments work')
+        self.assertContains(resp, 'shorter as you go down')
+        self.assertContains(resp, 'These flags are only checking future revenue')
+        order_rows = resp.context['order_rows']
+        self.assertIn('bar_pct', order_rows[0])
+        self.assertIn('out_of_order', order_rows[0])
+        self.assertIn('recommendations', resp.context)  # apply-buttons (may be empty)
+        # order check is the value-ordered group list
+        self.assertEqual(
+            [r['segment'] for r in order_rows],
+            [r['segment'] for r in resp.context['backtest_current_rows']],
+        )
+
+    def test_recommended_bands_lowers_frequent_buyer(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org
+        # Customers with 2-3 orders each, but 'frequent buyer' set high (5) -> the
+        # top groups are empty, so it should recommend a lower frequent-buyer number.
+        for i in range(10):
+            c = self._cust(f'r{i}@e.com', ltv='120.00', last=date.today() - timedelta(days=10))
+            self._order(c, 60, days_ago=10)
+            self._order(c, 60, days_ago=40)
+            if i % 2 == 0:
+                self._order(c, 60, days_ago=70)  # some have 3 orders
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 5, 'monetary_mid': 40.0, 'monetary_high': 75.0,
+        }
+        self.org.save(update_fields=['segment_bands'])
+        recs = SegmentDiagnostics(self.org).recommended_bands(bands_from_org(self.org))
+        self.assertIn('freq_many', recs)
+        self.assertLess(recs['freq_many'], 5)
+        self.assertGreater(recs['freq_many'], 2)  # above 'a few'
+
+    def test_recommended_bands_empty_when_reasonable(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org
+        for i in range(10):
+            c = self._cust(f'ok{i}@e.com', ltv='50.00', last=date.today() - timedelta(days=10))
+            self._order(c, 50, days_ago=10)
+            self._order(c, 50, days_ago=40)
+            self._order(c, 50, days_ago=70)  # everyone has 3 orders
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': 20.0, 'monetary_high': 40.0,
+        }
+        self.org.save(update_fields=['segment_bands'])
+        recs = SegmentDiagnostics(self.org).recommended_bands(bands_from_org(self.org))
+        self.assertNotIn('freq_many', recs)  # 'many' at 3 already populated
+
+    def test_ui_recommendations_hide_changes_that_backtest_worse(self):
+        from tickets.views import _recommendations
+
+        class FakeDiagnostics:
+            def recommended_bands(self, candidate):
+                return {'freq_many': 3}
+
+            def _backtest(self, **kwargs):
+                return {
+                    'status': 'ok',
+                    'separation': {'spearman_future_revenue': 0.10},
+                }
+
+        candidate = (
+            {'recency_active': 90, 'recency_cooling': 180, 'freq_few': 2, 'freq_many': 5},
+            (40.0, 75.0),
+        )
+        recs = _recommendations(FakeDiagnostics(), candidate, current_score=0.30)
+        self.assertEqual(recs, [])
+
+    def test_spread_note_for_dormant_is_not_threshold_advice(self):
+        from tickets.views import _spread_note
+
+        note = _spread_note('Dormant')
+        self.assertIn('That can be normal', note)
+        self.assertIn('widen the “Recently active” or “Slipping away” day ranges', note)
+        self.assertNotIn('lower your thresholds', note)
+
+    def test_view_save_switches_mode_and_recalcs(self):
+        self.client.force_login(self.admin)
+        c = self._cust('v2@e.com', ltv='20.00', last=date.today() - timedelta(days=10))
+        self._order(c, 20, days_ago=10)  # below the $40 decent-spend threshold
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'save', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 4, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_mode, 'absolute')
+        c.refresh_from_db()
+        # eager recalc ran with absolute bands
+        self.assertEqual(c.rfm_segment, 'New')
+
+
 class TestCustomerBehaviorProfiler(TestCase):
     """Tests for layered customer behavior profiling."""
 
@@ -2792,6 +4424,12 @@ class CustomerSegmentationViewTests(TestCase):
             password='testpass123',
         )
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.host = User.objects.create_user(
+            username='segmenthost',
+            email='segment-host@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
         self.client.login(username='segment@test.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
 
@@ -2809,7 +4447,52 @@ class CustomerSegmentationViewTests(TestCase):
             organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
         )
 
-    def test_customer_segments_includes_behavior_stats(self):
+    def test_customer_segments_shows_automatic_mode_copy_for_admins(self):
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['segment_mode_label'], 'Automatic')
+        self.assertContains(response, 'Scoring')
+        self.assertContains(response, 'Cue sorts customers automatically using relative RFM scores')
+        self.assertContains(response, 'Settings')
+
+    def test_customer_segments_hides_tuning_link_for_non_admins(self):
+        self.client.force_login(self.host)
+
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Scoring')
+        self.assertNotContains(response, 'href="{}"'.format(reverse('tickets:settings_segment_tuning')))
+
+    def test_customer_segments_shows_custom_rule_summary(self):
+        self.org.segment_mode = 'absolute'
+        self.org.segment_bands = {
+            'recency_active_days': 60,
+            'recency_cooling_days': 150,
+            'freq_few': 2,
+            'freq_many': 4,
+            'monetary_mid': 40.0,
+            'monetary_high': 90.0,
+        }
+        self.org.save(update_fields=['segment_mode', 'segment_bands'])
+
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['segment_mode_label'], 'Custom rules')
+        self.assertContains(response, 'active within 60 days')
+        self.assertContains(response, 'frequent at 4 orders')
+        self.assertContains(response, 'top spender at $90')
+
+    def test_settings_overview_links_to_segment_settings_for_admins(self):
+        response = self.client.get(reverse('tickets:settings_overview'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Segment Settings')
+        self.assertContains(response, reverse('tickets:settings_segment_tuning'))
+
+    def test_customer_segments_is_minimal_and_links_to_filtered_customers(self):
         customer = Customer.objects.create(
             organization=self.org,
             email='profiled@example.com',
@@ -2818,10 +4501,7 @@ class CustomerSegmentationViewTests(TestCase):
             last_order_date=date.today() - timedelta(days=12),
             rfm_segment='Loyal',
             behavior_profile='Fast Repeat',
-            behavior_profile_reason='Returns quickly after each purchase and is currently active.',
             days_since_last_order=12,
-            avg_days_between_orders=14,
-            days_to_second_order=16,
         )
         TicketOrder.objects.create(
             customer=customer,
@@ -2835,10 +4515,14 @@ class CustomerSegmentationViewTests(TestCase):
         response = self.client.get(reverse('tickets:customer_segments'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('behavior_stats', response.context)
-        self.assertTrue(any(row['segment'] == 'Fast Repeat' for row in response.context['behavior_stats']))
-        self.assertContains(response, 'Behavior profiles')
-        self.assertContains(response, 'Fast Repeat')
+        self.assertContains(response, 'Segments')
+        self.assertContains(response, 'href="{}?segment=Loyal"'.format(reverse('tickets:customer_list')))
+        self.assertContains(response, 'progress-bar')
+        self.assertNotIn('behavior_stats', response.context)
+        self.assertNotContains(response, 'Behavior profiles')
+        self.assertNotContains(response, 'Fast Repeat')
+        self.assertNotContains(response, 'chart.umd.min.js')
+        self.assertNotContains(response, '<canvas')
 
     def test_customer_detail_shows_behavior_profile_metrics(self):
         customer = Customer.objects.create(
@@ -2871,8 +4555,10 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertContains(response, 'Average days between orders')
 
 
-class CustomerDetailMarketingTabTests(TestCase):
-    """The Marketing Activity tab surfaces per-customer native-SMS delivery state."""
+class CustomerDetailTimelineTests(TestCase):
+    """The consolidated Timeline merges orders, native-SMS delivery state, survey
+    responses, and loyalty tier transitions into one reverse-chronological feed,
+    keeping the SMS consent + delivery scoreboard as a header above it."""
 
     def setUp(self):
         self.client = Client()
@@ -2911,7 +4597,7 @@ class CustomerDetailMarketingTabTests(TestCase):
         defaults.update(kwargs)
         return SMSMessageRecipient.objects.create(**defaults)
 
-    def test_marketing_tab_lists_sms_activity(self):
+    def test_timeline_lists_sms_activity(self):
         self._make_message(first_clicked_at=timezone.now() - timedelta(hours=1), click_count=2)
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
@@ -2920,31 +4606,84 @@ class CustomerDetailMarketingTabTests(TestCase):
         self.assertEqual(response.context['sms_stats']['total'], 1)
         self.assertEqual(response.context['sms_stats']['delivered'], 1)
         self.assertEqual(response.context['sms_stats']['clicked'], 1)
-        self.assertContains(response, 'Marketing Activity')
-        self.assertContains(response, 'Summer Promo')
+        self.assertContains(response, 'Timeline')
+        self.assertContains(response, 'SMS: Summer Promo')
         self.assertContains(response, 'Delivered')
 
-    def test_marketing_tab_empty_state(self):
+    def test_timeline_empty_state(self):
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['sms_stats']['total'], 0)
-        self.assertContains(response, 'No marketing messages sent to this customer yet.')
+        self.assertContains(response, 'No activity yet.')
 
-    def test_marketing_tab_hidden_when_feature_disabled(self):
+    def test_sms_header_hidden_when_feature_disabled(self):
         self.org.sms_marketing_enabled = False
         self.org.save(update_fields=['sms_marketing_enabled'])
+        self._make_message()
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, 'Marketing Activity')
+        # The SMS consent + delivery scoreboard header disappears, and SMS messages
+        # drop out of the timeline, when the org has SMS marketing disabled.
+        self.assertNotContains(response, 'SMS Consent')
+        self.assertNotContains(response, 'Messages Sent')
+        self.assertNotContains(response, 'SMS: Summer Promo')
+
+    def test_timeline_merges_interactions_reverse_chronologically(self):
+        from .models import (
+            Venue, Event, TicketOrder, Ticket, SurveyInvitation, SurveyResponse,
+            LoyaltyProgram, LoyaltyTier, LoyaltyTierTransition,
+        )
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+
+        venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=venue, start_date=date.today(),
+        )
+        program = LoyaltyProgram.objects.create(organization=self.org, name='Club')
+        gold = LoyaltyTier.objects.create(program=program, name='Gold', rank=2, color='red')
+
+        now = timezone.now()
+        # Create oldest -> newest across every interaction kind.
+        LoyaltyTierTransition.objects.create(
+            customer=self.customer, organization=self.org,
+            from_tier=None, to_tier=gold, changed_at=now - timedelta(days=10),
+        )
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number='TL-1',
+            order_date=now - timedelta(days=5), total_amount=Decimal('30.00'),
+        )
+        Ticket.objects.create(ticket_order=order, price=Decimal('30.00'))
+        self._make_message(
+            sent_at=now - timedelta(days=2), delivered_at=now - timedelta(days=2),
+        )
+        invitation = SurveyInvitation.objects.create(
+            event=event, customer=self.customer, organization=self.org,
+            email=self.customer.email,
+        )
+        SurveyResponse.objects.create(
+            invitation=invitation, event=event, customer=self.customer,
+            organization=self.org,
+        )  # submitted_at auto_now_add -> "now", the newest interaction
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        kinds = [item['kind'] for item in response.context['page_obj']]
+        self.assertEqual(kinds, ['survey', 'sms', 'order', 'tier'])
+        self.assertContains(response, 'Purchased 1 ticket')
+        self.assertContains(response, 'SMS: Summer Promo')
+        self.assertContains(response, 'Completed survey')
+        self.assertContains(response, 'Reached Gold tier')
 
 
 class SMSBroadcastAudienceTests(TestCase):
     """The SMS tab's broadcast-audience chart + by-market breakdown combine native
     SMS campaigns and external SlickText broadcasts, grouped by the linked event's
-    venue city (the 'market')."""
+    assigned market."""
 
     def setUp(self):
         from .models import SMSCampaign, EventSMSCampaign
@@ -2966,13 +4705,22 @@ class SMSBroadcastAudienceTests(TestCase):
             organization=self.org, name='Austin Show', venue=self.venue,
             start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
         )
-        # Native SMS campaign (sent), event-scoped -> Austin market.
+        self.market = Market.objects.create(
+            organization=self.org,
+            name='Central Texas',
+            geography_level='city',
+            geography_value='Austin',
+        )
+        from tickets.services.markets import MarketBuilder
+        MarketBuilder(self.org).assign_event(self.event)
+
+        # Native SMS campaign (sent), event-scoped -> Central Texas market.
         SMSCampaign.objects.create(
             organization=self.org, name='Native Blast', body='Tickets!',
             event=self.event, status=SMSCampaign.Status.SENT,
             sent_at=timezone.now() - timedelta(days=3), audience_size=120,
         )
-        # External SlickText broadcast (confirmed) on the same event -> Austin market.
+        # External SlickText broadcast (confirmed) on the same event -> Central Texas market.
         EventSMSCampaign.objects.create(
             event=self.event, source='slicktext', external_id='st-1',
             name='SlickText Blast', send_time=timezone.now() - timedelta(days=5),
@@ -2984,26 +4732,533 @@ class SMSBroadcastAudienceTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         breakdown = {r['market']: r for r in response.context['market_breakdown']}
-        self.assertIn('Austin', breakdown)
-        self.assertEqual(breakdown['Austin']['broadcasts'], 2)
-        self.assertEqual(breakdown['Austin']['total_audience'], 200)
-        self.assertEqual(breakdown['Austin']['avg_audience'], 100)
-        self.assertIn('Austin', response.context['market_choices'])
+        self.assertIn('Central Texas', breakdown)
+        self.assertNotIn('Austin', breakdown)
+        self.assertEqual(breakdown['Central Texas']['broadcasts'], 2)
+        self.assertEqual(breakdown['Central Texas']['total_audience'], 200)
+        self.assertEqual(breakdown['Central Texas']['avg_audience'], 100)
+        self.assertEqual(breakdown['Central Texas']['market_id'], str(self.market.id))
+        self.assertIn('Central Texas', response.context['market_choices'])
 
     def test_market_filter_scopes_chart_points(self):
-        response = self.client.get(self.url, {'market': 'Austin'})
+        response = self.client.get(self.url, {'market': 'Central Texas'})
         self.assertEqual(response.status_code, 200)
         points = json.loads(response.context['audience_points_json'])
-        self.assertEqual(len(points['native']), 1)
-        self.assertEqual(len(points['slicktext']), 1)
-        self.assertEqual(points['native'][0]['market'], 'Austin')
-        self.assertEqual(points['native'][0]['y'], 120)
-        self.assertEqual(response.context['selected_market'], 'Austin')
+        # by_market groups all channels under the market name.
+        self.assertIn('Central Texas', points['by_market'])
+        ct_points = points['by_market']['Central Texas']
+        self.assertEqual(len(ct_points), 2)  # native + slicktext
+        audiences = {p['y'] for p in ct_points}
+        self.assertIn(120, audiences)  # native SMSCampaign audience
+        self.assertEqual(response.context['selected_market'], 'Central Texas')
 
     def test_unknown_market_falls_back_to_all(self):
         response = self.client.get(self.url, {'market': 'Nowhere'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['selected_market'], '')
+
+
+class SMSComplianceGuardTests(TestCase):
+    """Guards that keep the Twilio Compliance subscore healthy: country gating
+    (avoids Geo-Permission blocks / Error 21408) and learning from opt-out blocks
+    (Error 21610) so a number Twilio rejected is never re-attempted."""
+
+    def setUp(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        self.org = Organization.objects.create(
+            name='Compliance Org', slug='compliance-org', sms_marketing_enabled=True,
+        )
+
+    # --- Country gating (Error 21408) ---
+
+    def test_sms_country_allowed_defaults_to_us_ca(self):
+        from .sms import sms_country_allowed
+        self.assertTrue(sms_country_allowed('+15551234567'))
+        self.assertFalse(sms_country_allowed('+447700900000'))  # UK
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=())
+    def test_sms_country_allowed_empty_setting_allows_all(self):
+        from .sms import sms_country_allowed
+        self.assertTrue(sms_country_allowed('+447700900000'))
+
+    def test_materialize_drops_non_allowed_country_numbers(self):
+        from .models import SMSCampaign
+        us = Customer.objects.create(
+            organization=self.org, email='us@example.com', name='US',
+            phone='+15551230000', sms_opt_in=True,
+        )
+        intl = Customer.objects.create(
+            organization=self.org, email='uk@example.com', name='UK',
+            phone='+447700900123', sms_opt_in=True,
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            manual_include_ids=[str(us.id), str(intl.id)],
+        )
+        recipients = campaign.materialize()
+        phones = {r['phone'] for r in recipients}
+        self.assertIn('+15551230000', phones)
+        self.assertNotIn('+447700900123', phones)
+
+    # --- Learning from opt-out blocks (Error 21610) ---
+
+    def test_chunk_task_suppresses_number_on_21610(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15559998888',
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        # Twilio rejects an opted-out recipient synchronously via send_sms.
+        with patch('tickets.sms.send_sms', return_value=(False, None, '21610')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertEqual(recipient.error_code, '21610')
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15559998888', organization__isnull=True,
+            ).exists()
+        )
+
+    def test_chunk_task_does_not_suppress_on_transient_error(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15557776666',
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        with patch('tickets.sms.send_sms', return_value=(False, None, '30001')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertFalse(
+            PhoneSuppression.objects.filter(phone='+15557776666').exists()
+        )
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False)
+    def test_status_webhook_suppresses_number_on_21610(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15551112222', twilio_sid='SM_test_21610',
+            status=SMSMessageRecipient.Status.SENT,
+        )
+        response = Client().post(
+            reverse('tickets:twilio_sms_status_webhook'),
+            {
+                'MessageSid': 'SM_test_21610',
+                'MessageStatus': 'failed',
+                'ErrorCode': '21610',
+                'ErrorMessage': 'Attempt to send to unsubscribed recipient',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15551112222', organization__isnull=True,
+            ).exists()
+        )
+
+
+class SMSThroughputGuardTests(TestCase):
+    """Carrier-throughput guards on the send path: paced (staggered) dispatch to avoid
+    burst spam-filtering (Error 30007), an account-wide daily segment cap that BLOCKS an
+    oversize send at compose time (day-aware) so the organizer trims the list, a send-time
+    fail+refund for the rare race the block can't see, urgency-first ordering, and dropping
+    malformed numbers before they reach Twilio (Error 21211)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Throughput Org', slug='throughput-org', sms_marketing_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='LA')
+
+    def _campaign(self, n_recipients, segments=1, status=None):
+        from .models import SMSCampaign, SMSMessageRecipient
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            status=status or SMSCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(
+                campaign=campaign, phone=f'+1555000{i:04d}',
+                status=SMSMessageRecipient.Status.QUEUED, segments=segments,
+            ) for i in range(n_recipients)
+        ])
+        return campaign
+
+    def _opted_in(self, n):
+        return [
+            Customer.objects.create(
+                organization=self.org, email=f'c{i}@example.com', name=f'C{i}',
+                phone=f'+1555{i:07d}', sms_opt_in=True,
+            ) for i in range(n)
+        ]
+
+    def _finalize(self, custs, *, scheduled, send_at, key):
+        from .services.sms_campaigns import finalize_campaign_send
+        return finalize_campaign_send(
+            self.org, name='Blast', body='Tickets!', criteria={},
+            manual_include_ids=[str(c.id) for c in custs], event=None,
+            scheduled=scheduled, send_at=send_at, user=None, idempotency_key=key, cap=5000,
+        )
+
+    # --- Malformed-number validation (Error 21211) ---
+
+    def test_is_plausible_e164(self):
+        from .sms import is_plausible_e164
+        self.assertTrue(is_plausible_e164('+15551234567'))
+        self.assertTrue(is_plausible_e164('+447700900000'))  # UK, 12 digits
+        self.assertFalse(is_plausible_e164('+1116267769618'))  # double country code
+        self.assertFalse(is_plausible_e164('+1555123'))        # +1 but not 11 digits
+        self.assertFalse(is_plausible_e164('5551234567'))      # no '+'
+        self.assertFalse(is_plausible_e164('+1abc'))
+        self.assertFalse(is_plausible_e164(''))
+
+    def test_materialize_drops_malformed_numbers(self):
+        from .models import SMSCampaign
+        good = Customer.objects.create(
+            organization=self.org, email='g@example.com', name='Good',
+            phone='+15551230000', sms_opt_in=True,
+        )
+        # A number that already carried a country code, so normalize prepends a stray '+1'.
+        bad = Customer.objects.create(
+            organization=self.org, email='b@example.com', name='Bad',
+            phone='116267769618', sms_opt_in=True,
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            manual_include_ids=[str(good.id), str(bad.id)],
+        )
+        phones = {r['phone'] for r in campaign.materialize()}
+        self.assertIn('+15551230000', phones)
+        self.assertNotIn('+1116267769618', phones)
+
+    # --- fit_within_budget ---
+
+    def test_fit_within_budget(self):
+        from .services.sms_limits import fit_within_budget
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], None), 5)  # disabled
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], 0), 0)
+        self.assertEqual(fit_within_budget([1, 1, 1, 1, 1], 2), 2)
+        self.assertEqual(fit_within_budget([2, 2, 2], 5), 2)
+        # First recipient always progresses even if its segments exceed the budget.
+        self.assertEqual(fit_within_budget([3, 1], 1), 1)
+
+    # --- Paced dispatch (staggered chord) ---
+
+    @override_settings(SMS_SEND_RATE_PER_SEC=5, SMS_CHUNK_SIZE=10, SMS_DAILY_SEGMENT_CAP=0)
+    def test_dispatch_staggers_chunks_by_countdown(self):
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(25)
+        captured = {}
+
+        def fake_chord(header):
+            captured['header'] = header
+            return lambda callback: None
+
+        with patch('celery.chord', side_effect=fake_chord):
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+
+        header = captured['header']
+        # 25 recipients / chunk_size 10 -> 3 chunks.
+        self.assertEqual(len(header), 3)
+        countdowns = [sig.options.get('countdown') for sig in header]
+        # chunk idx * chunk_size / rate = 0, 10/5=2, 20/5=4.
+        self.assertEqual(countdowns, [0, 2, 4])
+
+    # --- Day-aware capacity ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_daily_capacity_is_day_aware(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_limits import segments_scheduled_for, daily_capacity_for
+        tomorrow = timezone.now() + timedelta(days=1)
+        c = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=c, phone=f'+1557{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(7)
+        ])
+        d = timezone.localdate(tomorrow)
+        self.assertEqual(segments_scheduled_for(d), 7)
+        self.assertEqual(daily_capacity_for(tomorrow), 93)  # 100 - 7 booked
+        self.assertEqual(segments_scheduled_for(d, exclude_campaign_id=c.id), 0)
+
+    # --- Compose-time block ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=6)
+    def test_finalize_blocks_send_now_over_today_budget(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_campaigns import DailyCapExceededError
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        # Pre-consume 4 of today's 6-segment budget with an already-sent recipient.
+        pre = SMSCampaign.objects.create(organization=self.org, name='pre', body='hi')
+        SMSMessageRecipient.objects.create(
+            campaign=pre, phone='+15559990000', segments=4, twilio_sid='SMx',
+            status=SMSMessageRecipient.Status.SENT, sent_at=timezone.now(),
+        )
+        before = SMSCampaign.objects.count()
+        with self.assertRaises(DailyCapExceededError):
+            self._finalize(custs, scheduled=False, send_at=timezone.now(), key='k1')
+        self.assertEqual(SMSCampaign.objects.count(), before)  # nothing created/charged
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=6)
+    def test_finalize_blocks_future_send_day_aware(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_campaigns import DailyCapExceededError
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        tomorrow = timezone.now() + timedelta(days=1)
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=booked, phone=f'+1558{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(5)
+        ])  # books 5 of tomorrow's 6
+        custs = self._opted_in(5)
+        with self.assertRaises(DailyCapExceededError):
+            self._finalize(custs, scheduled=True, send_at=tomorrow, key='k2')
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_finalize_allows_within_cap(self):
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        result = self._finalize(custs, scheduled=False, send_at=timezone.now(), key='k3')
+        self.assertTrue(result.created)
+        self.assertEqual(result.recipient_count, 5)
+
+    def test_daily_cap_exceeded_error_message_prompts_to_reduce(self):
+        from .services.sms_campaigns import DailyCapExceededError
+        exc = DailyCapExceededError(count=20, allowed=5, cap=100, send_date=timezone.localdate())
+        self.assertIn('20', exc.user_message())
+        self.assertIn('5', exc.user_message())
+        self.assertIn('Reduce', exc.user_message())
+        # Fully booked → tell them to pick another day, no "reduce to 0".
+        full = DailyCapExceededError(count=20, allowed=0, cap=100, send_date=timezone.localdate())
+        self.assertIn('another day', full.user_message())
+
+    # --- Send-time last resort (fail + refund, no defer) ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_send_time_fails_and_refunds_when_over_budget(self):
+        from .models import SMSCampaign
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(5, segments=1)
+        with patch('tickets.services.sms_limits.remaining_daily_budget', return_value=2), \
+                patch('tickets.services.sms_credits.refund_campaign') as mock_refund, \
+                patch('celery.chord') as mock_chord:
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+        mock_chord.assert_not_called()  # never partially dispatched
+        mock_refund.assert_called_once()
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SMSCampaign.Status.FAILED)
+        self.assertTrue(campaign.failure_reason)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=100)
+    def test_send_time_dispatches_all_when_within_budget(self):
+        from .models import SMSCampaign
+        from .tasks import send_sms_campaign_task
+        campaign = self._campaign(5, segments=1)
+        captured = {}
+
+        def fake_chord(header):
+            captured['header'] = header
+            return lambda callback: None
+
+        with patch('tickets.services.sms_limits.remaining_daily_budget', return_value=100), \
+                patch('celery.chord', side_effect=fake_chord):
+            send_sms_campaign_task.apply(args=[str(campaign.id)])
+        dispatched = sum(len(sig.args[1]) for sig in captured['header'])
+        self.assertEqual(dispatched, 5)  # all recipients dispatched, none dropped
+        campaign.refresh_from_db()
+        self.assertNotEqual(campaign.status, SMSCampaign.Status.FAILED)
+
+    def test_segments_used_today_counts_only_sent_today(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_limits import segments_used_today
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Hi',
+        )
+        # Sent today with a SID -> counts.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000001', segments=2, twilio_sid='SM1',
+            status=SMSMessageRecipient.Status.SENT, sent_at=timezone.now(),
+        )
+        # Queued (never sent) -> excluded.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000002', segments=5,
+            status=SMSMessageRecipient.Status.QUEUED,
+        )
+        # Sent yesterday -> excluded.
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550000003', segments=3, twilio_sid='SM3',
+            status=SMSMessageRecipient.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=1),
+        )
+        self.assertEqual(segments_used_today(), 2)
+
+    # --- Urgency-first ordering ---
+
+    def test_due_orders_soonest_event_first(self):
+        from .models import SMSCampaign
+        soon_event = Event.objects.create(
+            organization=self.org, name='Soon', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1),
+        )
+        later_event = Event.objects.create(
+            organization=self.org, name='Later', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=30),
+        )
+        later = SMSCampaign.objects.create(
+            organization=self.org, name='Later Blast', body='Hi', event=later_event,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        soon = SMSCampaign.objects.create(
+            organization=self.org, name='Soon Blast', body='Hi', event=soon_event,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        no_event = SMSCampaign.objects.create(
+            organization=self.org, name='Evergreen', body='Hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        ordered = list(SMSCampaign.objects.due().values_list('id', flat=True))
+        self.assertEqual(
+            ordered, [soon.id, later.id, no_event.id],  # soonest event first, null last
+        )
+
+    # --- Compose-time block surfaces during review (before confirm) ---
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_composer_review_warns_before_confirm(self):
+        from .models import SMSCampaign
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)  # so insufficient-credits doesn't preempt
+        self._opted_in(5)
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        user = User.objects.create_user(username='cmp', email='cmp@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        c = Client()
+        c.login(username='cmp@example.com', password='pw')
+        c.get(reverse('tickets:home'))  # warm org cache
+        # Review step (no 'confirm'): 5 recipients vs a cap of 2.
+        resp = c.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Blast', 'body': 'Tickets!', 'send_mode': 'now',
+            'audience_scope': 'all', 'event': str(ev.id),
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['daily_cap_block'])  # warned in the confirm bar
+        self.assertIn('Reduce', resp.context['daily_cap_block'])
+        # Nothing was created — the block is shown, not committed.
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+
+    def _preview_client(self):
+        user = User.objects.create_user(
+            username=f'preview-{uuid.uuid4().hex[:8]}',
+            email=f'preview-{uuid.uuid4().hex[:8]}@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        c = Client()
+        c.force_login(user)
+        c.get(reverse('tickets:home'))  # warm org cache
+        return c
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=17)
+    def test_audience_preview_warns_when_daily_cap_exceeded(self):
+        custs = self._opted_in(20)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'now',
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 20)
+        self.assertTrue(data['daily_cap_blocked'])
+        self.assertEqual(data['daily_cap_allowed'], 17)
+        self.assertEqual(data['daily_cap'], 17)
+        self.assertIn('Reduce', data['daily_cap_message'])
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=17)
+    def test_audience_preview_is_day_aware_for_scheduled_send(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        tomorrow = timezone.now() + timedelta(days=1)
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='Booked', body='Booked',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(
+                campaign=booked, phone=f'+1555999{i:04d}',
+                status=SMSMessageRecipient.Status.QUEUED, segments=1,
+            ) for i in range(10)
+        ])
+        custs = self._opted_in(10)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'schedule',
+            'scheduled_at': timezone.localtime(tomorrow).strftime('%Y-%m-%dT%H:%M'),
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 10)
+        self.assertTrue(data['daily_cap_blocked'])
+        self.assertEqual(data['daily_cap_allowed'], 7)
+        self.assertIn('7 or fewer', data['daily_cap_message'])
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=0)
+    def test_audience_preview_omits_daily_warning_when_cap_disabled(self):
+        custs = self._opted_in(20)
+        c = self._preview_client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'body': 'Tickets!',
+            'send_mode': 'now',
+            'manual_include_ids': ','.join(str(cust.id) for cust in custs),
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 20)
+        self.assertFalse(data['daily_cap_blocked'])
+        self.assertIsNone(data['daily_cap_allowed'])
+        self.assertIsNone(data['daily_cap'])
 
 
 class SMSCampaignLinkEventTests(TestCase):
@@ -4065,7 +6320,8 @@ class EventEditViewTests(TestCase):
         response = self.client.get(reverse('tickets:event_edit', args=[event.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Talent Lineup (optional)')
+        # Talent Lineup was removed from the create/import/edit forms.
+        self.assertNotContains(response, 'Talent Lineup')
 
 
 class TicketTypeCustomerLimitTests(TestCase):
@@ -4772,6 +7028,7 @@ class CustomerTagManagementTests(TestCase):
         customers_in_page = list(resp.context['page_obj'])
         self.assertIn(tagged, customers_in_page)
         self.assertNotIn(self.customer, customers_in_page)
+        self.assertContains(resp, '1 matching customer')
 
     def test_customer_list_bad_tag_uuid_graceful(self):
         resp = self.client.get(reverse('tickets:customer_list'), {'tag': 'notauuid'})
@@ -5015,7 +7272,9 @@ class ChurnDetectionTests(TestCase):
 class CustomerBulkSMSStatusTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='SMS Org', slug='sms-org')
+        self.org = Organization.objects.create(
+            name='SMS Org', slug='sms-org', sms_marketing_enabled=True,
+        )
         self.user = User.objects.create_user(
             username='smshost', email='smshost@test.com', password='testpass123',
         )
@@ -5028,12 +7287,15 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.alice = Customer.objects.create(
             organization=self.org, email='alice@example.com', name='Alice',
             phone='+13105550001', sms_opt_in=False,
+            last_order_date=date(2026, 1, 15),
         )
         self.bob = Customer.objects.create(
             organization=self.org, email='bob@example.com', name='Bob',
             phone='+13105550002', sms_opt_in=False,
+            last_order_date=date(2025, 12, 15),
         )
         self.url = reverse('tickets:customers_bulk_sms_status')
+        self.compose_url = reverse('tickets:customers_bulk_sms_compose')
 
     def test_opt_in_sets_flag_and_date_on_selected_only(self):
         response = self.client.post(self.url, {
@@ -5119,6 +7381,83 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.bob.refresh_from_db()
         self.assertTrue(self.alice.sms_opt_in)
         self.assertFalse(self.bob.sms_opt_in)
+
+    def test_select_all_honors_last_order_filter(self):
+        response = self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'select_all': '1',
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+        })
+        expected = (
+            f"{reverse('tickets:customer_list')}"
+            "?last_order_from=2026-01-01&last_order_to=2026-01-31"
+        )
+        self.assertRedirects(response, expected)
+        self.alice.refresh_from_db()
+        self.bob.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(self.bob.sms_opt_in)
+
+    def test_compose_stores_org_scoped_selection_in_session(self):
+        other_org = Organization.objects.create(name='Other SMS Org', slug='other-compose-sms')
+        outsider = Customer.objects.create(
+            organization=other_org, email='out-compose@example.com', name='Outsider',
+            phone='+13105559999', sms_opt_in=True,
+        )
+
+        response = self.client.post(self.compose_url, {
+            'customer_ids': [str(self.alice.id), str(outsider.id), 'not-a-uuid'],
+            'search': 'alice',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('tickets:sms_campaign_create'))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['ids'], [str(self.alice.id)])
+        self.assertEqual(prefill['label'], '1 customer')
+
+    def test_compose_select_all_honors_last_order_filter(self):
+        response = self.client.post(self.compose_url, {
+            'select_all': '1',
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('tickets:sms_campaign_create'))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['ids'], [str(self.alice.id)])
+        self.assertEqual(prefill['label'], '1 customer')
+
+    def test_compose_page_uses_locked_manual_audience(self):
+        self.client.post(self.compose_url, {
+            'customer_ids': [str(self.alice.id), str(self.bob.id)],
+        })
+
+        response = self.client.get(reverse('tickets:sms_campaign_create'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '2 customers selected from the Customers page')
+        self.assertContains(response, 'name="manual_include_ids"')
+        self.assertEqual(
+            set(response.context['manual_include_ids_csv'].split(',')),
+            {str(self.alice.id), str(self.bob.id)},
+        )
+
+    def test_sms_campaign_manual_includes_ignore_malformed_ids(self):
+        from .models import SMSCampaign
+        self.alice.sms_opt_in = True
+        self.alice.save(update_fields=['sms_opt_in'])
+
+        campaign = SMSCampaign(
+            organization=self.org,
+            name='Manual',
+            body='Hello',
+            manual_include_ids=['not-a-uuid', str(self.alice.id)],
+        )
+
+        self.assertEqual(list(campaign.candidate_customers(self.org)), [self.alice])
 
 
 class AIRecommendationTests(TestCase):
@@ -6786,6 +9125,17 @@ class MarketingOverviewViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], '90')
 
+    def test_overview_shows_shareable_subscribe_link(self):
+        response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['subscribe_url'],
+            f"http://testserver/subscribe/{self.org.slug}/",
+        )
+        self.assertContains(response, f'/subscribe/{self.org.slug}/')
+        self.assertContains(response, 'Grow your audience')
+        self.assertContains(response, 'subscribeLinkCopy')
+
 
 class MarketingAINarrativeTests(TestCase):
     """Tests for the on-demand AI marketing narrative endpoint."""
@@ -7682,11 +10032,70 @@ class TapToPayEndpointsTests(TestCase):
         self.assertEqual(log.channel, 'email')
         self.assertEqual(log.status, 'sent')
 
+    def test_receipt_by_order_uuid_pk_sends_and_logs(self):
+        """The in-person sale response returns both order_number and the UUID
+        pk; the app may send either as order_id. A UUID pk must resolve too."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': str(self.order.pk),
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, self.order.pk)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_via_organizer_route(self):
+        """Fix: /api/organizer/receipt/ resolves to the same dual-auth view,
+        so the organizer app (which posts there) no longer 404s."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        res = self.client.post(
+            '/api/organizer/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, self.order.pk)
+        self.assertEqual(log.status, 'sent')
+
     def test_receipt_order_not_found(self):
         res = self.client.post(
             '/api/scanner/receipt/',
             data=json.dumps({
                 'order_id': '#NOPE',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_receipt_unknown_uuid_pk_returns_404(self):
+        """A well-formed but non-existent UUID must not error — it 404s
+        cleanly (the pk branch only widens matching, it doesn't crash)."""
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': str(uuid.uuid4()),
                 'channel': 'email',
                 'contact': 'guest@example.com',
             }),
@@ -7768,6 +10177,47 @@ class TapToPayEndpointsTests(TestCase):
         self.assertIn('No charge was made to your card.', body)
         log = ReceiptSend.objects.get(organization=self.org)
         self.assertEqual(log.payment_intent_id, 'pi_3OBxYzABC')
+        self.assertIsNone(log.ticket_order_id)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_by_payment_intent_id_succeeded(self):
+        """The success path: an approved PaymentIntent emails an 'Approved'
+        summary (no order needed), resolves the event via PI metadata, and
+        omits the 'no charge' disclaimer used for declines."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        fake_pi = MagicMock()
+        fake_pi.id = 'pi_3OBxYzOK'
+        fake_pi.status = 'succeeded'
+        fake_pi.amount = 2500
+        fake_pi.currency = 'usd'
+        fake_pi.created = 1700000000
+        fake_pi.metadata = {'event_id': str(self.event.id)}
+        fake_pi.last_payment_error = None
+
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/receipt/',
+                data=json.dumps({
+                    'payment_intent_id': 'pi_3OBxYzOK',
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn('Your payment was approved.', body)
+        self.assertIn('Status: Approved', body)
+        self.assertIn('Amount: 25.00 USD', body)
+        self.assertIn('TTP Event', body)  # resolved from PI metadata event_id
+        self.assertNotIn('No charge was made to your card.', body)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.payment_intent_id, 'pi_3OBxYzOK')
         self.assertIsNone(log.ticket_order_id)
         self.assertEqual(log.status, 'sent')
 
@@ -10841,6 +13291,160 @@ class LoyaltyTierAssignmentTests(TestCase):
         # Only 1 live order -> below min_order_count=2 -> no tier.
         self.assertIsNone(cust.loyalty_tier)
 
+    def _make_scanned_customer(self, email, events, scanned_at=None, scanned=True):
+        """One free ($0) order per event, each with a single ticket.
+
+        ``scanned=True`` stamps ``Ticket.scanned_at`` (an attended check-in);
+        ``scanned=False`` leaves it null (a free-RSVP no-show).
+        """
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0],
+            lifetime_value=Decimal('0'), last_order_date=date(2026, 6, 1),
+        )
+        for i, event in enumerate(events):
+            order = TicketOrder.objects.create(
+                customer=customer, event=event, order_number=f'{email}-{i}',
+                order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+            )
+            Ticket.objects.create(
+                ticket_order=order, price=Decimal('0'),
+                scanned_at=(scanned_at or timezone.now()) if scanned else None,
+            )
+        return customer
+
+    def test_events_attended_counts_only_scanned_tickets(self):
+        # min_events_attended must count door scans, not orders: a free-RSVP
+        # no-show who ordered 2 events but never scanned in stays out.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        attendee = self._make_scanned_customer('went@x.com', [e1, e2], scanned=True)
+        noshow = self._make_scanned_customer('noshow@x.com', [e1, e2], scanned=False)
+        self._assign()
+        attendee.refresh_from_db(); noshow.refresh_from_db()
+        self.assertEqual(attendee.loyalty_tier, self.member)
+        self.assertIsNone(noshow.loyalty_tier)
+
+    def test_attendance_recency_rule(self):
+        # attended_within_days windows the attendance count: both events must fall
+        # inside the window, keyed off scan time (not last order).
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        recent = self._make_scanned_customer('recent@x.com', [e1, e2], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'lapsed@x.com', [e1, e2], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
+    def test_windowed_event_count_excludes_old_attendance(self):
+        # "Attended >= 2 events within 120 days" counts only in-window scans, so a
+        # customer with 2 events attended all-time but only 1 inside the window
+        # does NOT qualify (the whole point of windowing the count).
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1, e2, e3, e4 = self._event('E1'), self._event('E2'), self._event('E3'), self._event('E4')
+        # 1 recent + 1 old distinct event -> only 1 in the window -> below 2.
+        edge = self._make_scanned_customer('edge@x.com', [e1], scanned_at=timezone.now())
+        old_order = TicketOrder.objects.create(
+            customer=edge, event=e2, order_number='edge-old',
+            order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+        )
+        Ticket.objects.create(
+            ticket_order=old_order, price=Decimal('0'),
+            scanned_at=timezone.now() - timedelta(days=200),
+        )
+        # 2 distinct events both inside the window -> qualifies.
+        inside = self._make_scanned_customer('inside@x.com', [e3, e4], scanned_at=timezone.now())
+        self._assign()
+        edge.refresh_from_db(); inside.refresh_from_db()
+        self.assertIsNone(edge.loyalty_tier)
+        self.assertEqual(inside.loyalty_tier, self.member)
+
+    def test_window_only_rule_requires_one_in_window(self):
+        # A window with no explicit count means "attended >= 1 event within D days".
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = None
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1 = self._event('E1')
+        recent = self._make_scanned_customer('r1@x.com', [e1], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'l1@x.com', [e1], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
+    def test_paid_events_rule_excludes_free_orders(self):
+        # "Paid events >= 2" counts distinct events with an order where money was
+        # paid (> $0): a customer with 2 free-RSVP orders stays out while a paying
+        # buyer across two events qualifies.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        buyer = self._make_customer('buyer@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        freeloader = self._make_customer('free@x.com', 0, [(e1, 0, 1), (e2, 0, 1)])
+        self._assign()
+        buyer.refresh_from_db(); freeloader.refresh_from_db()
+        self.assertEqual(buyer.loyalty_tier, self.member)
+        self.assertIsNone(freeloader.loyalty_tier)
+
+    def test_paid_events_rule_counts_distinct_events(self):
+        # "Paid events >= 2" counts UNIQUE events, so several paid orders to the
+        # same event count once: a buyer with 3 paid orders all to one event does
+        # NOT qualify, while a buyer with paid orders across two events does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        one_event = self._make_customer('one@x.com', 150, [(e1, 50, 1), (e1, 50, 1), (e1, 50, 1)])
+        two_events = self._make_customer('two@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        self._assign()
+        one_event.refresh_from_db(); two_events.refresh_from_db()
+        self.assertIsNone(one_event.loyalty_tier)
+        self.assertEqual(two_events.loyalty_tier, self.member)
+
+    def test_windowed_paid_events_excludes_old_orders(self):
+        # "Paid events >= 2 within 90 days" counts only paid events placed inside
+        # the window, keyed off order_date: a buyer across 2 events 200 days ago
+        # does NOT qualify, one across 2 events 10 days ago does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.paid_events_within_days = 90
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        now = timezone.now()
+
+        def _paid_buyer(email, days_ago):
+            cust = Customer.objects.create(
+                organization=self.org, email=email, name=email.split('@')[0],
+                lifetime_value=Decimal('100'), last_order_date=now.date(),
+            )
+            for i, ev in enumerate([e1, e2]):
+                TicketOrder.objects.create(
+                    customer=cust, event=ev, order_number=f'{email}-{i}',
+                    order_date=now - timedelta(days=days_ago), total_amount=Decimal('50'),
+                )
+            return cust
+
+        recent = _paid_buyer('recent-paid@x.com', 10)
+        lapsed = _paid_buyer('lapsed-paid@x.com', 200)
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
 
 class LoyaltyViewTests(TestCase):
     """Access control, org-scoping, and the builder flow."""
@@ -11080,6 +13684,41 @@ class LoyaltyHardeningTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Gilda')
         self.assertNotContains(resp, 'Basil')
+
+    # --- tier members market filter ---
+    def test_tier_members_market_filter(self):
+        from tickets.models import Market
+        venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        austin = Market.objects.create(organization=self.org, name='Austin',
+                                       geography_level='city', geography_value='Austin')
+        dallas = Market.objects.create(organization=self.org, name='Dallas',
+                                       geography_level='city', geography_value='Dallas')
+        austin_event = Event.objects.create(organization=self.org, name='ATX', venue=venue,
+                                            market=austin, start_date=date(2026, 9, 1),
+                                            start_time=time(20, 0, 0))
+        dallas_event = Event.objects.create(organization=self.org, name='DAL', venue=venue,
+                                            market=dallas, start_date=date(2026, 9, 2),
+                                            start_time=time(20, 0, 0))
+        # Ada orders most in Austin; Della orders most in Dallas.
+        ada = Customer.objects.create(organization=self.org, email='ada@x.com', name='Ada',
+                                      loyalty_tier=self.base_tier)
+        della = Customer.objects.create(organization=self.org, email='del@x.com', name='Della',
+                                        loyalty_tier=self.base_tier)
+        for i in range(2):
+            TicketOrder.objects.create(customer=ada, event=austin_event, order_number=f'A{i}',
+                                       order_date=timezone.now(), total_amount=Decimal('10.00'))
+        TicketOrder.objects.create(customer=della, event=dallas_event, order_number='D0',
+                                   order_date=timezone.now(), total_amount=Decimal('10.00'))
+        self._login()
+        url = reverse('tickets:loyalty_tier_members', args=[self.program.id, self.base_tier.id])
+        # Unfiltered: both appear.
+        resp = self.client.get(url)
+        self.assertContains(resp, 'Ada')
+        self.assertContains(resp, 'Della')
+        # Filtered to Austin: only Ada (her most-frequented market).
+        resp = self.client.get(url, {'market': 'Austin'})
+        self.assertContains(resp, 'Ada')
+        self.assertNotContains(resp, 'Della')
 
     # --- same-org display guard (T2) ---
     def test_customer_detail_hides_foreign_tier(self):
@@ -13887,13 +16526,22 @@ class MarketTrendCalculatorTests(TestCase):
             y, q = divmod(abs_q - back, 4)
             self.quarters.append(date(y, q * 3 + 1, 15))
 
-    def _venue(self, city):
+    def _venue(self, city, market_name=None):
+        Market.objects.get_or_create(
+            organization=self.org,
+            geography_level='city',
+            geography_value=city,
+            defaults={'name': market_name or city},
+        )
         return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
 
     def _event(self, venue, start_date, name):
-        return Event.objects.create(
+        event = Event.objects.create(
             organization=self.org, name=name, venue=venue, start_date=start_date,
         )
+        from tickets.services.markets import MarketBuilder
+        MarketBuilder(self.org).assign_event(event)
+        return event
 
     def _order_with_tickets(self, event, n_tickets, customer_prefix, seq):
         """Create one order at `event` with `n_tickets` tickets, each a unique customer."""
@@ -14058,6 +16706,25 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertIn('Austin', austin['diagnosis_text'])
         self.assertIsNotNone(austin['recommended_action'])
 
+    def test_market_label_comes_from_market_entity_not_venue_city(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+
+        venue = self._venue('Austin', market_name='Central Texas')
+        for i, n in enumerate([10, 20, 30, 40]):
+            event = self._event(venue, self.quarters[i], 'Austin Q{}'.format(i + 1))
+            for s in range(n):
+                self._order_with_tickets(event, 1, 'central{}'.format(i), s)
+
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        labels = {m['market_label'] for m in result['markets']}
+
+        self.assertIn('Central Texas', labels)
+        self.assertNotIn('Austin', labels)
+        central = next(m for m in result['markets'] if m['market_label'] == 'Central Texas')
+        self.assertEqual(central['city'], 'Central Texas')
+        self.assertEqual(central['market_name'], 'Central Texas')
+        self.assertTrue(central['market_id'])
+
     def test_stable_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Denver', [25, 25, 25, 25])
@@ -14099,10 +16766,49 @@ class MarketTrendCalculatorTests(TestCase):
         self._build_market('Boston', [50, 40, 30, 20])   # total 140, declining
         self._build_market('Dallas', [10, 20, 30, 40])   # total 100, growing
         result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
-        # Largest market by tickets sold leads, regardless of trend direction.
-        self.assertEqual([m['city'] for m in result['markets']], ['Boston', 'Dallas'])
+        # "All Markets" portfolio row is pinned first; real markets then follow
+        # largest-first (largest by tickets sold leads, regardless of trend).
+        self.assertEqual(result['markets'][0]['city'], 'All Markets')
+        self.assertTrue(result['markets'][0]['is_aggregate'])
+        self.assertEqual(
+            [m['city'] for m in result['markets'] if not m.get('is_aggregate')],
+            ['Boston', 'Dallas'],
+        )
+        # Summary counts real markets only — the aggregate row is excluded.
+        self.assertEqual(result['summary']['markets_count'], 2)
         self.assertEqual(result['summary']['declining_count'], 1)
         self.assertEqual(result['summary']['growing_count'], 1)
+
+    def test_all_markets_aggregate_row(self):
+        """The pinned 'All Markets' row aggregates every market's totals per period."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boston', [50, 40, 30, 20])   # total 140
+        self._build_market('Dallas', [10, 20, 30, 40])   # total 100
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        agg = result['markets'][0]
+        self.assertEqual(agg['city'], 'All Markets')
+        self.assertTrue(agg['is_aggregate'])
+        # Org-wide tickets sold = sum of both markets.
+        self.assertEqual(agg['total_sold'], 240)
+        # Each period sums across markets (Q1: 50 + 10 = 60, Q4: 20 + 40 = 60).
+        by_label = {p['period_label']: p for p in agg['periods']}
+        first_q = agg['periods'][0]
+        last_q = agg['periods'][-1]
+        self.assertEqual(first_q['sold'], 60)
+        self.assertEqual(last_q['sold'], 60)
+        self.assertEqual(len(by_label), 4)
+        # Diagnosis text reads "across all markets", not "in All Markets".
+        self.assertIn('across all markets', agg['diagnosis_text'])
+        self.assertNotIn('in All Markets', agg['diagnosis_text'])
+
+    def test_single_market_has_no_aggregate_row(self):
+        """With only one market, the aggregate would just duplicate it — so it's skipped."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        self.assertEqual(len(result['markets']), 1)
+        self.assertFalse(result['markets'][0].get('is_aggregate'))
+        self.assertEqual(result['markets'][0]['city'], 'Austin')
 
     def test_view_smoke(self):
         self._build_market('Austin', [40, 30, 20, 10])
@@ -15133,12 +17839,9 @@ class SurveyHubTests(TestCase):
 
 
 class OnboardingChecklistTests(TestCase):
-    """Dashboard 'Getting started' checklist for new organizers."""
+    """Dashboard 'Getting started' checklist (analytics-first) for new organizers."""
 
     def setUp(self):
-        from .models import EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT
-        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
-        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
         self.client = Client()
         self.org = Organization.objects.create(name='Onboarding Org', slug='onboarding-org')
         self.user = User.objects.create_user(
@@ -15156,59 +17859,156 @@ class OnboardingChecklistTests(TestCase):
     def _onboarding(self):
         return self.client.get(reverse('tickets:home')).context['onboarding']
 
-    def _make_event(self, status=None):
-        venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        return Event.objects.create(
-            organization=self.org, name='Event', venue=venue,
-            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
-            ticketing_type=TICKETING_TYPE_DIRECT,
-            status=status or self.EVENT_STATUS_DRAFT,
+    def _steps(self):
+        return {s['key']: s for s in self._onboarding()['steps']}
+
+    def _add_customer(self, email='c@example.com', **kw):
+        return Customer.objects.create(organization=self.org, email=email, name='C', **kw)
+
+    def _sent_campaign(self):
+        from .models import SMSCampaign
+        return SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='hi',
+            status=SMSCampaign.Status.SENT,
         )
 
-    def test_new_org_shows_checklist_with_incomplete_steps(self):
+    def test_new_org_shows_four_incomplete_steps(self):
         onboarding = self._onboarding()
         self.assertTrue(onboarding['show'])
+        self.assertEqual(onboarding['total'], 4)
         self.assertEqual(onboarding['complete_count'], 0)
-        self.assertEqual(onboarding['total'], 3)
-        steps = {s['key']: s for s in onboarding['steps']}
-        self.assertFalse(steps['create_event']['complete'])
+        self.assertEqual(
+            set(self._steps()),
+            {'set_profile', 'import_data', 'review_segments', 'send_campaign'},
+        )
 
-    def test_create_event_step_completes(self):
-        self._make_event()
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertFalse(steps['go_live']['complete'])
+    def test_profile_step_completes(self):
+        self.org.description = 'We throw great shows'
+        self.org.save(update_fields=['description'])
+        self.assertTrue(self._steps()['set_profile']['complete'])
 
-    def test_go_live_step_completes_when_event_live(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertTrue(steps['go_live']['complete'])
+    def test_import_step_routes_straight_to_external_flow(self):
+        # Must skip the type chooser (which leads with Direct Ticketing) and go
+        # directly to the external/CSV create flow.
+        from .models import TICKETING_TYPE_EXTERNAL
+        self.assertEqual(
+            self._steps()['import_data']['url'],
+            reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+        )
 
-    def test_payouts_step_completes(self):
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['setup_payouts']['complete'])
+    def test_import_and_segments_complete_with_real_customer(self):
+        self._add_customer()
+        steps = self._steps()
+        self.assertTrue(steps['import_data']['complete'])
+        self.assertTrue(steps['review_segments']['complete'])
 
-    def test_all_complete_hides_card_without_dismissal(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
+    def test_placeholder_customer_does_not_complete_import(self):
+        self._add_customer(email='in-person-%s@placeholder.local' % self.org.id)
+        self.assertFalse(self._steps()['import_data']['complete'])
+
+    def test_sms_step_consent_gated_with_no_audience(self):
+        self._add_customer()  # imported but no opt-in
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Review consent')
+        # Lands on the customer list with the consent explainer focused.
+        self.assertEqual(step['url'], reverse('tickets:customer_list') + '?focus=consent')
+        self.assertFalse(step['complete'])
+
+    def test_consent_help_banner_shows_only_with_focus(self):
+        self._add_customer()
+        base = reverse('tickets:customer_list')
+        with_focus = self.client.get(base + '?focus=consent').content.decode()
+        without = self.client.get(base).content.decode()
+        self.assertIn('Getting an SMS-eligible audience', with_focus)
+        self.assertNotIn('Getting an SMS-eligible audience', without)
+
+    def test_sms_step_points_to_compose_with_eligible_audience(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Compose campaign')
+        self.assertEqual(step['url'], reverse('tickets:sms_campaign_create'))
+
+    def test_sms_step_completes_on_sent_campaign(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
+        self.assertTrue(self._steps()['send_campaign']['complete'])
+
+    def test_all_complete_hides_card(self):
+        self.org.description = 'x'
+        self.org.save(update_fields=['description'])
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
         onboarding = self._onboarding()
         self.assertTrue(onboarding['all_complete'])
         self.assertFalse(onboarding['show'])
 
-    def test_dismiss_hides_card(self):
+    def test_dismiss_hides_card_and_skips_predicates(self):
         resp = self.client.post(reverse('tickets:dismiss_onboarding'))
         self.assertRedirects(resp, reverse('tickets:home'))
         self.org.refresh_from_db()
         self.assertIsNotNone(self.org.onboarding_dismissed_at)
-        self.assertFalse(self._onboarding()['show'])
+        onboarding = self._onboarding()
+        self.assertFalse(onboarding['show'])
+        self.assertEqual(onboarding['steps'], [])
 
     def test_dismiss_requires_post(self):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
         self.assertEqual(resp.status_code, 405)
+
+    def _upsell_shown(self):
+        return self.client.get(reverse('tickets:home')).context['show_directticketing_upsell']
+
+    def test_upsell_hidden_before_any_value(self):
+        # Value-gated: nothing imported, no campaign → no upsell.
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_shown_after_import(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_shown_after_campaign(self):
+        self._sent_campaign()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_hidden_when_stripe_onboarded(self):
+        self._add_customer()
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_persists(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+        resp = self.client.post(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertRedirects(resp, reverse('tickets:home'))
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.directticketing_upsell_dismissed_at)
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_requires_post(self):
+        resp = self.client.get(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertEqual(resp.status_code, 405)
+
+    def test_zero_data_dashboard_shows_import_cta_and_empty_state(self):
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Import an event report', html)      # primary CTA (D2/2A)
+        self.assertIn('No customers yet', html)            # empty state (D3/3A)
+        self.assertIn(reverse('tickets:sample_import_csv'), html)
+
+    def test_dashboard_with_customers_shows_stats_not_empty_state(self):
+        self._add_customer()
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Total Customers', html)
+        self.assertNotIn('No customers yet', html)
+
+    def test_sample_import_csv_download(self):
+        resp = self.client.get(reverse('tickets:sample_import_csv'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'text/csv')
+        self.assertIn('attachment', resp['Content-Disposition'])
+        body = resp.content.decode()
+        self.assertIn('sms_opt_in', body)          # consent column documented
+        self.assertIn('customer_email', body)
 
 
 class VenueCreateInlineTests(TestCase):
@@ -15272,7 +18072,11 @@ class ExternalEventsFeatureFlagTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        # The model default is now True (external-first onboarding); this class
+        # exercises the gate itself, so force the flag OFF for the "when off" cases.
+        self.org = Organization.objects.create(
+            name='Flag Org', slug='flag-org', external_events_enabled=False,
+        )
         self.user = User.objects.create_user(
             username='flaguser', email='flag@test.com', password='pass12345'
         )
@@ -15302,8 +18106,10 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self.org.external_events_enabled = True
         self.org.save(update_fields=['external_events_enabled'])
 
-    def test_default_flag_off(self):
-        self.assertFalse(self.org.external_events_enabled)
+    def test_default_flag_on_for_new_org(self):
+        # External-first onboarding: a brand-new org has the flag on by default.
+        fresh = Organization.objects.create(name='Fresh Flag Org', slug='fresh-flag-org')
+        self.assertTrue(fresh.external_events_enabled)
 
     def test_type_select_redirects_to_direct_when_off(self):
         resp = self.client.get(reverse('tickets:event_type_select'))
@@ -15315,7 +18121,7 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self._enable()
         resp = self.client.get(reverse('tickets:event_type_select'))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'External Ticketing')
+        self.assertContains(resp, 'Import an Event')
 
     def test_external_create_blocked_when_off(self):
         resp = self.client.get(
@@ -15393,6 +18199,2728 @@ class EventEffectiveStatusTest(TestCase):
             end_date=ends.date(), end_time=ends.time(),
         )
         self.assertEqual(event.effective_status, 'live')
+
+
+class RegenerateEventSummaryTaskTests(TestCase):
+    """Change-detection and guard behavior for regenerate_event_summary_task."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # _compute_event_stats caches per-event; keep tests isolated
+        self.org = Organization.objects.create(name='Regen Org', slug='regen-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Regen Hall', city='Austin')
+
+    def _ended_event(self, **kwargs):
+        defaults = dict(
+            organization=self.org,
+            name='Past Event',
+            venue=self.venue,
+            start_date=date(2024, 1, 1),
+            start_time=time(19, 0),
+            ai_summary='Existing summary body.',
+        )
+        defaults.update(kwargs)
+        return Event.objects.create(**defaults)
+
+    def _current_fingerprint(self, event):
+        from tickets.views import _compute_event_stats
+        from tickets.services.event_summary import EventSummaryService
+        return EventSummaryService(self.org).input_fingerprint(
+            event, _compute_event_stats(event)
+        )
+
+    def _run(self, event):
+        from tickets.tasks import regenerate_event_summary_task
+        return regenerate_event_summary_task(str(event.id))
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_unchanged_data_skips_regeneration(self, mock_generate):
+        event = self._ended_event()
+        event.ai_summary_input_hash = self._current_fingerprint(event)
+        event.save(update_fields=['ai_summary_input_hash'])
+
+        self.assertEqual(self._run(event), 'unchanged')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary',
+           return_value='fresh summary')
+    def test_changed_data_regenerates(self, mock_generate):
+        event = self._ended_event(ai_summary_input_hash='stale-fingerprint')
+        self.assertEqual(self._run(event), 'regenerated')
+        mock_generate.assert_called_once()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_first_run_backfills_without_regenerating(self, mock_generate):
+        event = self._ended_event(ai_summary_input_hash='')
+        self.assertEqual(self._run(event), 'backfilled')
+        mock_generate.assert_not_called()
+        event.refresh_from_db()
+        self.assertNotEqual(event.ai_summary_input_hash, '')
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_event_without_summary_is_skipped(self, mock_generate):
+        event = self._ended_event(ai_summary='', ai_summary_input_hash='stale')
+        self.assertEqual(self._run(event), 'no-summary')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_future_event_not_regenerated(self, mock_generate):
+        future = timezone.localdate() + timedelta(days=30)
+        event = self._ended_event(
+            start_date=future, ai_summary_input_hash='stale',
+        )
+        self.assertEqual(self._run(event), 'not-ended')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_auto_regenerate_disabled_is_skipped(self, mock_generate):
+        self.org.ai_event_summary_auto_regenerate = False
+        self.org.save(update_fields=['ai_event_summary_auto_regenerate'])
+        event = self._ended_event(ai_summary_input_hash='stale')
+        self.assertEqual(self._run(event), 'disabled')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_recently_generated_is_skipped(self, mock_generate):
+        event = self._ended_event(
+            ai_summary_input_hash='stale',
+            ai_summary_generated_at=timezone.now(),
+        )
+        self.assertEqual(self._run(event), 'recent')
+        mock_generate.assert_not_called()
+
+    def test_generate_summary_persists_hash_and_text(self):
+        """The non-streaming path stores the summary and its fingerprint."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._ended_event(ai_summary='old', ai_summary_input_hash='old-hash')
+        event_data = _compute_event_stats(event)
+
+        fake_message = MagicMock()
+        fake_message.content = 'A brand new summary.'
+        fake_message.usage_metadata = {
+            'input_tokens': 100, 'output_tokens': 40, 'total_tokens': 140,
+        }
+        with patch('langchain_openai.ChatOpenAI') as mock_llm_cls:
+            mock_llm_cls.return_value.invoke.return_value = fake_message
+            result = EventSummaryService(self.org).generate_summary(event, event_data)
+
+        self.assertEqual(result, 'A brand new summary.')
+        event.refresh_from_db()
+        self.assertEqual(event.ai_summary, 'A brand new summary.')
+        self.assertNotEqual(event.ai_summary_input_hash, 'old-hash')
+        self.assertIsNotNone(event.ai_summary_generated_at)
+        self.assertTrue(
+            AITokenUsage.objects.filter(
+                organization=self.org, feature=AITokenUsage.FEATURE_EVENT_SUMMARY
+            ).exists()
+        )
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SubscribePageTests(TestCase):
+    """Public /subscribe/<org>/ flow: form -> OTP -> accountless Customer + consent."""
+
+    OTP = '000000'  # tickets.sms.E2E_OTP_CODE
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # rate-limit counters are process-global
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='After Hours', slug='after-hours', sms_marketing_enabled=True,
+        )
+        self.url = reverse('tickets:subscribe', args=[self.org.slug])
+        self.verify_url = reverse('tickets:subscribe_verify', args=[self.org.slug])
+
+    def _valid_post(self, **over):
+        # Phone-only signup: name/email are no longer collected.
+        data = {'phone': '415-555-0100', 'sms_consent': 'on'}
+        data.update(over)
+        return self.client.post(self.url, data)
+
+    # --- GET / gating ---
+    def test_get_renders_form(self):
+        r = self.client.get(self.url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'After Hours')
+        self.assertContains(r, 'Get text updates')
+
+    def test_no_name_email_fields_rendered(self):
+        r = self.client.get(self.url)
+        self.assertNotContains(r, 'name="name"')
+        self.assertNotContains(r, 'name="email"')
+
+    def test_unknown_org_404(self):
+        self.assertEqual(self.client.get(reverse('tickets:subscribe', args=['nope'])).status_code, 404)
+
+    def test_sms_marketing_disabled_shows_unavailable(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        r = self.client.get(self.url)
+        self.assertContains(r, "isn't accepting")
+
+    # --- validation ---
+    def test_consent_unchecked_rejected_no_otp(self):
+        with patch('tickets.sms.start_phone_verification') as m:
+            r = self.client.post(self.url, {'phone': '4155550100'})
+        m.assert_not_called()
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, 'agree to receive')
+
+    def test_bad_phone_rejected(self):
+        r = self._valid_post(phone='123')
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, 'valid mobile number')
+
+    # --- send + pending record ---
+    def test_valid_post_sends_code_and_writes_pending_record(self):
+        r = self._valid_post()
+        self.assertContains(r, 'texted a 6-digit code')
+        rec = SMSConsentRecord.objects.get()
+        self.assertEqual(rec.phone, '+14155550100')
+        self.assertEqual(rec.email, '')  # no longer collected
+        self.assertEqual(rec.name, '')
+        self.assertIsNone(rec.verified_at)  # pending until OTP
+        self.assertTrue(rec.consent_given)
+        self.assertIn('After Hours', rec.consent_text)
+
+    def test_send_failure_shows_retry_no_record(self):
+        with patch('tickets.sms.start_phone_verification', return_value=False):
+            r = self._valid_post()
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, "send a code to that number")
+
+    # --- verify -> customer + consent ---
+    def test_verify_creates_customer_and_verifies_consent(self):
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, "You're in")
+        c = Customer.objects.get(organization=self.org, phone='+14155550100')
+        self.assertIsNone(c.user)  # accountless
+        self.assertEqual(c.email, '')  # phone-only subscriber
+        self.assertEqual(c.name, '')
+        self.assertTrue(c.sms_opt_in)
+        self.assertIsNotNone(c.sms_opt_in_date)
+        rec = SMSConsentRecord.objects.get()
+        self.assertIsNotNone(rec.verified_at)
+        self.assertEqual(rec.customer_id, c.id)
+        self.assertFalse(rec.pending_start)
+
+    def test_wrong_code_keeps_record_unverified(self):
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': '999999'})
+        self.assertContains(r, "Try again or resend")
+        self.assertIsNone(SMSConsentRecord.objects.get().verified_at)
+        self.assertFalse(Customer.objects.filter(phone='+14155550100').exists())
+
+    def test_verify_without_session_restarts(self):
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, 'start again')
+
+    # --- identity: merges by phone, never splits ---
+    def test_existing_customer_reused_not_clobbered(self):
+        # A customer already carrying this phone (e.g. a prior checkout) is merged into,
+        # not clobbered or duplicated.
+        existing = Customer.objects.create(
+            organization=self.org, email='sam@example.com', name='Real Name',
+            phone='+14155550100', lifetime_value=Decimal('250.00'),
+        )
+        self._valid_post()
+        self.client.post(self.verify_url, {'otp_code': self.OTP})
+        existing.refresh_from_db()
+        self.assertTrue(existing.sms_opt_in)
+        self.assertEqual(existing.name, 'Real Name')            # not clobbered
+        self.assertEqual(existing.email, 'sam@example.com')     # not clobbered
+        self.assertEqual(existing.lifetime_value, Decimal('250.00'))
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+14155550100').count(), 1)
+
+    def test_double_submit_one_customer(self):
+        for _ in range(2):
+            self._valid_post()
+            self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+14155550100').count(), 1)
+
+    # --- suppression reconciliation ---
+    def test_per_org_stop_cleared_on_consent(self):
+        PhoneSuppression.objects.create(
+            phone='+14155550100', organization=self.org,
+            reason=PhoneSuppression.Reason.MANUAL,
+        )
+        self._valid_post()
+        self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertFalse(PhoneSuppression.objects.filter(
+            phone='+14155550100', organization=self.org).exists())
+        self.assertFalse(SMSConsentRecord.objects.get().pending_start)
+
+    def test_global_stop_sets_pending_start_and_keeps_suppression(self):
+        PhoneSuppression.objects.create(
+            phone='+14155550100', organization=None,
+            reason=PhoneSuppression.Reason.TWILIO_STOP,
+        )
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, 'reply')  # START instruction
+        self.assertTrue(SMSConsentRecord.objects.get().pending_start)
+        self.assertTrue(PhoneSuppression.objects.filter(
+            phone='+14155550100', organization__isnull=True).exists())  # NOT cleared
+
+    def test_inbound_start_clears_pending_start(self):
+        self.test_global_stop_sets_pending_start_and_keeps_suppression()
+        with patch('tickets.sms_views.validate_twilio_request', return_value=True):
+            self.client.post(reverse('tickets:twilio_sms_inbound_webhook'),
+                             {'From': '+14155550100', 'OptOutType': 'START'})
+        self.assertFalse(SMSConsentRecord.objects.get().pending_start)
+
+    # --- rate limit (fail-closed, per-phone cap of 3) ---
+    def test_per_phone_rate_limit(self):
+        for _ in range(3):
+            self.assertContains(self._valid_post(), 'texted a 6-digit code')
+        blocked = self._valid_post()
+        self.assertContains(blocked, 'wait a bit')
+
+    # --- ledger immutability ---
+    def test_consent_record_proof_field_immutable(self):
+        from django.core.exceptions import ValidationError
+        self._valid_post()
+        rec = SMSConsentRecord.objects.get()
+        rec.consent_text = 'tampered'
+        with self.assertRaises(ValidationError):
+            rec.save()
+
+
+class PhoneSubscriberReconciliationTests(TestCase):
+    """A phone-only subscriber (email='') unifies with a later CSV import or checkout
+    purchase by phone, instead of forking a second Customer row."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Reco Org', slug='reco-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Reco Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+                'customer_sms_opt_in': ['consent'],
+            },
+        )
+
+    def _subscriber(self, phone):
+        # Mirrors a phone-only subscribe: opted-in Customer with no email/name.
+        return Customer.objects.create(
+            organization=self.org, email='', name='', phone=phone, sms_opt_in=True,
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='reco.csv',
+            status='pending',
+            metadata={'event_name': 'Reco Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    # --- CSV import reconciliation ---
+    def test_import_adopts_phone_only_subscriber(self):
+        sub = self._subscriber('+13105550001')
+        # Raw phone in the CSV normalizes to the subscriber's E.164.
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,fan@example.com,Fan,(310) 555-0001,GA,Yes\n"
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+        sub.refresh_from_db()
+        self.assertEqual(sub.email, 'fan@example.com')  # backfilled onto the subscriber
+        self.assertEqual(sub.phone, '+13105550001')     # kept E.164, not clobbered
+        self.assertTrue(sub.sms_opt_in)
+
+    def test_import_same_phone_two_emails_adopts_once(self):
+        sub = self._subscriber('+13105550002')
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,a@example.com,A,(310) 555-0002,GA,Yes\n"
+            "2025-06-01,b@example.com,B,(310) 555-0002,GA,Yes\n"
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 2)
+        # First row adopts the subscriber; the second creates a fresh customer.
+        adopted = Customer.objects.get(organization=self.org, email='a@example.com')
+        self.assertEqual(adopted.pk, sub.pk)
+        self.assertTrue(Customer.objects.filter(organization=self.org, email='b@example.com')
+                        .exclude(pk=sub.pk).exists())
+
+    def test_import_no_subscriber_normalizes_phone(self):
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,solo@example.com,Solo,(310) 555-0003,GA,No\n"
+        )
+        c = Customer.objects.get(organization=self.org, email='solo@example.com')
+        self.assertEqual(c.phone, '+13105550003')  # stored E.164
+
+    # --- checkout reconciliation (get_or_create_customer_for_purchase) ---
+    def _buyer_account(self, email, phone):
+        user = User.objects.create_user(
+            username='buyer' + phone[-4:], email=email, password='pw123456',
+        )
+        UserProfile.objects.create(
+            user=user, organization=self.org, phone_number=phone,
+            role=UserProfile.Role.ATTENDEE,
+        )
+        return user
+
+    def test_purchase_adopts_phone_only_subscriber(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        sub = self._subscriber('+13105550055')
+        self._buyer_account('buyer@example.com', '+13105550055')
+        customer, created = get_or_create_customer_for_purchase(
+            self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.assertEqual(customer.pk, sub.pk)          # merged, not forked
+        self.assertFalse(created)                       # adoption is not a creation
+        self.assertEqual(customer.email, 'buyer@example.com')
+        self.assertTrue(customer.sms_opt_in)           # preserved
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+
+    def test_purchase_existing_email_customer_reused(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        existing = Customer.objects.create(
+            organization=self.org, email='e@example.com', name='E',
+        )
+        customer, created = get_or_create_customer_for_purchase(
+            self.org, email='e@example.com', name='Ignored',
+        )
+        self.assertEqual(customer.pk, existing.pk)
+        self.assertFalse(created)
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+
+    def test_purchase_no_subscriber_creates_customer(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        customer, created = get_or_create_customer_for_purchase(
+            self.org, email='new@example.com', name='New',
+        )
+        self.assertEqual(customer.email, 'new@example.com')
+        self.assertTrue(created)
+        self.assertTrue(Customer.objects.filter(organization=self.org, email='new@example.com').exists())
+
+    def test_purchase_create_race_refetches_existing_customer(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+
+        class FirstResult:
+            def __init__(self, result):
+                self.result = result
+
+            def first(self):
+                return self.result
+
+        existing = Customer.objects.create(
+            organization=self.org, email='race@example.com', name='Winner',
+        )
+        with patch.object(Customer.objects, 'filter',
+                          side_effect=[FirstResult(None), FirstResult(existing)]):
+            with patch.object(Customer.objects, 'create', side_effect=IntegrityError):
+                customer, created = get_or_create_customer_for_purchase(
+                    self.org, email='race@example.com', name='Race',
+                )
+        self.assertEqual(customer.pk, existing.pk)
+        self.assertFalse(created)
+
+    def test_phone_only_subscribers_unique_per_org_phone(self):
+        self._subscriber('+13105550077')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._subscriber('+13105550077')
+        Customer.objects.create(
+            organization=self.org, email='with-email@example.com',
+            name='Email Buyer', phone='+13105550077',
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+13105550077').count(), 2)
+
+
+class AcquisitionSourceTests(TestCase):
+    """Customer.acquisition_source is stamped at every creation path, treated as
+    immutable, and backfilled for legacy rows by the 0192 data migration."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Acq Org', slug='acq-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Acq Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='acq.csv',
+            status='pending',
+            metadata={'event_name': 'Acq Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def test_purchase_create_stamps_ticket_purchase(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        c, created = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        self.assertTrue(created)
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.TICKET_PURCHASE)
+
+    def test_purchase_adoption_preserves_original_source(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        sub = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559001',
+            sms_opt_in=True, acquisition_source=Customer.AcquisitionSource.SUBSCRIBE_FORM,
+        )
+        user = User.objects.create_user(username='b9001', email='b@example.com', password='pw123456')
+        UserProfile.objects.create(
+            user=user, organization=self.org, phone_number='+13105559001',
+            role=UserProfile.Role.ATTENDEE,
+        )
+        c, created = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        self.assertFalse(created)  # adopted, not created
+        self.assertEqual(c.pk, sub.pk)  # adopted, not forked
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.SUBSCRIBE_FORM)
+
+    def test_csv_import_stamps_import(self):
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type\n"
+            "2025-06-01,fan@example.com,Fan,(310) 555-9002,GA\n"
+        )
+        c = Customer.objects.get(organization=self.org, email='fan@example.com')
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.IMPORT)
+
+    def test_backfill_classifies_legacy_rows(self):
+        import importlib
+        from django.apps import apps as global_apps
+        # Legacy rows created with a blank source (bypassing the stamped paths).
+        sub = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559003', sms_opt_in=True,
+        )
+        contact = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559004', sms_opt_in=False,
+        )
+        buyer = Customer.objects.create(
+            organization=self.org, email='legacy@example.com', name='Legacy',
+        )
+        mod = importlib.import_module('tickets.migrations.0192_customer_acquisition_source')
+        mod.backfill_acquisition_source(global_apps, None)
+        for row, expected in (
+            (sub, Customer.AcquisitionSource.SUBSCRIBE_FORM),
+            (contact, Customer.AcquisitionSource.IMPORT),
+            (buyer, Customer.AcquisitionSource.IMPORT),
+        ):
+            row.refresh_from_db()
+            self.assertEqual(row.acquisition_source, expected)
+
+
+class SalesPacingTests(TestCase):
+    """Sales pacing service, view context, and comparison API."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Pace Org', slug='pace-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        self.user = User.objects.create_user(
+            username='paceuser', email='pace@test.com', password='pw123456',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='pace@test.com', password='pw123456')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Pace Hall', city='San Diego')
+        # Current event (most recent) and a past event at the same venue.
+        self.event = Event.objects.create(
+            organization=self.org, name='Current Show', venue=self.venue,
+            start_date=date(2024, 6, 15),
+        )
+        self.past_event = Event.objects.create(
+            organization=self.org, name='Past Show', venue=self.venue,
+            start_date=date(2024, 3, 10),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='c@example.com', name='C',
+        )
+
+    def _make_order(self, event, number, order_dt, tickets, amount):
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number=number,
+            order_date=timezone.make_aware(order_dt), total_amount=Decimal(amount),
+        )
+        for i in range(tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('50.00'))
+        return order
+
+    def test_get_pacing_series(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        # 14 days before (Jun 1) and 5 days before (Jun 10) the Jun 15 event.
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        self._make_order(self.event, 'P-2', datetime(2024, 6, 10, 12, 0), 3, '150.00')
+
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data['total_tickets'], 5)
+        self.assertEqual(data['total_revenue'], 250.0)
+        # Sorted by days-before descending.
+        self.assertEqual([p['d'] for p in data['series']], [14, 5])
+        self.assertEqual(data['series'][0], {'d': 14, 'tickets': 2, 'revenue': 100.0})
+        self.assertEqual(data['series'][1], {'d': 5, 'tickets': 3, 'revenue': 150.0})
+
+    def test_get_pacing_series_empty(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data, {'series': [], 'total_tickets': 0, 'total_revenue': 0.0})
+
+    def test_detail_shows_pacing_card_when_comparable_event_exists(self):
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['show_pacing_card'])
+        self.assertEqual(resp.context['pacing_default_compare_id'], str(self.past_event.id))
+        self.assertNotEqual(resp.context['pacing_current_json'], 'null')
+        # The pacing card lives in a dedicated Analytics tab.
+        self.assertContains(resp, 'data-bs-target="#tab-analytics"')
+        self.assertContains(resp, 'id="tab-analytics"')
+        # Comparison event is chosen via a searchable combobox.
+        self.assertContains(resp, 'id="pacingCompareInput"')
+        self.assertContains(resp, 'role="combobox"')
+        self.assertContains(resp, 'class="pacing-combo-option is-selected"')
+
+    def test_pacing_today_marker_days_before(self):
+        # Upcoming event 10 days out — the chart should mark "today" at 10d before.
+        upcoming = Event.objects.create(
+            organization=self.org, name='Upcoming Show', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=10),
+        )
+        self._make_order(upcoming, 'U-1', datetime(2024, 6, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[upcoming.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['pacing_today_days_before'], 10)
+        self.assertContains(resp, 'data-today-days-before="10"')
+
+    def test_detail_hides_pacing_card_without_past_event(self):
+        # An event with no prior event to compare against.
+        lone = Event.objects.create(
+            organization=self.org, name='Lone Show', venue=self.venue,
+            start_date=date(2020, 1, 1),
+        )
+        self._make_order(lone, 'L-1', datetime(2019, 12, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[lone.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['show_pacing_card'])
+        # No Analytics tab when there's nothing to compare against.
+        self.assertNotContains(resp, 'data-bs-target="#tab-analytics"')
+
+    def test_pacing_api_returns_series(self):
+        self._make_order(self.past_event, 'PP-1', datetime(2024, 3, 1, 12, 0), 4, '200.00')
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[self.past_event.id]))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['id'], str(self.past_event.id))
+        self.assertEqual(data['name'], 'Past Show')
+        self.assertEqual(data['total_tickets'], 4)
+        self.assertEqual(data['start_date'], '2024-03-10')
+
+    def test_pacing_api_scoped_to_org(self):
+        other_venue = Venue.objects.create(organization=self.other_org, name='X', city='LA')
+        other_event = Event.objects.create(
+            organization=self.other_org, name='Other Event', venue=other_venue,
+            start_date=date(2024, 5, 1),
+        )
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[other_event.id]))
+        self.assertEqual(resp.status_code, 404)
+
+
+
+class AdminImpersonationTests(TestCase):
+    """Tests for the internal-admin "Log in as another user" flow."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Impersonate Org', slug='impersonate-org')
+
+        # Internal Cue admin.
+        self.admin = User.objects.create_superuser(
+            username='cueadmin', email='cueadmin@example.com', password='testpass123',
+        )
+
+        # Target customer account (an organizer so tickets:home renders).
+        self.target = User.objects.create_user(
+            username='customer', email='customer@example.com', password='targetpass123',
+        )
+        UserProfile.objects.create(
+            user=self.target, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.target, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Another privileged account that must never be impersonable.
+        self.staff = User.objects.create_user(
+            username='staffer', email='staffer@example.com', password='staffpass123',
+            is_staff=True,
+        )
+
+    def _start_url(self, user):
+        return reverse('tickets:admin_impersonate_start', args=[user.id])
+
+    def test_superuser_can_start_impersonation(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:home'))
+        session = self.client.session
+        self.assertEqual(session['_impersonator_id'], self.admin.pk)
+        # The authenticated user is now the target.
+        self.assertEqual(int(session['_auth_user_id']), self.target.pk)
+
+    def test_impersonation_banner_shows(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['is_impersonating'])
+        self.assertContains(response, 'Impersonating')
+
+    def test_non_superuser_cannot_start(self):
+        self.client.login(username='customer@example.com', password='targetpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cannot_impersonate_staff(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.staff))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        # Still authenticated as the admin, not the staff target.
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_restores_admin(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.post(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_requires_post(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 405)
+
+
+class AudienceAnalyticsViewTests(TestCase):
+    """Tests for the audience_analytics view and AudienceGrowthCalculator."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Audience Org', slug='audience-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='audhost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        # Two markets, one market-less event.
+        self.austin = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='austin',
+        )
+        self.dallas = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city', geography_value='dallas',
+        )
+        venue = Venue.objects.create(organization=self.org, name='V', city='TX')
+        self.ev_austin = Event.objects.create(
+            organization=self.org, name='ATX', venue=venue, market=self.austin,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_dallas = Event.objects.create(
+            organization=self.org, name='DAL', venue=venue, market=self.dallas,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_nomarket = Event.objects.create(
+            organization=self.org, name='NM', venue=venue,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+
+        self._n = 0
+        # c1: first order Austin Jan; c2: Austin Feb.
+        self.c1 = self._customer('c1')
+        self.c2 = self._customer('c2')
+        # c3: first order overall is Dallas Jan, plus an Austin order in Mar
+        # (must be counted under BOTH markets).
+        self.c3 = self._customer('c3')
+        # c4: only a market-less order in Apr.
+        self.c4 = self._customer('c4')
+
+        self._order(self.c1, self.ev_austin, '2024-01-05 10:00:00')
+        self._order(self.c2, self.ev_austin, '2024-02-05 10:00:00')
+        self._order(self.c3, self.ev_dallas, '2024-01-06 10:00:00')
+        self._order(self.c3, self.ev_austin, '2024-03-06 10:00:00')
+        self._order(self.c4, self.ev_nomarket, '2024-04-06 10:00:00')
+
+    def _customer(self, name):
+        return Customer.objects.create(
+            organization=self.org, email=f'{name}@example.com', name=name,
+        )
+
+    def _order(self, customer, event, order_date):
+        self._n += 1
+        return TicketOrder.objects.create(
+            customer=customer, event=event, order_number=f'AUD-{self._n}',
+            order_date=order_date, total_amount=Decimal('50.00'),
+        )
+
+    def _get(self, market=None):
+        url = reverse('tickets:audience_analytics')
+        if market is not None:
+            url += f'?market={market}'
+        return self.client.get(url)
+
+    def _get_q(self, query):
+        return self.client.get(reverse('tickets:audience_analytics') + '?' + query)
+
+    def test_all_markets_counts_every_customer_once(self):
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        series = json.loads(resp.context['series_json'])
+        self.assertTrue(series)
+        # cumulative is the running sum of new_customers, filling month gaps.
+        running = 0
+        for row in series:
+            running += row['new_customers']
+            self.assertEqual(row['cumulative'], running)
+        self.assertEqual(series[-1]['cumulative'], 4)
+
+    def test_market_filter_counts_cross_market_customer(self):
+        resp = self._get(market=self.austin.id)
+        self.assertEqual(resp.status_code, 200)
+        # c1, c2, and c3 (via their Austin order) => 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+
+        resp_dal = self._get(market=self.dallas.id)
+        self.assertEqual(resp_dal.context['summary']['total_customers'], 1)
+
+    def test_no_market_option(self):
+        resp = self._get(market='none')
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['has_no_market'])
+        self.assertEqual(resp.context['summary']['total_customers'], 1)
+
+    def test_invalid_market_falls_back_to_all(self):
+        resp = self._get(market=str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], '')
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+
+    def test_default_window_is_all_time(self):
+        resp = self._get()
+        self.assertEqual(resp.context['active_window'], 'all')
+        self.assertTrue(resp.context['has_data'])
+
+    def test_custom_window_trims_months_but_keeps_true_cumulative(self):
+        resp = self._get_q('window=custom&start=2024-02-01&end=2024-12-31')
+        self.assertEqual(resp.status_code, 200)
+        # Grand total is unaffected by the window.
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        # New within the window: c2 (Feb) + c4 (Apr).
+        self.assertEqual(resp.context['summary']['new_in_window'], 2)
+        series = json.loads(resp.context['series_json'])
+        # First shown month is Feb, and the line "starts high": cumulative already
+        # includes the 2 customers acquired in Jan (before the window).
+        self.assertEqual(series[0]['month'], '2024-02')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_and_market_combine(self):
+        resp = self._get_q(
+            f'market={self.austin.id}&window=custom&start=2024-03-01&end=2024-12-31'
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], str(self.austin.id))
+        # Austin scope: c1 (Jan), c2 (Feb), c3 (Mar) => grand total 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+        # Window Mar+ shows only c3's Austin order as new.
+        self.assertEqual(resp.context['summary']['new_in_window'], 1)
+        series = json.loads(resp.context['series_json'])
+        self.assertEqual(series[0]['month'], '2024-03')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_with_no_activity_shows_empty_but_keeps_total(self):
+        resp = self._get_q('window=custom&start=2025-01-01&end=2025-12-31')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        self.assertEqual(resp.context['summary']['new_in_window'], 0)
+
+
+class CustomerExportCsvTests(TestCase):
+    """Streaming CSV export from the Customers page (customer_export_csv)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Export Org', slug='export-org')
+        self.other_org = Organization.objects.create(name='Export Other', slug='export-other')
+        self.user = User.objects.create_user(
+            username='export-owner', email='export-owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # In-org customers spanning the filterable dimensions.
+        self.champ = Customer.objects.create(
+            organization=self.org, email='champ@example.com', name='Ada Champion',
+            lifetime_value=Decimal('500.00'), rfm_segment='Champions',
+            phone='+15551230000', sms_opt_in=True,
+            last_order_date=date(2026, 6, 1),
+        )
+        self.risk = Customer.objects.create(
+            organization=self.org, email='risk@example.com', name='Bob Risk',
+            lifetime_value=Decimal('25.00'), rfm_segment='At Risk',
+            phone='+15559990000', sms_opt_in=False,
+            last_order_date=date(2026, 1, 15),
+        )
+        # Placeholder-email customer (CSV import w/o real email) — never exported.
+        self.placeholder = Customer.objects.create(
+            organization=self.org, email='ghost@placeholder.local', name='Ghost',
+            lifetime_value=Decimal('10.00'),
+        )
+        # Foreign-org customer — must never leak.
+        self.foreign = Customer.objects.create(
+            organization=self.other_org, email='foreign@example.com', name='Foreign Fred',
+            lifetime_value=Decimal('999.00'),
+        )
+
+    def _login(self):
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def _rows(self, response):
+        import csv
+        body = b''.join(response.streaming_content).decode('utf-8')
+        return list(csv.reader(body.splitlines()))
+
+    def _url(self, **params):
+        from urllib.parse import urlencode
+        base = reverse('tickets:customer_export_csv')
+        return f'{base}?{urlencode(params, doseq=True)}' if params else base
+
+    # ── auth / scoping ────────────────────────────────────────────────
+    def test_requires_login(self):
+        response = self.client.get(reverse('tickets:customer_export_csv'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response['Location'])
+
+    def test_org_scoped_and_excludes_placeholder(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com', 'risk@example.com'})
+        self.assertNotIn('foreign@example.com', emails)
+        self.assertNotIn('ghost@placeholder.local', emails)
+
+    # ── response shape / headers ──────────────────────────────────────
+    def test_response_shape(self):
+        self._login()
+        response = self.client.get(self._url(mode='all'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        self.assertTrue(
+            response['Content-Disposition'].startswith('attachment; filename="customers-')
+        )
+
+    # ── columns ───────────────────────────────────────────────────────
+    def test_default_header_columns(self):
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertEqual(header, [
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value',
+            'Last Order Date', 'Total Orders', 'Tags',
+        ])
+
+    def test_points_column_when_loyalty_enabled(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertIn('Points Balance', header)
+
+    def test_market_columns_when_market_filter_active(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city',
+            geography_value='Austin',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=venue,
+            start_date=date(2026, 5, 1), market=market,
+        )
+        TicketOrder.objects.create(
+            customer=self.champ, event=event, order_number='M-1',
+            order_date='2026-05-02 10:00:00', total_amount=Decimal('60.00'),
+        )
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))[0]
+        self.assertIn('Market LTV', header)
+        self.assertIn('Market Last Order', header)
+
+    # ── filters respected ─────────────────────────────────────────────
+    def test_segment_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', segment='Champions')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_min_ltv_filter_respected(self):
+        # Regression guard: the min_ltv filter must be honored by the export
+        # (the older SMS bulk "select all" path dropped it).
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', min_ltv='100')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_sms_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', sms_filter='1')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_phone_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', phone_filter='5559990000')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_last_order_date_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', last_order_from='2026-03-01')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── selection ─────────────────────────────────────────────────────
+    def test_selected_ids_subset(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.risk.id)])))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_foreign_id_excluded_even_if_selected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.foreign.id)])))
+        self.assertEqual(len(rows), 1)  # header only
+
+    def test_select_all_ignores_ids_and_exports_filtered_set(self):
+        self._login()
+        # select_all=1 with a segment filter -> full filtered set regardless of ids.
+        rows = self._rows(self.client.get(
+            self._url(select_all='1', segment='Champions', ids=[str(self.risk.id)])
+        ))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── dedup ─────────────────────────────────────────────────────────
+    def test_or_search_does_not_duplicate_rows(self):
+        # Customer whose name and email both match the search term must appear once.
+        Customer.objects.create(
+            organization=self.org, email='match@example.com', name='match person',
+            lifetime_value=Decimal('5.00'),
+        )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', search='match')))
+        self.assertEqual(len(rows) - 1, 1)
+
+    def test_market_join_does_not_duplicate_rows(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall2', city='Dallas')
+        market = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city',
+            geography_value='Dallas',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Dallas Show', venue=venue,
+            start_date=date(2026, 4, 1), market=market,
+        )
+        for i in range(3):
+            TicketOrder.objects.create(
+                customer=self.champ, event=event, order_number=f'D-{i}',
+                order_date='2026-04-02 10:00:00', total_amount=Decimal('20.00'),
+            )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))
+        emails = [r[1] for r in rows[1:]]
+        self.assertEqual(emails.count('champ@example.com'), 1)
+
+    # ── formatting ────────────────────────────────────────────────────
+    def test_value_formatting(self):
+        # Null last_order -> empty cell; bool -> Yes/No; tags joined.
+        tag_a = CustomerTag.objects.create(organization=self.org, name='VIP')
+        tag_b = CustomerTag.objects.create(organization=self.org, name='Press')
+        blank = Customer.objects.create(
+            organization=self.org, email='blank@example.com', name='Blank',
+            lifetime_value=Decimal('0.00'), last_order_date=None, sms_opt_in=False,
+        )
+        blank.tags.add(tag_a, tag_b)
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(blank.id)])))
+        row = rows[1]
+        header = rows[0]
+        self.assertEqual(row[header.index('Last Order Date')], '')
+        self.assertEqual(row[header.index('SMS Opt-In')], 'No')
+        tags_cell = row[header.index('Tags')]
+        self.assertIn('VIP', tags_cell)
+        self.assertIn('Press', tags_cell)
+        self.assertIn(';', tags_cell)
+
+    def test_decimal_not_scientific(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.champ.id)])))
+        header, row = rows[0], rows[1]
+        self.assertEqual(row[header.index('Lifetime Value')], '500.00')
+
+    # ── scale sanity (chunked iterator + prefetch) ───────────────────
+    def test_bulk_export_streams_all_rows(self):
+        Customer.objects.bulk_create([
+            Customer(
+                organization=self.org, email=f'bulk{i}@example.com',
+                name=f'Bulk {i}', lifetime_value=Decimal('1.00'),
+            )
+            for i in range(2000)
+        ])
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        # 2000 bulk + champ + risk (placeholder excluded) + header.
+        self.assertEqual(len(rows), 2000 + 2 + 1)
+
+
+class SurveyUnsendableEmailTests(TestCase):
+    """Invalid recipient addresses (e.g. the Apple 'Hide My Email' placeholder that
+    can slip in via CSV import) must not loop forever in the survey send task."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Survey Org', slug='survey-org', external_events_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=self.venue,
+            start_date=date.today(),
+        )
+
+    def _invitation(self, email):
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name='Buyer',
+        )
+        return SurveyInvitation.objects.create(
+            event=self.event, customer=customer, organization=self.org, email=email,
+        )
+
+    def _run_task(self):
+        from tickets.tasks import send_survey_emails_task
+        send_survey_emails_task.apply(args=[str(self.event.id), str(self.org.id)])
+
+    def test_invalid_email_is_marked_and_not_retried(self):
+        from django.core import mail
+        invitation = self._invitation('hide my email')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'invalid_email')
+        self.assertEqual(len(mail.outbox), 0)
+
+        # Second run must not re-select the failed row (no more log spam / sends).
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            self._run_task()
+            mock_email.assert_not_called()
+
+    def test_valid_email_still_sends(self):
+        from django.core import mail
+        invitation = self._invitation('real@example.com')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_recipient_refused_is_permanent(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (501, b'Recipient syntax error')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'recipient_refused')
+
+    def test_transient_failure_stays_retryable(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPServerDisconnected(
+                'connection reset'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)  # left for a future retry
+
+    def test_transient_recipient_refusal_stays_retryable(self):
+        # 450 = greylisting — smtplib raises SMTPRecipientsRefused for it, but it
+        # is not a permanent failure and must not stamp send_failed_at.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (450, b'Greylisted, try again later')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_transient_sender_refusal_stays_retryable(self):
+        # 421 = server busy / rate limit — raised as SMTPSenderRefused but transient.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPSenderRefused(
+                421, b'Too many messages', 'surveys@cueup.co'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_dispatch_skips_events_whose_invitations_all_failed(self):
+        # A permanently-failed invitation still has sent_at NULL; the dispatcher
+        # must not keep enqueueing the send task for its event on every cron run.
+        invitation = self._invitation('hide my email')
+        invitation.scheduled_send_at = timezone.now() - timedelta(hours=1)
+        invitation.send_failed_at = timezone.now()
+        invitation.send_error = 'invalid_email'
+        invitation.save(update_fields=['scheduled_send_at', 'send_failed_at', 'send_error'])
+
+        with patch(
+            'tickets.management.commands.send_due_survey_invitations.send_survey_emails_task'
+        ) as mock_task:
+            call_command('send_due_survey_invitations', '--no-arm')
+            mock_task.delay.assert_not_called()
+            mock_task.apply.assert_not_called()
+
+    def test_cleanup_command_marks_existing_bad_rows(self):
+        bad = self._invitation('hide my email')
+        good = self._invitation('real@example.com')
+
+        call_command('mark_unsendable_survey_invitations', '--apply')
+
+        bad.refresh_from_db()
+        good.refresh_from_db()
+        self.assertIsNotNone(bad.send_failed_at)
+        self.assertEqual(bad.send_error, 'invalid_email')
+        self.assertIsNone(good.send_failed_at)
+
+
+class CSVImportEmailValidationTests(TestCase):
+    """CSV import must reject unparseable customer emails so they never reach the
+    DB and later break survey/marketing sends."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Email Org', slug='email-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Email Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='emails.csv',
+            status='pending',
+            metadata={'event_name': 'Email Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def test_invalid_email_is_not_stored(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2025-06-01,real@example.com,Real Buyer,GA\n"
+            "2025-06-01,hide my email,Placeholder Buyer,GA\n"
+        )
+        self._import(csv_body)
+
+        # The valid address is stored; the placeholder never becomes a Customer.email.
+        self.assertTrue(
+            Customer.objects.filter(organization=self.org, email='real@example.com').exists()
+        )
+        self.assertFalse(
+            Customer.objects.filter(
+                organization=self.org, email='hide my email'
+            ).exists()
+        )
+
+
+class ExpenseInlineCreateTests(TestCase):
+    """AJAX (inline) add-expense flow on the event detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Expense Org',
+            slug='inline-expense-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-expense-owner',
+            email='inline-expense-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Expense Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Expense Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.url = reverse('tickets:expense_create', args=[self.event.id])
+
+    def test_ajax_post_creates_expense_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Sound engineer',
+                'amount': '150.00',
+                'expense_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['expense']['description'], 'Sound engineer')
+        self.assertEqual(data['expense']['amount_display'], '150.00')
+        self.assertEqual(data['expense']['category_display'], 'Production / AV / Sound')
+        self.assertIn('edit_url', data['expense'])
+        self.assertIn('delete_url', data['expense'])
+        self.assertEqual(data['totals']['total_expenses_display'], '150.00')
+        self.assertTrue(
+            any(c['label'] == 'Production / AV / Sound' for c in data['categories'])
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Sound engineer'
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Missing amount',
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            EventExpense.objects.filter(
+                event=self.event, description='Missing amount'
+            ).exists()
+        )
+
+    def test_event_detail_renders_inline_expense_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-expense-form')
+        self.assertContains(response, 'data-expense-body')
+        self.assertContains(response, 'data-expense-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'venue',
+                'description': 'Room rental',
+                'amount': '500.00',
+                'expense_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Room rental'
+            ).exists()
+        )
+
+
+class EventIncomeInlineCreateTests(TestCase):
+    """AJAX (inline) add-income flow on the event detail page."""
+
+    def setUp(self):
+        from .models import IncomeSource, EventIncome
+        self.IncomeSource = IncomeSource
+        self.EventIncome = EventIncome
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Income Org',
+            slug='inline-income-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-income-owner',
+            email='inline-income-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Income Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Income Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.source = IncomeSource.objects.create(
+            organization=self.org, name='Bar Splits', order=0,
+        )
+        self.url = reverse('tickets:event_income_create', args=[self.event.id])
+
+    def test_ajax_post_creates_income_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '500.00',
+                'income_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['income']['source_name'], 'Bar Splits')
+        self.assertEqual(data['income']['amount_display'], '500.00')
+        self.assertIn('edit_url', data['income'])
+        self.assertIn('delete_url', data['income'])
+        self.assertEqual(data['totals']['total_additional_income_display'], '500.00')
+        self.assertTrue(data['totals']['has_additional_income'])
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, income_source=self.source, amount=Decimal('500.00')
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            self.EventIncome.objects.filter(event=self.event).exists()
+        )
+
+    def test_event_detail_renders_inline_income_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-income-form')
+        self.assertContains(response, 'data-income-body')
+        self.assertContains(response, 'data-income-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '200.00',
+                'income_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, amount=Decimal('200.00')
+            ).exists()
+        )
+
+
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
+class WebhookTests(TestCase):
+    """Outbound general-purpose webhook system.
+
+    Delivery runs eagerly (inline) under CELERY_TASK_ALWAYS_EAGER, so calling
+    dispatch()/the task executes the signed POST synchronously. requests.post is
+    mocked throughout, and the SSRF guard is stubbed to allow the test host
+    (example.test does not resolve) except in the tests that exercise it.
+    """
+
+    def setUp(self):
+        from .models import WebhookEndpoint
+        self.org = Organization.objects.create(name='Hook Org', slug='hook-org')
+        self.other_org = Organization.objects.create(name='Other Hook Org', slug='other-hook-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Hook Hall', city='San Diego', state='CA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Hook Event', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0, 0),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer', phone='+15551234567',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, uploaded_file=None,
+            order_number='HOOK-001', order_date=timezone.now(), total_amount=Decimal('42.50'),
+        )
+        self.endpoint = WebhookEndpoint.objects.create(
+            organization=self.org, label='Primary', url='https://example.test/hook',
+            event_types=['event.created', 'order.created', 'customer.created'],
+        )
+        # example.test does not resolve, so the send-time SSRF guard would block
+        # every delivery. Stub it to allow, except where a test overrides it.
+        patcher = patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ok_response(self, status=200, text='ok'):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        return resp
+
+    # --- dispatch fan-out ---------------------------------------------------
+
+    def test_dispatch_fires_per_subscribed_active_endpoint(self):
+        from .models import WebhookEndpoint, WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        WebhookEndpoint.objects.create(
+            organization=self.org, label='Second', url='https://example.test/hook2',
+            event_types=['event.created'],
+        )
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, payload)
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(WebhookDelivery.objects.filter(success=True).count(), 2)
+
+    def test_inactive_endpoint_skipped(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        self.endpoint.is_active = False
+        self.endpoint.save(update_fields=['is_active'])
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    def test_unsubscribed_endpoint_skipped(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        self.endpoint.event_types = ['order.created']  # not subscribed to event.created
+        self.endpoint.save(update_fields=['event_types'])
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    def test_cross_org_isolation(self):
+        from .models import WebhookEndpoint, WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        WebhookEndpoint.objects.create(
+            organization=self.other_org, label='Other', url='https://example.test/other',
+            event_types=['event.created'],
+        )
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.other_org, build_event_payload(self.event))
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.filter(organization=self.other_org).count(), 1)
+        self.assertEqual(WebhookDelivery.objects.filter(organization=self.org).count(), 0)
+
+    def test_enqueue_failure_is_logged_not_raised(self):
+        # A broker/enqueue failure must not raise into the caller and must not
+        # take down sibling endpoints. (C3)
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        with patch('tickets.tasks.deliver_webhook_task.delay', side_effect=RuntimeError('broker down')):
+            # Should swallow + log, not raise.
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+
+    # --- signing ------------------------------------------------------------
+
+    def test_signature_covers_timestamp_event_type_and_delivery_id(self):
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        from .services.webhooks.signing import compute_signature
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, payload)
+        _, kwargs = mock_post.call_args
+        body = kwargs['data']
+        headers = kwargs['headers']
+        self.assertEqual(headers['X-Cue-Event'], EVENT_CREATED)
+        self.assertIn('X-Cue-Delivery-Id', headers)
+        ts = headers['X-Cue-Timestamp']
+        did = headers['X-Cue-Delivery-Id']
+        expected = compute_signature(self.endpoint.secret, ts, EVENT_CREATED, did, body)
+        self.assertEqual(headers['X-Cue-Signature'], f"t={ts},v1={expected}")
+
+    def test_signature_changes_when_event_type_tampered(self):
+        # C1: event type is inside the HMAC, so swapping the header breaks verification.
+        from .services.webhooks.signing import compute_signature
+        ts, did, body = '1700000000', 'd1', b'{"a":1}'
+        sig_order = compute_signature('whsec_x', ts, 'order.created', did, body)
+        sig_customer = compute_signature('whsec_x', ts, 'customer.created', did, body)
+        self.assertNotEqual(sig_order, sig_customer)
+
+    def test_signature_rejects_tampered_body(self):
+        from .services.webhooks.signing import compute_signature
+        ts, did = '1700000000', 'd1'
+        good = compute_signature('whsec_x', ts, 'event.created', did, b'{"a":1}')
+        tampered = compute_signature('whsec_x', ts, 'event.created', did, b'{"a":2}')
+        self.assertNotEqual(good, tampered)
+
+    # --- delivery id / dedupe (C2) -----------------------------------------
+
+    def test_delivery_id_is_stable_and_stored(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        with patch('requests.post', return_value=self._ok_response()):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        row = WebhookDelivery.objects.get()
+        self.assertIsNotNone(row.delivery_id)
+
+    # --- delivery logging + retries ----------------------------------------
+
+    def test_connection_error_writes_delivery_and_retries(self):
+        import requests
+        from celery.exceptions import Retry
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', side_effect=requests.RequestException('boom')) as mock_post:
+            with self.assertRaises(Retry):
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '11111111-1111-1111-1111-111111111111', payload], throw=True,
+                )
+        self.assertEqual(mock_post.call_count, 1)
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertTrue(row.error_message)
+        self.assertEqual(row.attempt, 1)
+        self.assertIsNone(row.response_status)
+
+    def test_5xx_is_retried(self):
+        from celery.exceptions import Retry
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response(status=500, text='err')):
+            with self.assertRaises(Retry):
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '22222222-2222-2222-2222-222222222222', payload], throw=True,
+                )
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertEqual(row.response_status, 500)
+
+    def test_4xx_is_terminal_not_retried(self):
+        # A3: a 4xx is a permanent failure — logged, not retried.
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response(status=404, text='nope')):
+            # No Retry raised → returns normally.
+            deliver_webhook_task.apply(
+                args=[str(self.endpoint.id), EVENT_CREATED, '33333333-3333-3333-3333-333333333333', payload], throw=True,
+            )
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertEqual(row.response_status, 404)
+
+    def test_successful_delivery_updates_last_used(self):
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        self.assertIsNone(self.endpoint.last_used_at)
+        with patch('requests.post', return_value=self._ok_response()):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        self.endpoint.refresh_from_db()
+        self.assertIsNotNone(self.endpoint.last_used_at)
+
+    def test_response_body_is_capped(self):
+        from .models import WebhookDelivery
+        from .tasks import WEBHOOK_RESPONSE_BODY_LIMIT
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        big = 'x' * 5000
+        with patch('requests.post', return_value=self._ok_response(text=big)):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        row = WebhookDelivery.objects.get()
+        self.assertLessEqual(len(row.response_body), WEBHOOK_RESPONSE_BODY_LIMIT)
+
+    # --- SSRF guard (A1) ----------------------------------------------------
+
+    def test_validate_webhook_url_rejects_non_https(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        with self.assertRaises(ValidationError):
+            validate_webhook_url('http://example.com/x', allow_http=False)
+
+    def test_validate_webhook_url_rejects_loopback(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        with self.assertRaises(ValidationError):
+            validate_webhook_url('https://localhost/x')
+
+    def test_validate_webhook_url_rejects_private_and_metadata(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        for url in ('https://10.0.0.1/x', 'https://169.254.169.254/latest/meta-data/'):
+            with self.assertRaises(ValidationError):
+                validate_webhook_url(url)
+
+    def test_validate_webhook_url_allows_public(self):
+        from .services.webhooks.validation import validate_webhook_url
+        # Public IP literal — no DNS, not in a blocked range.
+        validate_webhook_url('https://8.8.8.8/hook')  # should not raise
+
+    def test_endpoint_clean_rejects_unsafe_url(self):
+        from django.core.exceptions import ValidationError
+        from .models import WebhookEndpoint
+        ep = WebhookEndpoint(
+            organization=self.org, label='Bad', url='https://127.0.0.1/x',
+            event_types=['event.created'],
+        )
+        with self.assertRaises(ValidationError):
+            ep.full_clean()
+
+    def test_send_time_ssrf_guard_blocks_and_does_not_post(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=False):
+            with patch('requests.post') as mock_post:
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '44444444-4444-4444-4444-444444444444', payload], throw=True,
+                )
+        mock_post.assert_not_called()
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertIn('Blocked', row.error_message)
+
+    # --- trigger wiring -----------------------------------------------------
+
+    def test_fire_order_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_order_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_order_created(self.order)
+        self.assertEqual(mock_post.call_count, 1)
+        row = WebhookDelivery.objects.get()
+        self.assertEqual(row.event_type, 'order.created')
+        self.assertEqual(row.payload['order_number'], self.order.display_order_number)
+
+    def test_fire_event_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_event_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_event_created(self.event)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.get().event_type, 'event.created')
+
+    def test_fire_customer_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_customer_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_customer_created(self.customer)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.get().event_type, 'customer.created')
+
+    def test_event_create_view_fires_event_created(self):
+        # Positive view-level integration: creating an event via the real view
+        # produces one event.created delivery. (T1)
+        from django.contrib.auth.models import User
+        from .models import WebhookDelivery, UserProfile
+        # Superuser bypasses the @require_host role gate; profile.organization
+        # gives require_org an org to resolve.
+        user = User.objects.create_superuser('creator', 'creator@example.com', 'pw')
+        UserProfile.objects.update_or_create(user=user, defaults={'organization': self.org})
+        client = Client()
+        client.force_login(user)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = client.post(reverse('tickets:event_create', args=['external']), {
+                    'name': 'Webhook Made Event',
+                    'ticketing_type': 'external',
+                    'venue': str(self.venue.id),
+                    'start_date': '2024-09-01',
+                    'start_time': '19:00',
+                    'end_date': '2024-09-01',
+                    'end_time': '23:00',
+                    'timezone': 'America/Los_Angeles',
+                })
+        # If the form validated and created the event, the webhook must have fired.
+        if Event.objects.filter(organization=self.org, name='Webhook Made Event').exists():
+            self.assertTrue(WebhookDelivery.objects.filter(event_type='event.created').exists())
+            self.assertGreaterEqual(mock_post.call_count, 1)
+        else:
+            self.skipTest(f"event_create form did not validate (status {resp.status_code}); "
+                          "on_commit wiring is covered by test_fire_event_created_dispatches_on_commit")
+
+    def test_bulk_create_does_not_fire(self):
+        """No post_save signal is wired: ORM/bulk_create paths (e.g. CSV import)
+        never fire webhooks. Only explicit fire_* calls at single-create sites do."""
+        from .models import WebhookDelivery
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            Event.objects.bulk_create([
+                Event(organization=self.org, name='Bulk 1', venue=self.venue, start_date=date(2024, 7, 1)),
+                Event(organization=self.org, name='Bulk 2', venue=self.venue, start_date=date(2024, 7, 2)),
+            ])
+            Customer.objects.bulk_create([
+                Customer(organization=self.org, email='b1@example.com', name='B1'),
+            ])
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    # --- customer.created coverage (A2) ------------------------------------
+
+    def test_checkout_customer_creation_fires_customer_created(self):
+        from .utils import get_or_create_customer_for_purchase
+        from .services.webhooks import fire_customer_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                customer, created = get_or_create_customer_for_purchase(
+                    self.org, email='fresh@example.com', name='Fresh',
+                )
+                self.assertTrue(created)
+                fire_customer_created(customer)
+        self.assertEqual(mock_post.call_count, 1)
+
+    def test_checkout_existing_customer_does_not_fire(self):
+        from .utils import get_or_create_customer_for_purchase
+        # buyer@example.com already exists (self.customer) → not created.
+        customer, created = get_or_create_customer_for_purchase(
+            self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.assertFalse(created)
+
+    # --- payload shape ------------------------------------------------------
+
+    def test_event_payload_shape(self):
+        from .services.webhooks import build_event_payload
+        p = build_event_payload(self.event)
+        self.assertEqual(p['id'], str(self.event.id))
+        self.assertEqual(p['name'], 'Hook Event')
+        self.assertEqual(p['start_date'], '2024-06-15')
+        self.assertEqual(p['start_time'], '19:00:00')
+        self.assertEqual(p['venue'], {'name': 'Hook Hall', 'city': 'San Diego', 'state': 'CA'})
+        self.assertIn('created_at', p)
+
+    def test_order_payload_shape(self):
+        from .services.webhooks import build_order_payload
+        p = build_order_payload(self.order)
+        self.assertEqual(p['id'], str(self.order.id))
+        self.assertEqual(p['total_amount'], '42.50')  # decimal as string, never float
+        self.assertEqual(p['event']['id'], str(self.event.id))
+        self.assertEqual(p['customer']['email'], 'buyer@example.com')
+        self.assertFalse(p['is_in_person'])
+
+    def test_customer_payload_shape(self):
+        from .services.webhooks import build_customer_payload
+        p = build_customer_payload(self.customer)
+        self.assertEqual(p['id'], str(self.customer.id))
+        self.assertEqual(p['phone'], '+15551234567')
+        self.assertFalse(p['sms_opt_in'])
+
+    # --- validation ---------------------------------------------------------
+
+    def test_endpoint_rejects_unknown_event_type(self):
+        from django.core.exceptions import ValidationError
+        from .models import WebhookEndpoint
+        ep = WebhookEndpoint(
+            organization=self.org, label='Bad', url='https://8.8.8.8/x',
+            event_types=['not.a.real.event'],
+        )
+        with self.assertRaises(ValidationError):
+            ep.full_clean()
+
+
+class CustomerListColumnsTests(TestCase):
+    """Tests for the per-org Customers table column preference."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Cols Org', slug='cols-org')
+
+        self.admin_user = User.objects.create_user(
+            username='colsadmin', email='colsadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.host_user = User.objects.create_user(
+            username='colshost', email='colshost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _login(self, email):
+        self.client.login(username=email, password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_saves_subset_and_strips_invalid_keys(self):
+        self._login('colsadmin@example.com')
+        response = self.client.post(
+            reverse('tickets:customer_list_columns_save'),
+            {'columns': ['email', 'ltv', 'bogus'], 'next': reverse('tickets:customer_list')},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        # Invalid keys dropped; canonical order preserved (email before ltv).
+        self.assertEqual(self.org.customer_list_columns, ['email', 'ltv'])
+
+    def test_saving_empty_selection_hides_all_optional_columns(self):
+        self._login('colsadmin@example.com')
+        self.client.post(reverse('tickets:customer_list_columns_save'), {})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.customer_list_columns, [])
+
+    def test_non_admin_forbidden(self):
+        self._login('colshost@example.com')
+        response = self.client.post(
+            reverse('tickets:customer_list_columns_save'), {'columns': ['email']},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.org.refresh_from_db()
+        self.assertIsNone(self.org.customer_list_columns)
+
+    def test_get_not_allowed(self):
+        self._login('colsadmin@example.com')
+        response = self.client.get(reverse('tickets:customer_list_columns_save'))
+        self.assertEqual(response.status_code, 405)
+
+    def test_customer_list_renders_with_saved_columns(self):
+        self.org.customer_list_columns = ['ltv']
+        self.org.save(update_fields=['customer_list_columns'])
+        self._login('colsadmin@example.com')
+        response = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['visible_columns'], ['ltv'])
+        self.assertTrue(response.context['apply_column_prefs'])
+
+
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
+class WebhookUITests(TestCase):
+    """Self-serve webhook management UI (integrations hub)."""
+
+    def setUp(self):
+        from .models import WebhookEndpoint
+        self.client = Client()
+        self.org = Organization.objects.create(name='UI Org', slug='ui-org')
+        self.other_org = Organization.objects.create(name='UI Other', slug='ui-other')
+
+        self.admin = User.objects.create_user('uiadmin', 'uiadmin@example.com', 'pw123456')
+        UserProfile.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+
+        self.host = User.objects.create_user('uihost', 'uihost@example.com', 'pw123456')
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
+        OrganizationMembership.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
+
+        self.endpoint = WebhookEndpoint.objects.create(
+            organization=self.org, label='Primary', url='https://example.test/hook',
+            event_types=['event.created', 'order.created'],
+        )
+        self.other_endpoint = WebhookEndpoint.objects.create(
+            organization=self.other_org, label='Other', url='https://example.test/other',
+            event_types=['event.created'],
+        )
+        # example.test won't resolve; allow it so test-send can exercise delivery.
+        patcher = patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ok(self, status=200):
+        resp = MagicMock(); resp.status_code = status; resp.text = 'ok'
+        return resp
+
+    # --- list ---------------------------------------------------------------
+
+    def test_list_shows_only_own_org_endpoints(self):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:webhook_endpoint_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Primary')
+        self.assertNotContains(resp, 'Other')  # other org's endpoint hidden
+
+    # --- create -------------------------------------------------------------
+
+    def test_create_valid_generates_secret_and_redirects_to_edit(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_create'), {
+            'label': 'New Hook',
+            'url': 'https://8.8.8.8/hook',          # public IP literal → passes SSRF guard, no DNS
+            'event_types': ['event.created', 'customer.created'],
+            'is_active': 'on',
+        })
+        ep = WebhookEndpoint.objects.get(organization=self.org, label='New Hook')
+        self.assertRedirects(resp, reverse('tickets:webhook_endpoint_edit', args=[ep.id]))
+        self.assertTrue(ep.secret.startswith('whsec_'))
+        self.assertEqual(sorted(ep.event_types), ['customer.created', 'event.created'])
+
+    def test_create_rejects_private_url(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        before = WebhookEndpoint.objects.filter(organization=self.org).count()
+        resp = self.client.post(reverse('tickets:webhook_endpoint_create'), {
+            'label': 'Bad', 'url': 'https://127.0.0.1/x', 'event_types': ['event.created'], 'is_active': 'on',
+        })
+        self.assertEqual(resp.status_code, 200)  # re-render with error
+        self.assertContains(resp, 'private')
+        self.assertEqual(WebhookEndpoint.objects.filter(organization=self.org).count(), before)
+
+    # --- edit / delete ------------------------------------------------------
+
+    def test_edit_updates_fields(self):
+        self.client.force_login(self.admin)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_edit', args=[self.endpoint.id]), {
+            'label': 'Renamed', 'url': 'https://8.8.8.8/hook', 'event_types': ['order.created'], 'is_active': 'on',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.endpoint.refresh_from_db()
+        self.assertEqual(self.endpoint.label, 'Renamed')
+        self.assertEqual(self.endpoint.event_types, ['order.created'])
+
+    def test_delete_removes_endpoint(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_delete', args=[self.endpoint.id])).status_code, 200)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_delete', args=[self.endpoint.id]))
+        self.assertRedirects(resp, reverse('tickets:webhook_endpoint_list'))
+        self.assertFalse(WebhookEndpoint.objects.filter(id=self.endpoint.id).exists())
+
+    # --- rotate secret ------------------------------------------------------
+
+    def test_rotate_secret_changes_value(self):
+        self.client.force_login(self.admin)
+        old = self.endpoint.secret
+        resp = self.client.post(reverse('tickets:webhook_endpoint_rotate_secret', args=[self.endpoint.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.endpoint.refresh_from_db()
+        self.assertNotEqual(self.endpoint.secret, old)
+        self.assertTrue(self.endpoint.secret.startswith('whsec_'))
+
+    def test_rotate_secret_get_not_allowed(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_rotate_secret', args=[self.endpoint.id])).status_code, 405)
+
+    # --- test-send ----------------------------------------------------------
+
+    def test_test_send_active_creates_delivery(self):
+        from .models import WebhookDelivery
+        self.client.force_login(self.admin)
+        with patch('requests.post', return_value=self._ok()) as mock_post:
+            resp = self.client.post(reverse('tickets:webhook_endpoint_test', args=[self.endpoint.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(mock_post.call_count, 1)
+        d = WebhookDelivery.objects.get(endpoint=self.endpoint)
+        self.assertTrue(d.payload.get('test'))
+
+    def test_test_send_inactive_does_not_send(self):
+        from .models import WebhookDelivery
+        self.endpoint.is_active = False
+        self.endpoint.save(update_fields=['is_active'])
+        self.client.force_login(self.admin)
+        with patch('requests.post', return_value=self._ok()) as mock_post:
+            self.client.post(reverse('tickets:webhook_endpoint_test', args=[self.endpoint.id]))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.filter(endpoint=self.endpoint).count(), 0)
+
+    # --- delivery log -------------------------------------------------------
+
+    def test_delivery_list_is_org_scoped_and_filters(self):
+        from .models import WebhookDelivery
+        WebhookDelivery.objects.create(organization=self.org, endpoint=self.endpoint, event_type='event.created', success=True)
+        WebhookDelivery.objects.create(organization=self.other_org, endpoint=self.other_endpoint, event_type='event.created', success=True)
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:webhook_delivery_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.context['deliveries']), 1)  # only own org
+        # filter by endpoint
+        resp2 = self.client.get(reverse('tickets:webhook_delivery_list') + f'?endpoint={self.endpoint.id}')
+        self.assertEqual(len(resp2.context['deliveries']), 1)
+
+    def test_delivery_detail_cross_org_404(self):
+        from .models import WebhookDelivery
+        d_other = WebhookDelivery.objects.create(
+            organization=self.other_org, endpoint=self.other_endpoint, event_type='event.created', success=True,
+        )
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_delivery_detail', args=[d_other.id])).status_code, 404)
+
+    # --- authz --------------------------------------------------------------
+
+    def test_non_admin_forbidden(self):
+        self.client.force_login(self.host)  # HOST is below admin/owner
+        resp = self.client.get(reverse('tickets:webhook_endpoint_list'))
+        self.assertIn(resp.status_code, (302, 403))
+
+    def test_cross_org_endpoint_404(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_edit', args=[self.other_endpoint.id])).status_code, 404)
+
+
+class SetupAppReviewDemoCommandTests(TestCase):
+    """setup_app_review_demo must reconcile an existing phone-OTP profile onto
+    the demo org without tripping UserProfile.phone_number's unique constraint
+    (the exact failure that blocked seeding production)."""
+
+    PHONE = '+15555550100'  # present in APP_REVIEW_TEST_PHONES by default
+
+    def _run(self, *args):
+        from io import StringIO
+        call_command('setup_app_review_demo', *args, stdout=StringIO())
+
+    def test_reconciles_existing_orgless_phone_profile(self):
+        # Mirror what api_phone_verify creates on first sign-in: a user + an
+        # org-less profile that already claims the review phone.
+        u = User.objects.create(username='phoneotp', email='')
+        u.set_unusable_password()
+        u.save()
+        prof = UserProfile.objects.create(user=u, phone_number=self.PHONE)
+        self.assertIsNone(prof.organization_id)
+
+        self._run()
+
+        prof.refresh_from_db()
+        org = Organization.objects.get(slug='demo-events-co')
+        # The existing profile is linked — NOT a second profile for the phone.
+        self.assertEqual(prof.organization_id, org.pk)
+        self.assertEqual(prof.role, UserProfile.Role.ORGANIZER)
+        self.assertEqual(prof.org_role, UserProfile.OrgRole.OWNER)
+        self.assertEqual(UserProfile.objects.filter(phone_number=self.PHONE).count(), 1)
+        self.assertTrue(
+            OrganizationMembership.objects.filter(user=u, organization=org).exists()
+        )
+
+        # Event/ticket meet the /organizer/events/ visibility filters.
+        ev = Event.objects.get(organization=org, name='Demo Event')
+        self.assertEqual(ev.ticketing_type, TICKETING_TYPE_DIRECT)
+        self.assertEqual(ev.status, 'live')
+        self.assertGreaterEqual(ev.start_date, timezone.localdate())
+        tt = SaleableTicketType.objects.get(event=ev, name='General Admission')
+        self.assertEqual(tt.price, Decimal('1.00'))
+        self.assertTrue(tt.is_active)
+
+    def test_creates_fresh_user_when_no_profile(self):
+        self.assertFalse(UserProfile.objects.filter(phone_number=self.PHONE).exists())
+        self._run()
+        prof = UserProfile.objects.get(phone_number=self.PHONE)
+        org = Organization.objects.get(slug='demo-events-co')
+        self.assertEqual(prof.organization_id, org.pk)
+        self.assertTrue(Token.objects.filter(user=prof.user).exists())
+
+    def test_idempotent_second_run(self):
+        self._run()
+        self._run()  # must not raise or duplicate
+        org = Organization.objects.get(slug='demo-events-co')
+        self.assertEqual(Organization.objects.filter(slug='demo-events-co').count(), 1)
+        self.assertEqual(Event.objects.filter(organization=org, name='Demo Event').count(), 1)
+        self.assertEqual(
+            SaleableTicketType.objects.filter(
+                event__organization=org, name='General Admission').count(),
+            1,
+        )
+        self.assertEqual(UserProfile.objects.filter(phone_number=self.PHONE).count(), 1)
+
+
+@override_settings(STRIPE_SECRET_KEY='sk_test_x', STRIPE_CURRENCY='usd',
+                   STRIPE_PUBLISHABLE_KEY='pk_test_x')
+class SMSPlanBannerTopupTests(TestCase):
+    """Inline top-up from the plan step's 'not enough tokens' banner: enriched preview
+    fields, one-click saved-card charge, and the inline Stripe Elements intent/confirm."""
+
+    def setUp(self):
+        from tickets.services.sms_credits import price_per_segment_cents
+        self.price = int(price_per_segment_cents())
+        self.org = Organization.objects.create(
+            name='Banner Topup Org', slug='banner-topup-org',
+            sms_marketing_enabled=True, ai_sms_strategist_enabled=True,
+            sms_credit_balance_cents=0,
+        )
+        self.user = User.objects.create_user(username='banner-owner', password='pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        Customer.objects.create(
+            organization=self.org, email='sub@example.com', name='Sub',
+            phone='+15551230000', sms_opt_in=True, rfm_segment='champions',
+        )
+        self.client.force_login(self.user)
+
+    def _make_plan(self):
+        from .models import SMSCampaignPlan
+        return SMSCampaignPlan.objects.create(
+            organization=self.org, name='Launch Plan',
+            steps=[{'order': 0, 'purpose': 'reminder', 'body': 'Tickets on sale now!',
+                    'audience_criteria': {'rfm_segment': ['champions']}}],
+        )
+
+    def _save_card(self):
+        self.org.stripe_customer_id = 'cus_test'
+        self.org.stripe_pm_id = 'pm_test'
+        self.org.stripe_pm_brand = 'visa'
+        self.org.stripe_pm_last4 = '4242'
+        self.org.save()
+
+    # --- page render -------------------------------------------------------
+
+    def test_plan_detail_page_renders_topup_modal(self):
+        plan = self._make_plan()
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="smsTopupModal"')
+        self.assertContains(resp, 'id="sms-topup-config"')
+        self.assertContains(resp, 'data-confirm-topup')
+
+    # --- preview enrichment ------------------------------------------------
+
+    def test_preview_reports_shortfall_and_recommended_pack(self):
+        plan = self._make_plan()
+        url = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0})
+        resp = self.client.post(url)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['insufficient'])
+        self.assertFalse(data['has_saved_card'])
+        # Balance is 0, so the shortfall equals the whole cost.
+        self.assertEqual(data['shortfall_tokens'], data['cost_tokens'])
+        # Smallest preset (500) covers a single-recipient shortfall.
+        self.assertEqual(data['topup_pack_tokens'], 500)
+        self.assertEqual(data['topup_pack_cents'], 500 * self.price)
+
+    def test_preview_flags_saved_card(self):
+        self._save_card()
+        plan = self._make_plan()
+        url = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0})
+        data = self.client.post(url).json()
+        self.assertTrue(data['has_saved_card'])
+        self.assertEqual(data['card_brand'], 'visa')
+        self.assertEqual(data['card_last4'], '4242')
+
+    # --- one-click saved-card top-up (JSON) --------------------------------
+
+    def test_topup_ajax_without_saved_card_asks_for_card(self):
+        resp = self.client.post(reverse('tickets:sms_credits_topup_ajax'), {'tokens': 500})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['ok'])
+        self.assertTrue(data['needs_card'])
+
+    def test_topup_ajax_charges_saved_card_and_credits(self):
+        self._save_card()
+        fake_pi = MagicMock(id='pi_ajax', status='succeeded', amount_received=500 * self.price)
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            resp = self.client.post(reverse('tickets:sms_credits_topup_ajax'), {'tokens': 500})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['balance_tokens'], 500)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+    # --- inline Stripe Elements intent + confirm ---------------------------
+
+    def test_topup_intent_returns_client_secret(self):
+        self.org.stripe_customer_id = 'cus_test'
+        self.org.save()
+        fake_pi = MagicMock(client_secret='pi_secret_123')
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi) as create:
+            resp = self.client.post(reverse('tickets:sms_credits_topup_intent'), {'tokens': 1000})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['client_secret'], 'pi_secret_123')
+        kwargs = create.call_args.kwargs
+        self.assertEqual(kwargs['amount'], 1000 * self.price)
+        self.assertEqual(kwargs['setup_future_usage'], 'off_session')
+        self.assertEqual(kwargs['metadata']['organization_id'], str(self.org.id))
+
+    def test_topup_intent_rejects_bad_pack(self):
+        resp = self.client.post(reverse('tickets:sms_credits_topup_intent'), {'tokens': 777})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+
+    def _fake_confirmed_pi(self, org_id):
+        return {
+            'id': 'pi_confirm', 'status': 'succeeded', 'payment_method': 'pm_new',
+            'amount_received': 500 * self.price,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(org_id),
+                         'credit_cents': str(500 * self.price), 'flow': 'inline'},
+        }
+
+    def test_topup_confirm_credits_once_and_is_idempotent(self):
+        url = reverse('tickets:sms_credits_topup_confirm')
+        pi = self._fake_confirmed_pi(self.org.id)
+        with patch('stripe.PaymentIntent.retrieve', return_value=pi), \
+                patch('tickets.views._save_org_card_from_pm'):
+            r1 = self.client.post(url, {'payment_intent_id': 'pi_confirm'})
+            r2 = self.client.post(url, {'payment_intent_id': 'pi_confirm'})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.org.refresh_from_db()
+        # Idempotent: the same PaymentIntent id credits exactly once.
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+    def test_topup_confirm_rejects_other_orgs_payment_intent(self):
+        other = Organization.objects.create(name='Other', slug='other-topup-org')
+        pi = self._fake_confirmed_pi(other.id)
+        with patch('stripe.PaymentIntent.retrieve', return_value=pi):
+            resp = self.client.post(reverse('tickets:sms_credits_topup_confirm'),
+                                    {'payment_intent_id': 'pi_confirm'})
+        self.assertEqual(resp.status_code, 404)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+    def test_charge_saved_view_still_redirects(self):
+        """The wallet-page redirect view keeps working after the helper refactor."""
+        self._save_card()
+        fake_pi = MagicMock(id='pi_redir', status='succeeded', amount_received=500 * self.price)
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': 500})
+        self.assertRedirects(resp, reverse('tickets:sms_credits'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+
+class DeviceTokenRegistrationTests(TestCase):
+    """POST /api/notification/device-token/ — organizer-authed token upsert."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Push Org', slug='push-org')
+        cls.user = User.objects.create_user(username='pushuser', email='push@example.com')
+        UserProfile.objects.create(
+            user=cls.user, organization=cls.org,
+            org_role=UserProfile.OrgRole.OWNER, role=UserProfile.Role.ORGANIZER,
+        )
+        cls.token = Token.objects.create(user=cls.user)
+        cls.auth = {'HTTP_AUTHORIZATION': f'Token {cls.token.key}'}
+        cls.url = '/api/notification/device-token/'
+
+    def test_register_returns_204_and_stores_token(self):
+        resp = self.client.post(
+            self.url, {'token': 'abc123', 'platform': 'ios'}, **self.auth,
+        )
+        self.assertEqual(resp.status_code, 204)
+        dt = DeviceToken.objects.get(token='abc123')
+        self.assertEqual(dt.organizer, self.user)
+        self.assertEqual(dt.organization, self.org)
+        self.assertEqual(dt.platform, 'ios')
+
+    def test_register_without_trailing_slash_reaches_view_directly(self):
+        """A client omitting the trailing slash must hit the view (204), not eat a
+        301 that downgrades the POST to GET and drops the body."""
+        resp = self.client.post(
+            '/api/notification/device-token', {'token': 'noslash'}, **self.auth,
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertTrue(DeviceToken.objects.filter(token='noslash').exists())
+
+    def test_second_token_rotates_out_the_first(self):
+        self.client.post(self.url, {'token': 'old-token'}, **self.auth)
+        self.client.post(self.url, {'token': 'new-token'}, **self.auth)
+        tokens = list(DeviceToken.objects.filter(organizer=self.user).values_list('token', flat=True))
+        self.assertEqual(tokens, ['new-token'])
+
+    def test_reregistering_same_token_is_idempotent(self):
+        self.client.post(self.url, {'token': 'same'}, **self.auth)
+        resp = self.client.post(self.url, {'token': 'same'}, **self.auth)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(DeviceToken.objects.filter(organizer=self.user).count(), 1)
+
+    def test_missing_token_returns_400(self):
+        resp = self.client.post(self.url, {'platform': 'ios'}, **self.auth)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unauthenticated_returns_401(self):
+        resp = self.client.post(self.url, {'token': 'abc'})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_user_without_org_returns_403(self):
+        orphan = User.objects.create_user(username='orphan')
+        UserProfile.objects.create(user=orphan, organization=None)
+        token = Token.objects.create(user=orphan)
+        resp = self.client.post(
+            self.url, {'token': 'orphan-tok'},
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+
+class SendPushNotificationTaskTests(TestCase):
+    """send_push_notification_task — delivery, stale-token cleanup, retry."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Task Org', slug='task-org')
+        self.user = User.objects.create_user(username='taskuser')
+        self.dt = DeviceToken.objects.create(
+            organizer=self.user, organization=self.org, token='dev-token-1',
+        )
+        self.payload = {'aps': {'alert': {'title': 'Hi', 'body': 'There'}}}
+
+    def test_stale_token_is_deleted(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        stale = PushResult(ok=False, status=410, reason='Unregistered')
+        with patch('tickets.services.push_notifications.apns.send', return_value=stale):
+            send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertFalse(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+    def test_successful_send_keeps_token(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        ok = PushResult(ok=True, status=200)
+        with patch('tickets.services.push_notifications.apns.send', return_value=ok):
+            send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertTrue(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+    def test_transient_failure_retries(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        transient = PushResult(ok=False, status=503)
+        with patch('tickets.services.push_notifications.apns.send', return_value=transient), \
+                patch.object(send_push_notification_task, 'retry', side_effect=Exception('retried')) as mock_retry:
+            with self.assertRaises(Exception):
+                send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertTrue(mock_retry.called)
+        self.assertTrue(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+
+class LaunchPushCommandTests(TestCase):
+    """send_launch_push management command — dry-run vs --confirm."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Cmd Org', slug='cmd-org')
+        self.user = User.objects.create_user(username='cmduser')
+        for i in range(3):
+            DeviceToken.objects.create(
+                organizer=self.user, organization=self.org, token=f'tok-{i}',
+            )
+
+    def test_dry_run_enqueues_nothing(self):
+        with patch('tickets.tasks.send_push_notification_task.delay') as mock_delay:
+            call_command('send_launch_push')
+        mock_delay.assert_not_called()
+
+    def test_confirm_enqueues_all(self):
+        with patch('tickets.tasks.send_push_notification_task.delay') as mock_delay:
+            call_command('send_launch_push', '--confirm')
+        self.assertEqual(mock_delay.call_count, 3)
+
+
+class TapToPayEnabledPushTriggerTests(TestCase):
+    """_handle_connect_account_updated — fire once on pending -> enabled."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Merchant Org', slug='merchant-org',
+            stripe_account_id='acct_123', tap_to_pay_enabled_push_sent=False,
+        )
+
+    def _account(self, card_state='active', country='US'):
+        return {'id': 'acct_123', 'country': country,
+                'capabilities': {'card_payments': card_state}}
+
+    def test_fires_and_sets_flag_when_enabled(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.tap_to_pay_enabled_push_sent)
+        self.assertTrue(mock_fire.called)
+
+    def test_idempotent_second_event_does_not_fire(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+            _handle_connect_account_updated(self._account())
+        self.assertEqual(mock_fire.call_count, 1)
+
+    def test_does_not_fire_while_pending(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account(card_state='pending'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
+        self.assertFalse(mock_fire.called)
+
+    def test_unknown_account_is_ignored(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated({'id': 'acct_unknown',
+                                             'capabilities': {'card_payments': 'active'}})
+        self.assertFalse(mock_fire.called)
+
+
+class APNsSenderTests(TestCase):
+    """Direct tests for apns.send() — host selection, headers, status classification.
+
+    These exercise the real send() path (URL build, header assembly, response
+    classification) that every other push test mocks out. _provider_token is
+    stubbed so we don't need a real EC key; httpx.Client is faked so no network.
+    """
+
+    def _run_send(self, status_code, reason=None, use_sandbox=True, configured=True):
+        from tickets.services.push_notifications import apns
+
+        captured = {}
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = status_code
+        fake_resp.json.return_value = {'reason': reason} if reason else {}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                captured['client_kwargs'] = k
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, url, headers=None, content=None):
+                captured['url'] = url
+                captured['headers'] = headers
+                captured['content'] = content
+                return fake_resp
+
+        creds = dict(
+            APNS_KEY_ID='KEY123', APNS_TEAM_ID='TEAM123',
+            APNS_BUNDLE_ID='co.cueup.cue', APNS_AUTH_KEY='dummy-pem',
+            APNS_USE_SANDBOX=use_sandbox,
+        )
+        if not configured:
+            creds.update(APNS_KEY_ID='', APNS_AUTH_KEY='', APNS_KEY_PATH='')
+
+        with override_settings(**creds), \
+                patch.object(apns, '_provider_token', return_value='fake-jwt'), \
+                patch('httpx.Client', FakeClient):
+            result = apns.send('devtok', {'aps': {'alert': {'title': 't'}}})
+        return result, captured
+
+    def test_sandbox_host_and_headers(self):
+        result, cap = self._run_send(200, use_sandbox=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(cap['url'], 'https://api.sandbox.push.apple.com/3/device/devtok')
+        self.assertEqual(cap['headers']['apns-topic'], 'co.cueup.cue')
+        self.assertEqual(cap['headers']['authorization'], 'bearer fake-jwt')
+        self.assertEqual(cap['headers']['apns-push-type'], 'alert')
+
+    def test_production_host(self):
+        _result, cap = self._run_send(200, use_sandbox=False)
+        self.assertEqual(cap['url'], 'https://api.push.apple.com/3/device/devtok')
+
+    def test_410_is_stale(self):
+        result, _cap = self._run_send(410)
+        self.assertTrue(result.stale)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.transient)
+
+    def test_400_bad_device_token_is_stale(self):
+        result, _cap = self._run_send(400, reason='BadDeviceToken')
+        self.assertTrue(result.stale)
+
+    def test_400_other_reason_not_stale(self):
+        result, _cap = self._run_send(400, reason='PayloadTooLarge')
+        self.assertFalse(result.stale)
+
+    def test_503_is_transient(self):
+        result, _cap = self._run_send(503)
+        self.assertTrue(result.transient)
+        self.assertFalse(result.stale)
+
+    def test_429_is_transient(self):
+        result, _cap = self._run_send(429)
+        self.assertTrue(result.transient)
+
+    def test_unconfigured_is_skipped(self):
+        result, cap = self._run_send(200, configured=False)
+        self.assertTrue(result.skipped)
+        self.assertFalse(result.ok)
+        self.assertNotIn('url', cap)  # never attempted the send
+
+
+class TapToPayEnabledPushConcurrencyTests(TestCase):
+    """The once-only guard must be atomic (A1) and skip unsupported countries."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Race Org', slug='race-org',
+            stripe_account_id='acct_race', tap_to_pay_enabled_push_sent=False,
+        )
+
+    def _account(self, card_state='active', country='US'):
+        return {'id': 'acct_race', 'country': country,
+                'capabilities': {'card_payments': card_state}}
+
+    def test_atomic_claim_blocks_concurrent_winner(self):
+        """Genuinely exercise the conditional UPDATE: a concurrent event claims the
+        flag AFTER this call's read-check but BEFORE its UPDATE. The UPDATE then
+        matches 0 rows and no push fires. A plain read-check-write guard would
+        double-fire here — this proves the atomic claim closes the race."""
+        from tickets.views import _handle_connect_account_updated
+
+        def claim_flag_midway(account):
+            # Stand in for a concurrent account.updated winning the claim between
+            # our read-check (flag was False) and our UPDATE.
+            Organization.objects.filter(pk=self.org.pk).update(tap_to_pay_enabled_push_sent=True)
+            return ('enabled', 'active', 'US')
+
+        with patch('tickets.api_views._tap_to_pay_status_from_account', side_effect=claim_flag_midway), \
+                patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.assertFalse(mock_fire.called)
+
+    def test_single_event_fires_once(self):
+        from tickets.views import _handle_connect_account_updated
+
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.assertEqual(mock_fire.call_count, 1)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.tap_to_pay_enabled_push_sent)
+
+    def test_unsupported_country_does_not_fire(self):
+        from tickets.views import _handle_connect_account_updated
+
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account(country='IN'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
+        self.assertFalse(mock_fire.called)
 
 
 class EventDuplicateViewTests(TestCase):

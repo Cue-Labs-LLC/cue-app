@@ -24,6 +24,9 @@ stripe>=9.0.0
 Pillow>=10.0.0
 pillow-heif>=0.18.0
 djangorestframework>=3.14.0
+httpx[http2]>=0.27
+PyJWT>=2.8
+cryptography>=42.0
 qrcode[pil]>=8.0
 twilio>=9.0.0
 django-debug-toolbar

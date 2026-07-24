@@ -199,7 +199,11 @@ def send_survey_emails_task(self, event_id, organization_id):
     past, so scheduled invitations sit untouched until the send_due_survey_invitations
     cron dispatches them once due.
     """
+    import smtplib
+
     from django.core.mail import EmailMultiAlternatives
+    from django.core.exceptions import ValidationError
+    from django.core.validators import validate_email
     from django.conf import settings
     from django.db.models import Q
     from django.utils import timezone
@@ -215,6 +219,7 @@ def send_survey_emails_task(self, event_id, organization_id):
         event_id=event_id,
         organization_id=organization_id,
         sent_at__isnull=True,
+        send_failed_at__isnull=True,
     ).filter(
         Q(scheduled_send_at__isnull=True) | Q(scheduled_send_at__lte=timezone.now())
     )
@@ -223,7 +228,26 @@ def send_survey_emails_task(self, event_id, organization_id):
     from_email, reply_to = survey_sender_fields(event.organization)
     sent_count = 0
 
+    def mark_permanent_failure(invitation, reason):
+        """Mark an invitation as permanently unsendable so it drops out of the
+        eligibility query and is never retried."""
+        invitation.send_failed_at = timezone.now()
+        invitation.send_error = reason[:200]
+        invitation.save(update_fields=['send_failed_at', 'send_error'])
+
     for invitation in invitations:
+        # Reject obviously-invalid recipients (e.g. Apple "Hide My Email" placeholder
+        # text that slipped into the customer record) before hitting SMTP.
+        try:
+            validate_email(invitation.email)
+        except ValidationError:
+            logger.warning(
+                "Skipping survey invitation %s: invalid email %r for event %s",
+                invitation.id, invitation.email, event_id,
+            )
+            mark_permanent_failure(invitation, 'invalid_email')
+            continue
+
         survey_url = f"{site_url}/survey/{invitation.token}/"
         subject, text_body, html_body = build_survey_email(event, survey_url)
 
@@ -240,7 +264,29 @@ def send_survey_emails_task(self, event_id, organization_id):
             invitation.sent_at = timezone.now()
             invitation.save(update_fields=['sent_at'])
             sent_count += 1
+        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as exc:
+            # smtplib raises these for ANY non-250 reply, including transient 4xx
+            # codes (421 rate limit, 450 greylisting). Only a 5xx reply means
+            # retrying will always fail — mark those rows so they stop looping;
+            # leave 4xx unsent for a future dispatch.
+            if isinstance(exc, smtplib.SMTPSenderRefused):
+                codes = [exc.smtp_code]
+            else:
+                codes = [code for code, _resp in exc.recipients.values()]
+            if codes and all(code >= 500 for code in codes):
+                logger.warning(
+                    "Survey email to %s for event %s permanently refused: %s",
+                    invitation.email, event_id, exc,
+                )
+                mark_permanent_failure(invitation, 'recipient_refused')
+            else:
+                logger.warning(
+                    "Survey email to %s for event %s temporarily refused, will retry: %s",
+                    invitation.email, event_id, exc,
+                )
         except Exception:
+            # Transient failure (SMTP timeout, connection reset, etc.) — log and leave
+            # the row unsent so a future dispatch can retry it.
             logger.exception(
                 "Failed to send survey email to %s for event %s",
                 invitation.email, event_id,
@@ -920,34 +966,67 @@ def send_sms_campaign_task(self, campaign_id):
             audience_size=SMSMessageRecipient.objects.filter(campaign=campaign).count()
         )
 
-    queued_ids = [
-        str(i) for i in SMSMessageRecipient.objects.filter(
-            campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
-        ).values_list('id', flat=True)
-    ]
-    if not queued_ids:
+    # "Unsent" == QUEUED with no twilio_sid. A row that carries a SID was already
+    # accepted by Twilio, so it must never be re-sent — even if a stale callback
+    # regressed its status to QUEUED. Recovery and finalize share this predicate.
+    queued = list(
+        SMSMessageRecipient.objects.filter(
+            campaign=campaign, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
+        ).values_list('id', 'segments')
+    )
+    if not queued:
         _finalize_sms_campaign(campaign.id)
         return
 
-    chunk_size = 100
-    header = [
-        send_sms_chunk_task.s(str(campaign.id), queued_ids[i:i + chunk_size])
-        for i in range(0, len(queued_ids), chunk_size)
-    ]
+    # Daily carrier-cap last resort. The composer blocks oversize sends up front (day-aware),
+    # so a campaign should fit its day by the time it dispatches. If a race the composer can't
+    # see (simultaneous confirms, a reschedule onto a full day) leaves this day over budget,
+    # fail the WHOLE campaign — never partially, never deferred, so the shared cap is never
+    # exceeded — refund it, and record a reason so the organizer can shrink + reschedule.
+    from tickets.services.sms_limits import remaining_daily_budget, fit_within_budget
+    budget = remaining_daily_budget()
+    if budget is not None and fit_within_budget([seg for _, seg in queued], budget) < len(queued):
+        from tickets.services.sms_credits import refund_campaign
+        reason = ('Daily send limit for this date was reached before the campaign dispatched. '
+                  'Reduce the recipient list and reschedule.')
+        SMSCampaign.objects.filter(id=campaign.id).update(
+            status=SMSCampaign.Status.FAILED, failure_reason=reason,
+        )
+        refund_campaign(campaign, description='Daily send limit reached')
+        logger.warning(
+            "SMS campaign %s failed: daily cap reached at send time (%d recipient(s), budget %s)",
+            campaign_id, len(queued), budget,
+        )
+        return
+    queued_ids = [str(rid) for rid, _ in queued]
+
+    # Pace dispatch to roughly SMS_SEND_RATE_PER_SEC by staggering chunk start times,
+    # rather than blasting the whole audience at once (a burst gets carrier-filtered as
+    # spam — Error 30007). chunk N starts at ~N*chunk_size/rate seconds. In eager mode
+    # (dev) countdowns are ignored and everything runs inline.
+    rate = max(1, getattr(settings, 'SMS_SEND_RATE_PER_SEC', 5))
+    chunk_size = max(1, getattr(settings, 'SMS_CHUNK_SIZE', 10))
+    header = []
+    for idx, start in enumerate(range(0, len(queued_ids), chunk_size)):
+        delay = int(idx * chunk_size / rate)
+        header.append(
+            send_sms_chunk_task.s(str(campaign.id), queued_ids[start:start + chunk_size])
+            .set(countdown=delay)
+        )
     chord(header)(finalize_sms_campaign_task.s(str(campaign.id)))
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=30, rate_limit='3/s')
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_sms_chunk_task(self, campaign_id, recipient_ids):
     """Send one chunk of a campaign. Per-recipient failure is isolated — one bad
-    number never aborts the chunk. Global throughput is metered by the Twilio
-    Messaging Service queue plus this task's rate_limit."""
+    number never aborts the chunk. Global throughput is paced by the orchestrator, which
+    staggers chunk start times to hold ~SMS_SEND_RATE_PER_SEC (see send_sms_campaign_task)."""
     import secrets
     from django.conf import settings
     from django.urls import reverse, NoReverseMatch
     from django.utils import timezone as tz
     from tickets.models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
-    from tickets.sms import send_sms
+    from tickets.sms import send_sms, TWILIO_OPT_OUT_ERROR_CODES
 
     campaign = SMSCampaign.objects.filter(id=campaign_id).select_related('organization').first()
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
@@ -984,7 +1063,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     # delayed send), re-include the footer for compliance — rare, may cost one
     # unbilled segment, and only ever errs toward disclosing.
     queued = list(SMSMessageRecipient.objects.filter(
-        id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
+        id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
     ))
     disclosed_now = SMSMessageRecipient.recently_disclosed_phones(
         campaign.organization, [r.phone for r in queued], as_of=tz.now()
@@ -1015,7 +1094,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
             update_fields.append('click_token')
         body, _ = _apply_stop_footer(base_body, include=include_footer)
 
-        ok, sid = send_sms(r.phone, body, status_callback=status_cb)
+        ok, sid, err_code = send_sms(r.phone, body, status_callback=status_cb)
         if ok:
             r.status = SMSMessageRecipient.Status.SENT
             r.twilio_sid = sid or ''
@@ -1024,7 +1103,16 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
             r.error_message = ''
         else:
             r.status = SMSMessageRecipient.Status.FAILED
+            r.error_code = err_code or ''
             r.error_message = 'send failed'
+            # Twilio rejected because the number is opted out (21610). The inbound
+            # OptOutType webhook can miss opt-outs, so learn from the block itself and
+            # suppress the number globally — no campaign ever re-attempts it.
+            if err_code in TWILIO_OPT_OUT_ERROR_CODES:
+                PhoneSuppression.objects.get_or_create(
+                    phone=r.phone, organization=None,
+                    defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
+                )
         r.save(update_fields=update_fields)
 
 
@@ -1042,11 +1130,220 @@ def _finalize_sms_campaign(campaign_id):
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
         return
     if SMSMessageRecipient.objects.filter(
-        campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
+        campaign=campaign, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
     ).exists():
-        # Still work outstanding (e.g. a chunk errored); leave 'sending' for the
-        # cron recovery pass to re-dispatch.
+        # Still genuinely unsent work outstanding (e.g. a chunk errored); leave
+        # 'sending' for the cron recovery pass to re-dispatch. A row that already
+        # carries a twilio_sid is done — don't block finalize on it, or a stale
+        # callback that regressed its status would hang the campaign forever.
         return
     SMSCampaign.objects.filter(id=campaign.id).update(
         status=SMSCampaign.Status.SENT, sent_at=tz.now()
+    )
+
+
+# Regenerate at most once per ~day: skip an event whose summary was (re)generated
+# within this window, so a manual generation earlier today isn't immediately redone.
+_SUMMARY_REGEN_MIN_INTERVAL = timedelta(hours=20)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def regenerate_event_summary_task(self, event_id):
+    """Regenerate an event's AI summary if its underlying data changed.
+
+    Runs from the daily scan. Only touches events that already have a summary
+    (regeneration, not first-time creation) and only after the event has ended.
+    Uses a fingerprint of the summary's input data to skip regeneration when
+    nothing changed, so unchanged events cost no LLM tokens. On the first run
+    for an event (no stored fingerprint), it backfills the fingerprint without
+    regenerating, establishing a baseline for future change detection.
+    """
+    from django.utils import timezone as tz
+
+    from tickets.models import Event
+    from tickets.services.event_summary import EventSummaryService
+    from tickets.views import _compute_event_stats
+
+    event = (
+        Event.objects.filter(id=event_id, deleted_at__isnull=True)
+        .select_related('organization', 'venue')
+        .first()
+    )
+    if event is None:
+        return 'missing'
+
+    org = event.organization
+    # Respect both the display toggle and the auto-regenerate opt-out.
+    if not org.ai_event_summary_enabled or not org.ai_event_summary_auto_regenerate:
+        return 'disabled'
+
+    # Only regenerate summaries that already exist — never auto-create a first one.
+    if not event.ai_summary:
+        return 'no-summary'
+
+    # Only after the event has actually ended (timezone-aware end).
+    if event.end_datetime() > tz.now():
+        return 'not-ended'
+
+    # Enforce "at most once a day": if it was regenerated very recently, wait.
+    if event.ai_summary_generated_at and (
+        tz.now() - event.ai_summary_generated_at
+    ) < _SUMMARY_REGEN_MIN_INTERVAL:
+        return 'recent'
+
+    try:
+        event_data = _compute_event_stats(event)
+        service = EventSummaryService(org)
+        fingerprint = service.input_fingerprint(event, event_data)
+
+        # First pass for a pre-existing summary: record the baseline fingerprint
+        # without spending tokens. Future changes are then detectable.
+        if not event.ai_summary_input_hash:
+            event.ai_summary_input_hash = fingerprint
+            event.save(update_fields=['ai_summary_input_hash'])
+            return 'backfilled'
+
+        # No change since last generation — nothing to do.
+        if fingerprint == event.ai_summary_input_hash:
+            return 'unchanged'
+
+        result = service.generate_summary(event, event_data)
+    except Exception as exc:
+        logger.exception("Event summary regeneration failed for event %s", event_id)
+        raise self.retry(exc=exc)
+
+    if result is None:
+        # Generation was attempted but produced nothing (e.g. missing API key).
+        # Don't retry — the fingerprint stays stale so a later run tries again.
+        logger.warning("Event summary regeneration produced no text for event %s", event_id)
+        return 'failed'
+
+    logger.info("Regenerated AI summary for event %s", event_id)
+    return 'regenerated'
+
+
+# Max chars of the receiver's response body we persist. Kept small: it's only
+# for debugging, and we never want to store large or sensitive internal responses.
+WEBHOOK_RESPONSE_BODY_LIMIT = 500
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def deliver_webhook_task(self, endpoint_id, event_type, delivery_id, payload):
+    """Deliver a signed webhook POST to one endpoint, logging every attempt.
+
+    Enqueued by `tickets.services.webhooks.dispatch.dispatch`. Writes one
+    WebhookDelivery row per attempt (retries produce new rows with an incremented
+    `attempt`, all sharing `delivery_id`). Retries on connection errors, timeouts,
+    and 5xx responses; a 4xx is treated as a permanent (terminal) failure and is
+    NOT retried.
+    """
+    import requests
+    from django.conf import settings
+    from django.utils import timezone
+
+    from tickets.models import WebhookEndpoint, WebhookDelivery
+    from tickets.services.webhooks.signing import build_signed_request
+    from tickets.services.webhooks.validation import is_webhook_url_allowed
+
+    try:
+        endpoint = WebhookEndpoint.objects.select_related('organization').get(id=endpoint_id)
+    except WebhookEndpoint.DoesNotExist:
+        logger.warning("WebhookEndpoint %s not found, skipping delivery", endpoint_id)
+        return
+    if not endpoint.is_active:
+        return
+
+    delivery = WebhookDelivery(
+        endpoint=endpoint,
+        organization=endpoint.organization,
+        event_type=event_type,
+        delivery_id=delivery_id,
+        payload=payload,
+        attempt=self.request.retries + 1,
+    )
+
+    # SSRF guard at send time (defense in depth vs DNS rebinding / rows created
+    # before validation existed). A blocked URL is terminal — never retried.
+    if not is_webhook_url_allowed(endpoint.url):
+        delivery.success = False
+        delivery.error_message = 'Blocked: URL resolves to a private/reserved address or non-https scheme.'
+        delivery.save()
+        logger.warning("Webhook delivery blocked (SSRF guard) endpoint=%s url=%s", endpoint_id, endpoint.url)
+        return
+
+    timeout = getattr(settings, 'WEBHOOK_DELIVERY_TIMEOUT', 10)
+    body, headers = build_signed_request(endpoint.secret, event_type, delivery_id, payload)
+
+    try:
+        resp = requests.post(endpoint.url, data=body, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        # No response (connection error / timeout) — transient, retry.
+        delivery.success = False
+        delivery.error_message = str(exc)[:1000]
+        delivery.save()
+        logger.exception("Webhook delivery failed (no response) endpoint=%s (%s)", endpoint_id, event_type)
+        raise self.retry(exc=exc)
+
+    delivery.response_status = resp.status_code
+    delivery.response_body = (resp.text or '')[:WEBHOOK_RESPONSE_BODY_LIMIT]
+    delivery.success = 200 <= resp.status_code < 300
+    if not delivery.success:
+        delivery.error_message = f"HTTP {resp.status_code}"[:1000]
+    delivery.save()
+
+    endpoint.last_used_at = timezone.now()
+    endpoint.save(update_fields=['last_used_at'])
+
+    if delivery.success:
+        return
+    if 400 <= resp.status_code < 500:
+        # Client error — the request is permanently wrong. Don't retry.
+        logger.warning(
+            "Webhook delivery got terminal %s endpoint=%s (%s), not retrying",
+            resp.status_code, endpoint_id, event_type,
+        )
+        return
+    # 5xx (or anything else non-2xx) — transient, retry.
+    logger.warning(
+        "Webhook delivery got %s endpoint=%s (%s), retrying",
+        resp.status_code, endpoint_id, event_type,
+    )
+    raise self.retry(exc=requests.RequestException(f"HTTP {resp.status_code}"))
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_push_notification_task(self, device_token_id, payload):
+    """Send one APNs push to a registered device.
+
+    Enqueued by ``tickets.services.push_notifications.dispatch`` (Tap to Pay
+    enabled) and by the ``send_launch_push`` management command (§6.3 launch).
+    A stale token (BadDeviceToken / Unregistered) is deleted; transient
+    failures (network error, timeout, 429, 5xx) are retried.
+    """
+    from tickets.models import DeviceToken
+    from tickets.services.push_notifications import apns
+
+    try:
+        dt = DeviceToken.objects.get(id=device_token_id)
+    except DeviceToken.DoesNotExist:
+        logger.warning("DeviceToken %s not found, skipping push", device_token_id)
+        return
+
+    result = apns.send(dt.token, payload)
+
+    if result.ok:
+        logger.info("Push delivered device_token=%s", device_token_id)
+        return
+    if result.skipped:
+        return
+    if result.stale:
+        logger.info("Deleting stale device_token=%s (reason=%s)", device_token_id, result.reason)
+        dt.delete()
+        return
+    if result.transient:
+        raise self.retry(exc=Exception(f"APNs transient failure (status={result.status})"))
+    # Non-retryable, non-stale (e.g. 403 bad auth) — log and drop.
+    logger.error(
+        "Push permanently failed device_token=%s status=%s reason=%s",
+        device_token_id, result.status, result.reason,
     )

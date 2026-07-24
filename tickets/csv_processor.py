@@ -5,6 +5,8 @@ import re
 from decimal import Decimal
 from datetime import datetime, timezone as dt_timezone
 from typing import Dict, List, Optional, Tuple
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 from dateutil import parser as date_parser
@@ -13,8 +15,20 @@ import os
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, TicketTier, Venue
 )
+from .sms import normalize_phone
 
 logger = logging.getLogger(__name__)
+
+# Matches a normalized E.164 number (used to decide whether to store the normalized
+# form and to gate phone-only-subscriber reconciliation).
+_E164_RE = re.compile(r'^\+[1-9]\d{6,14}$')
+
+
+def _e164_or_raw(raw):
+    """Normalize a phone to E.164 when it parses cleanly, else return it untouched
+    (never destroy an unparseable value)."""
+    norm = normalize_phone(raw or '')
+    return norm if _E164_RE.match(norm) else (raw or '')
 
 
 class CSVProcessor:
@@ -67,6 +81,13 @@ class CSVProcessor:
             logger.error(f"CSV validation error: {str(e)}")
             return False, f"Error validating CSV: {str(e)}"
     
+    # Values (lower-cased) that count as "true" for boolean flag columns such as
+    # processed_in_person and customer_sms_opt_in. Kept lenient so common consent
+    # exports ("Subscribed", "Opted In", "Y") are recognized.
+    _TRUTHY_FLAG_VALUES = (
+        'true', 'yes', '1', 'y', 't', 'subscribed', 'opted in', 'opt-in', 'opted-in',
+    )
+
     def map_columns(self, row: Dict) -> Dict:
         """Map CSV column names to internal field names using format configuration."""
         mapped = {}
@@ -90,7 +111,7 @@ class CSVProcessor:
                     if value:
                         name_parts.append(value)
                 mapped[internal_field] = ' '.join(name_parts) if name_parts else None
-            elif internal_field == 'processed_in_person':
+            elif internal_field in ('processed_in_person', 'customer_sms_opt_in'):
                 # Optional: map CSV column(s) and normalize to boolean
                 value = None
                 for csv_col in csv_columns:
@@ -105,7 +126,7 @@ class CSVProcessor:
                         break
                 if value is not None:
                     s = str(value).strip().lower()
-                    mapped[internal_field] = s in ('true', 'yes', '1')
+                    mapped[internal_field] = s in self._TRUTHY_FLAG_VALUES
                 else:
                     mapped[internal_field] = False
             else:
@@ -475,6 +496,9 @@ class CSVProcessor:
         
         customers_to_create = []
         customers_to_update = []
+        # Phones already used to adopt a phone-only subscriber this chunk, so two rows
+        # with the same phone but different emails don't both claim the same subscriber.
+        reconciled_phones = set()
         events_to_create = []
         events_to_update = []
         ticket_orders_to_create = []
@@ -498,7 +522,10 @@ class CSVProcessor:
             placeholder_customer, _ = Customer.objects.get_or_create(
                 organization=org,
                 email=placeholder_email,
-                defaults={'name': 'In-Person Sales'},
+                defaults={
+                    'name': 'In-Person Sales',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
             )
             existing_customers[placeholder_email] = placeholder_customer
 
@@ -506,11 +533,22 @@ class CSVProcessor:
             no_contact_customer, _ = Customer.objects.get_or_create(
                 organization=org,
                 email=no_contact_email,
-                defaults={'name': 'Guest (No Contact Info)'},
+                defaults={
+                    'name': 'Guest (No Contact Info)',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
             )
             existing_customers[no_contact_email] = no_contact_customer
 
         existing_events = {}
+
+        # One builder for the whole chunk: it caches the org's market index on
+        # first resolve, so assigning markets to newly-created events costs one
+        # query for the chunk, not up to three per event.
+        market_builder = None
+        if org is not None:
+            from .services.markets import MarketBuilder
+            market_builder = MarketBuilder(org)
 
         # Fast path: if event_id is in metadata, use that event directly (org-scoped)
         metadata_event_id = self.uploaded_file.metadata.get('event_id')
@@ -627,6 +665,14 @@ class CSVProcessor:
                         results['errors'].append("Row validation error: In-person row but no organization context.")
                         continue
                     customer_email = mapped_row.get('customer_email', '').lower().strip()
+                    if customer_email:
+                        # Reject unparseable addresses (e.g. Apple "Hide My Email"
+                        # placeholder text) so they never reach the DB and later break
+                        # email sends. Treated the same as a missing email below.
+                        try:
+                            validate_email(customer_email)
+                        except ValidationError:
+                            customer_email = ''
                     if not customer_email and no_contact_customer is not None:
                         # Online order with no contact info — bucket it so its revenue counts.
                         customer = no_contact_customer
@@ -649,27 +695,64 @@ class CSVProcessor:
                             # Remove from customers_to_create if it was added earlier in this chunk
                             customers_to_create = [c for c in customers_to_create if c.email != customer_email]
                         else:
-                            # Check if already in customers_to_create to avoid duplicates within chunk
-                            already_in_create = any(c.email == customer_email for c in customers_to_create)
-                            if not already_in_create:
-                                customer = Customer(
-                                    email=customer_email,
-                                    name=mapped_row.get('customer_name', ''),
-                                    phone=mapped_row.get('customer_phone', ''),
-                                    **({'organization': org} if org is not None else {}),
-                                )
-                                customers_to_create.append(customer)
+                            # Reconcile with an existing phone-only subscriber (email='')
+                            # by verified E.164 phone before creating a new row — a fan who
+                            # subscribed by SMS (no email) unifies with their imported order
+                            # instead of forking a duplicate Customer.
+                            norm_phone = normalize_phone(mapped_row.get('customer_phone', ''))
+                            reco = None
+                            if (org is not None and _E164_RE.match(norm_phone)
+                                    and norm_phone not in reconciled_phones):
+                                reco = (Customer.objects
+                                        .filter(organization=org, email='', phone=norm_phone)
+                                        .first())
+                            if reco is not None:
+                                reconciled_phones.add(norm_phone)
+                                reco.email = customer_email  # backfill → now email-keyed
+                                if mapped_row.get('customer_name') and not reco.name:
+                                    reco.name = mapped_row.get('customer_name')
+                                if mapped_row.get('customer_sms_opt_in') and not reco.sms_opt_in:
+                                    reco.sms_opt_in = True
+                                    reco.sms_opt_in_date = timezone.now()
+                                customer = reco
                                 existing_customers[customer_email] = customer
+                                customers_to_update.append(customer)
                             else:
-                                # Find the customer in customers_to_create
-                                customer = next(c for c in customers_to_create if c.email == customer_email)
+                                # Check if already in customers_to_create to avoid duplicates within chunk
+                                already_in_create = any(c.email == customer_email for c in customers_to_create)
+                                if not already_in_create:
+                                    customer = Customer(
+                                        email=customer_email,
+                                        name=mapped_row.get('customer_name', ''),
+                                        phone=_e164_or_raw(mapped_row.get('customer_phone', '')),
+                                        acquisition_source=Customer.AcquisitionSource.IMPORT,
+                                        **({'organization': org} if org is not None else {}),
+                                    )
+                                    # Consent is only granted, never revoked, on import. SMS
+                                    # needs a phone, so opt-in requires one (mirrors set_sms_opt_in).
+                                    if mapped_row.get('customer_sms_opt_in') and customer.phone:
+                                        customer.sms_opt_in = True
+                                        customer.sms_opt_in_date = timezone.now()
+                                    customers_to_create.append(customer)
+                                    existing_customers[customer_email] = customer
+                                else:
+                                    # Find the customer in customers_to_create
+                                    customer = next(c for c in customers_to_create if c.email == customer_email)
                     else:
                         # Update customer info if needed
                         if mapped_row.get('customer_name') and customer.name != mapped_row.get('customer_name'):
                             customer.name = mapped_row.get('customer_name')
                             customers_to_update.append(customer)
-                        if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
-                            customer.phone = mapped_row.get('customer_phone')
+                        if mapped_row.get('customer_phone'):
+                            new_phone = _e164_or_raw(mapped_row.get('customer_phone'))
+                            if new_phone and customer.phone != new_phone:
+                                customer.phone = new_phone
+                                customers_to_update.append(customer)
+                        # Grant SMS consent if the source says so; never revoke on import.
+                        if (mapped_row.get('customer_sms_opt_in') and customer.phone
+                                and not customer.sms_opt_in):
+                            customer.sms_opt_in = True
+                            customer.sms_opt_in_date = timezone.now()
                             customers_to_update.append(customer)
                 
                 results['customer_ids'].add(customer.id if customer.id else customer_email)
@@ -799,6 +882,8 @@ class CSVProcessor:
                         if org is not None:
                             event_kwargs['organization'] = org
                         event = Event(**event_kwargs)
+                        if market_builder is not None:
+                            market_builder.assign_event(event, save=False)
                         events_to_create.append(event)
                         existing_events[event_key] = event
                 
@@ -945,7 +1030,10 @@ class CSVProcessor:
                     results['customer_ids'].add(customer.id)
         
         if customers_to_update:
-            Customer.objects.bulk_update(customers_to_update, ['name', 'phone'])
+            # 'email' included so a reconciled phone-only subscriber's backfilled email persists.
+            Customer.objects.bulk_update(
+                customers_to_update, ['name', 'phone', 'sms_opt_in', 'sms_opt_in_date', 'email']
+            )
         if events_to_create:
             Event.objects.bulk_create(events_to_create, ignore_conflicts=True)
             # Refetch created events to get their IDs

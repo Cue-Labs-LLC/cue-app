@@ -91,6 +91,98 @@
 
     {# ── Overview ─────────────────────────────────────────────────────── #}
     {% if active_tab == 'overview' %}
+        {# Share link to grow the SMS audience — Linktree / socials / flyers. #}
+        <div class="chart-card">
+            <div class="ai-panel-header">
+                <h2 style="margin:0;">Grow your audience</h2>
+            </div>
+            <div class="d-flex flex-column flex-md-row gap-4 align-items-md-center">
+                <div class="flex-grow-1">
+                    <p class="text-secondary small mb-2">
+                        Share this link anywhere — Linktree, Instagram bio, event flyers. Fans enter
+                        their name, email, and mobile, confirm a texted code, and join your SMS list.
+                        No Cue account needed.
+                    </p>
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                        {% csrf_token %}
+                        <label class="form-label small text-secondary mb-1" for="subscribeTitleInput">Signup header (optional)</label>
+                        <div class="input-group input-group-sm" style="max-width:420px;">
+                            <input type="text" class="form-control" id="subscribeTitleInput" name="subscribe_title"
+                                   maxlength="80" value="{{ subscribe_title }}" placeholder="e.g. Join the text list">
+                            <button class="btn btn-outline-secondary" type="submit">Save</button>
+                        </div>
+                        <p class="text-secondary small mt-1 mb-0">Shown above the mobile number field on your subscribe page. Blank shows no header.</p>
+                    </form>
+                    {% if market_count > 1 %}
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                        {% csrf_token %}
+                        <div class="form-check form-switch mb-1">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="segmentByMarket" name="segment_by_market"
+                                   {% if segment_by_market %}checked{% endif %}
+                                   onchange="this.form.submit()">
+                            <label class="form-check-label" for="segmentByMarket">Ask subscribers which market they're in</label>
+                        </div>
+                        <p class="text-secondary small mb-0" style="margin-left:2.6em;">
+                            When on, the subscribe page adds an area picker so new fans join the right
+                            market — market-specific texts then reach them right away.
+                        </p>
+                    </form>
+                    {% if segment_by_market %}
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3" style="margin-left:2.6em;">
+                        {% csrf_token %}
+                        <label class="form-label small text-secondary mb-1" for="marketLabelInput">Picker label</label>
+                        <div class="input-group input-group-sm" style="max-width:340px;">
+                            <input type="text" class="form-control" id="marketLabelInput" name="market_label"
+                                   maxlength="60" value="{{ market_label }}" placeholder="Your area">
+                            <button class="btn btn-outline-secondary" type="submit">Save</button>
+                        </div>
+                        <p class="text-secondary small mt-1 mb-0">Shown above the area picker (e.g. "Which city?"). Blank uses "Your area".</p>
+                    </form>
+                    {% endif %}
+                    {% endif %}
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="subscribeLinkInput"
+                               value="{{ subscribe_url }}" readonly aria-label="Your subscribe link">
+                        <button class="btn btn-primary" type="button" id="subscribeLinkCopy"
+                                data-url="{{ subscribe_url }}">
+                            <i class="bi bi-clipboard"></i> Copy
+                        </button>
+                        <a class="btn btn-outline-secondary" href="{{ subscribe_url }}" target="_blank" rel="noopener">
+                            <i class="bi bi-box-arrow-up-right"></i> Open
+                        </a>
+                    </div>
+                </div>
+                {% if subscribe_qr %}
+                <div class="text-center">
+                    <img src="{{ subscribe_qr }}" alt="QR code for your subscribe link"
+                         width="132" height="132" style="border-radius:10px;background:#fff;padding:6px">
+                    <div class="small text-secondary mt-1">Scan to subscribe</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var btn = document.getElementById('subscribeLinkCopy');
+            if (!btn) return;
+            btn.addEventListener('click', function () {
+                var url = btn.getAttribute('data-url');
+                var done = function () {
+                    var original = btn.innerHTML;
+                    btn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+                    setTimeout(function () { btn.innerHTML = original; }, 1800);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(url).then(done, function () {});
+                } else {
+                    var input = document.getElementById('subscribeLinkInput');
+                    input.select(); document.execCommand('copy'); done();
+                }
+            });
+        });
+        </script>
+
         <div class="ai-panel">
             <div class="ai-panel-header">
                 <h2>AI insights</h2>

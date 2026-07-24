@@ -5,6 +5,7 @@ import io
 import logging
 from functools import wraps
 
+from django.db import IntegrityError, transaction
 from django.shortcuts import redirect
 
 
@@ -276,6 +277,65 @@ def link_customer_to_buyer(customer, buyer_email):
             fields_to_update.append('phone')
     if fields_to_update:
         customer.save(update_fields=fields_to_update)
+
+
+def get_or_create_customer_for_purchase(org, *, email, name):
+    """Resolve the Customer for a purchase, preferring email identity.
+
+    If the email is new to this org, adopt an existing phone-only subscriber
+    (email='') matching the buyer's verified account phone (resolved email →
+    auth.User → UserProfile) and backfill the email, so a first purchase attaches to
+    the subscriber's record instead of forking a second row. Otherwise create a fresh
+    Customer (its phone is copied afterwards by link_customer_to_buyer).
+
+    Returns (customer, created) where `created` is True only when a brand-new
+    Customer row was inserted (not when an existing/subscriber row was reused), so
+    callers can fire the customer.created webhook exactly once per real creation.
+    """
+    from .models import Customer
+    from django.contrib.auth.models import User
+    email = (email or '').lower().strip()
+
+    def existing_by_email():
+        if not email:
+            return None
+        return Customer.objects.filter(organization=org, email=email).first()
+
+    if email:
+        existing = existing_by_email()
+        if existing:
+            return existing, False
+    user = (User.objects.filter(email__iexact=email).select_related('profile').first()
+            if email else None)
+    phone = getattr(getattr(user, 'profile', None), 'phone_number', '') or ''
+    if phone:
+        sub = Customer.objects.filter(organization=org, email='', phone=phone).first()
+        if sub is not None:
+            fields = ['email']
+            sub.email = email
+            if name and not sub.name:
+                sub.name = name
+                fields.append('name')
+            try:
+                with transaction.atomic():
+                    sub.save(update_fields=fields + ['updated_at'])
+                return sub, False
+            except IntegrityError:
+                existing = existing_by_email()
+                if existing:
+                    return existing, False
+                raise
+    try:
+        with transaction.atomic():
+            return Customer.objects.create(
+                organization=org, email=email, name=name or '',
+                acquisition_source=Customer.AcquisitionSource.TICKET_PURCHASE,
+            ), True
+    except IntegrityError:
+        existing = existing_by_email()
+        if existing:
+            return existing, False
+        raise
 
 
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:

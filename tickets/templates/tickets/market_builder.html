@@ -1,0 +1,90 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Build Markets{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Build Markets</h1>
+        <p class="page-header-subtitle">Create markets from the geography on existing event venues.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:market_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Markets
+        </a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label for="level" class="form-label">Geography</label>
+                <select id="level" name="level" class="form-select">
+                    {% for choice in level_choices %}
+                    <option value="{{ choice.value }}"{% if choice.value == level %} selected{% endif %}>{{ choice.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-auto">
+                <button type="submit" class="btn btn-outline-secondary">
+                    <i class="bi bi-search"></i> Preview
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if preview_rows %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="level" value="{{ level }}">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width: 56px;"></th>
+                            <th>Region</th>
+                            <th>Events</th>
+                            <th>Venues</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in preview_rows %}
+                        <tr>
+                            <td>
+                                <input class="form-check-input" type="checkbox" name="values" value="{{ row.value }}" id="market-{{ forloop.counter }}"{% if not row.market_exists %} checked{% endif %}>
+                            </td>
+                            <td><label for="market-{{ forloop.counter }}"><strong>{{ row.name }}</strong></label></td>
+                            <td>{{ row.event_count }}</td>
+                            <td>{{ row.venue_count }}</td>
+                            <td>
+                                {% if row.market_exists %}
+                                <span class="badge bg-secondary">Exists</span>
+                                {% else %}
+                                <span class="badge bg-primary">New</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-end gap-2 p-3 border-top">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check2-circle"></i> Create Selected Markets
+                </button>
+            </div>
+        </form>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-map d-block"></i>
+            <p>No event venue geography found for this level.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

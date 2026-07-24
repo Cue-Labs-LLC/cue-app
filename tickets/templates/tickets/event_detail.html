@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
+{% load tz %}
 
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
@@ -380,7 +381,7 @@ button.detail-meta-weather--severe:focus-visible {
                 {% endif %}
                 {% endwith %}
             {% else %}
-            <span class="badge bg-secondary ms-2" style="font-size: 0.6em; vertical-align: middle;">External Ticketing</span>
+            <span class="badge bg-secondary ms-2" style="font-size: 0.6em; vertical-align: middle;">Imported</span>
             {% endif %}
         </h1>
         <div class="detail-meta">
@@ -518,6 +519,9 @@ button.detail-meta-weather--severe:focus-visible {
 <!-- Tab navigation -->
 <nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+    {% if show_pacing_card %}
+    <button class="nav-link" id="tab-analytics-btn" data-bs-toggle="tab" data-bs-target="#tab-analytics" type="button" role="tab">Analytics</button>
+    {% endif %}
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
@@ -582,18 +586,16 @@ button.detail-meta-weather--severe:focus-visible {
     <div class="stats-grid">
         <div class="stat-card stat-card--success">
             <div class="stat-label">Revenue</div>
-            <div class="stat-value">${{ total_revenue|currency }}</div>
-            {% if total_additional_income > 0 %}
-            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ net_ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
-            {% endif %}
+            <div class="stat-value" data-revenue-total>${{ total_revenue|currency }}</div>
+            <div class="stat-detail{% if not total_additional_income > 0 %} d-none{% endif %}" data-revenue-detail style="font-size: 0.75rem; margin-top: 4px;">Tickets: $<span data-revenue-tickets>{{ net_ticket_revenue|currency }}</span> + Other: $<span data-revenue-other>{{ total_additional_income|currency }}</span></div>
         </div>
         <div class="stat-card stat-card--danger">
             <div class="stat-label">Expenses</div>
-            <div class="stat-value">${{ total_expenses|currency }}</div>
+            <div class="stat-value" data-expenses-total>${{ total_expenses|currency }}</div>
         </div>
-        <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}">
+        <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}" data-profit-card>
             <div class="stat-label">Profit / Loss</div>
-            <div class="stat-value"{% if profit < 0 %} style="color: var(--danger);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+            <div class="stat-value"{% if profit < 0 %} style="color: var(--danger);"{% endif %} data-profit-value>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
         </div>
     </div>
 </div>
@@ -961,6 +963,89 @@ document.addEventListener('DOMContentLoaded', function() {
 
 </div><!-- /tab-overview -->
 
+<!-- ===== TAB: Analytics ===== -->
+{% if show_pacing_card %}
+<div class="tab-pane fade" id="tab-analytics" role="tabpanel">
+<style>
+.pacing-combo { position: relative; }
+.pacing-compare-input {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary);
+    font-size: 12px; padding: 4px 26px 4px 8px; font-family: inherit;
+    width: 210px; max-width: 240px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='%237A7672' d='M0 0h10L5 7z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+}
+.pacing-compare-input:focus { outline: none; border-color: var(--accent); }
+.pacing-compare-input:disabled { opacity: 0.6; cursor: progress; }
+.pacing-combo-list {
+    position: absolute; z-index: 1000; top: calc(100% + 4px); right: 0;
+    min-width: 220px; max-width: 320px; max-height: 240px; overflow-y: auto;
+    margin: 0; padding: 4px; list-style: none;
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.pacing-combo-option {
+    padding: 6px 8px; font-size: 12px; color: var(--text-primary);
+    border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.pacing-combo-option.is-active { background: var(--accent-muted); color: var(--accent); }
+.pacing-combo-option.is-selected { font-weight: 600; }
+.pacing-combo-option[hidden] { display: none; }
+.pacing-combo-empty { padding: 6px 8px; font-size: 12px; color: var(--text-tertiary); }
+.pacing-compare-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+}
+</style>
+<div class="card mb-4" id="pacingCard"
+     data-pacing-url="{% url 'tickets:event_pacing_api' '00000000-0000-0000-0000-000000000000' %}"
+     data-current-name="{{ event.name }}"
+     data-today-days-before="{% if pacing_today_days_before is not None %}{{ pacing_today_days_before }}{% endif %}">
+    <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="d-flex flex-column">
+            <h5 class="mb-0">Sales Pacing</h5>
+            <small class="text-muted">Cumulative sales vs. a past event, by days before the event</small>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Pacing metric">
+                <button type="button" class="chart-control-btn active" id="btnPaceTickets">Tickets</button>
+                <button type="button" class="chart-control-btn" id="btnPaceRevenue">Revenue</button>
+            </div>
+            <div class="chart-control-group" role="group" aria-label="Pacing scale">
+                <button type="button" class="chart-control-btn active" id="btnPaceAbs">Absolute</button>
+                <button type="button" class="chart-control-btn" id="btnPacePct">% Final</button>
+            </div>
+            <label class="d-flex align-items-center gap-2 mb-0">
+                <span class="pacing-compare-label">vs</span>
+                <div class="pacing-combo" id="pacingCompare">
+                    <input type="text" class="pacing-compare-input" id="pacingCompareInput"
+                           role="combobox" aria-expanded="false" aria-controls="pacingCompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search events&hellip;" aria-label="Comparison event">
+                    <ul class="pacing-combo-list" id="pacingCompareList" role="listbox" aria-label="Comparison event" hidden>
+                        {% for c in pacing_candidates %}
+                        <li class="pacing-combo-option{% if c.id == pacing_default_compare_id %} is-selected{% endif %}"
+                            role="option" id="pacingOpt-{{ forloop.counter }}"
+                            data-id="{{ c.id }}"
+                            data-label="{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}"
+                            {% if c.id == pacing_default_compare_id %}aria-selected="true"{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </label>
+        </div>
+    </div>
+    <div class="card-body" style="position: relative; height: 260px;">
+        <canvas id="pacingChart"></canvas>
+    </div>
+</div>
+<script type="application/json" id="pacing-current-data">{{ pacing_current_json|safe }}</script>
+<script type="application/json" id="pacing-compare-data">{{ pacing_compare_json|safe }}</script>
+</div><!-- /tab-analytics -->
+{% endif %}
+
 <!-- ===== TAB 2: Orders ===== -->
 <div class="tab-pane fade" id="tab-orders" role="tabpanel">
 
@@ -1049,18 +1134,17 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-<div class="card mb-4">
+<div class="card mb-4" id="incomeCard" data-income-add-url="{% url 'tickets:event_income_create' event.id %}">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Additional Income</h5>
         {% if income_sources %}
-        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
+        <button type="button" class="btn btn-sm btn-primary" data-income-toggle><i class="bi bi-plus-lg"></i> Add Income</button>
         {% else %}
         <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-primary">Define income sources first</a>
         {% endif %}
     </div>
     <div class="card-body p-0">
-        {% if additional_income_lines %}
-        <div class="table-responsive">
+        <div class="table-responsive{% if not additional_income_lines %} d-none{% endif %}" data-income-table>
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
@@ -1070,7 +1154,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th></th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody data-income-body>
                     {% for line in additional_income_lines %}
                     <tr>
                         <td>{{ line.income_source.name }}</td>
@@ -1087,29 +1171,56 @@ document.addEventListener('DOMContentLoaded', function() {
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
+        <div class="empty-state{% if additional_income_lines %} d-none{% endif %}" data-income-empty style="padding: 32px;">
             <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
         </div>
+        {% if income_sources %}
+        <form class="d-none px-3 pt-3 border-top pb-3" method="post" action="{% url 'tickets:event_income_create' event.id %}" data-income-form novalidate>
+            {% csrf_token %}
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <label for="{{ event_income_form.income_source.id_for_label }}" class="form-label small mb-1">Source</label>
+                    {{ event_income_form.income_source }}
+                    <div class="invalid-feedback d-block" data-error-for="income_source"></div>
+                </div>
+                <div class="col-md-3">
+                    <label for="{{ event_income_form.amount.id_for_label }}" class="form-label small mb-1">Amount</label>
+                    {{ event_income_form.amount }}
+                    <div class="invalid-feedback d-block" data-error-for="amount"></div>
+                </div>
+                <div class="col-md-3">
+                    <label for="{{ event_income_form.income_date.id_for_label }}" class="form-label small mb-1">Date</label>
+                    {{ event_income_form.income_date }}
+                    <div class="invalid-feedback d-block" data-error-for="income_date"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ event_income_form.notes.id_for_label }}" class="form-label small mb-1">Notes</label>
+                    {{ event_income_form.notes }}
+                    <div class="invalid-feedback d-block" data-error-for="notes"></div>
+                </div>
+            </div>
+            <div class="invalid-feedback d-block mt-1" data-error-for="__all__"></div>
+            <div class="d-flex gap-2 mt-2">
+                <button type="submit" class="btn btn-sm btn-primary" data-income-submit>Add Income</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-income-cancel>Cancel</button>
+            </div>
+        </form>
         {% endif %}
     </div>
 </div>
 
-<div class="card mb-4">
+<div class="card mb-4" id="expenseCard" data-expense-add-url="{% url 'tickets:expense_create' event.id %}">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Expenses</h5>
-        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+        <button type="button" class="btn btn-sm btn-primary" data-expense-toggle><i class="bi bi-plus-lg"></i> Add Expense</button>
     </div>
     <div class="card-body p-0">
-        {% if expenses %}
-        {% if expenses_by_category %}
-        <div class="px-3 pt-3 pb-2">
+        <div class="px-3 pt-3 pb-2{% if not expenses_by_category %} d-none{% endif %}" data-expense-badges>
             {% for cat in expenses_by_category %}
             <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|currency }}</span>
             {% endfor %}
         </div>
-        {% endif %}
-        <div class="table-responsive">
+        <div class="table-responsive{% if not expenses %} d-none{% endif %}" data-expense-table>
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
@@ -1120,7 +1231,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th></th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody data-expense-body>
                     {% for expense in expenses %}
                     <tr>
                         <td>{{ expense.get_category_display }}</td>
@@ -1138,11 +1249,44 @@ document.addEventListener('DOMContentLoaded', function() {
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
+        <div class="empty-state{% if expenses %} d-none{% endif %}" data-expense-empty style="padding: 32px;">
             <p class="mb-2">No expenses recorded for this event.</p>
         </div>
-        {% endif %}
+        <form class="d-none px-3 pt-3 border-top pb-3" method="post" action="{% url 'tickets:expense_create' event.id %}" data-expense-form novalidate>
+            {% csrf_token %}
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label for="{{ expense_form.category.id_for_label }}" class="form-label small mb-1">Category</label>
+                    {{ expense_form.category }}
+                    <div class="invalid-feedback d-block" data-error-for="category"></div>
+                </div>
+                <div class="col-md-4">
+                    <label for="{{ expense_form.amount.id_for_label }}" class="form-label small mb-1">Amount</label>
+                    {{ expense_form.amount }}
+                    <div class="invalid-feedback d-block" data-error-for="amount"></div>
+                </div>
+                <div class="col-md-4">
+                    <label for="{{ expense_form.expense_date.id_for_label }}" class="form-label small mb-1">Date</label>
+                    {{ expense_form.expense_date }}
+                    <div class="invalid-feedback d-block" data-error-for="expense_date"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ expense_form.description.id_for_label }}" class="form-label small mb-1">Description</label>
+                    {{ expense_form.description }}
+                    <div class="invalid-feedback d-block" data-error-for="description"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ expense_form.notes.id_for_label }}" class="form-label small mb-1">Notes</label>
+                    {{ expense_form.notes }}
+                    <div class="invalid-feedback d-block" data-error-for="notes"></div>
+                </div>
+            </div>
+            <div class="invalid-feedback d-block mt-1" data-error-for="__all__"></div>
+            <div class="d-flex gap-2 mt-2">
+                <button type="submit" class="btn btn-sm btn-primary" data-expense-submit>Add Expense</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-expense-cancel>Cancel</button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -1160,9 +1304,16 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Marketing SMS</h5>
-        <a href="{% url 'tickets:sms_campaign_create' %}?event={{ event.id }}" class="btn btn-sm btn-primary">
-            <i class="bi bi-send"></i> Send SMS to attendees
-        </a>
+        <div class="d-flex gap-2">
+            {% if org.ai_sms_strategist_enabled %}
+            <a href="{% url 'tickets:sms_plan_create' %}?event={{ event.id }}" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-stars"></i> Plan with AI
+            </a>
+            {% endif %}
+            <a href="{% url 'tickets:sms_campaign_create' %}?event={{ event.id }}" class="btn btn-sm btn-primary">
+                <i class="bi bi-send"></i> Send SMS to attendees
+            </a>
+        </div>
     </div>
     <div class="card-body">
         {% if native_sms_campaigns %}
@@ -1180,8 +1331,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 </thead>
                 <tbody>
                     {% for c in native_sms_campaigns %}
-                    <tr>
-                        <td><a href="{% url 'tickets:sms_campaign_detail' pk=c.id %}">{{ c.name }}</a></td>
+                    <tr class="sms-campaign-row" role="button" style="cursor: pointer;"
+                        data-bs-toggle="modal" data-bs-target="#smsCampaignModal"
+                        data-name="{{ c.name }}"
+                        data-status-key="{{ c.status }}"
+                        data-status-label="{{ c.get_status_display }}"
+                        data-body="{{ c.body }}"
+                        data-link-url="{{ c.link_url }}"
+                        data-audience="{{ c.audience_size }}"
+                        data-sent="{{ c.sent_count }}"
+                        data-delivered="{{ c.delivered_count }}"
+                        data-failed="{{ c.failed_count }}"
+                        data-unique-clicks="{{ c.unique_clicks }}"
+                        data-total-clicks="{{ c.total_clicks }}"
+                        data-unsubs="{{ c.unsub_count }}"
+                        data-when-label="{% if c.status == 'scheduled' %}Scheduled for{% elif c.sent_at %}Sent{% else %}Created{% endif %}"
+                        data-when="{% if c.status == 'scheduled' %}{{ c.scheduled_at|date:'M d, Y g:i A' }}{% elif c.sent_at %}{{ c.sent_at|date:'M d, Y' }}{% else %}{{ c.created_at|date:'M d, Y' }}{% endif %}"
+                        data-detail-url="{% url 'tickets:sms_campaign_detail' pk=c.id %}">
+                        <td class="fw-medium">{{ c.name }}</td>
                         <td>{{ c.get_status_display }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
                         <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
@@ -1199,6 +1366,38 @@ document.addEventListener('DOMContentLoaded', function() {
         {% else %}
         <p class="text-body-secondary mb-0">Text this event's ticket buyers directly. No native SMS campaigns sent yet.</p>
         {% endif %}
+    </div>
+</div>
+
+<!-- SMS campaign detail modal (populated from the clicked row's data-* attributes) -->
+<div class="modal fade" id="smsCampaignModal" tabindex="-1" aria-labelledby="smsCampaignModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="smsCampaignModalLabel">Campaign</h5>
+                    <div class="text-body-secondary small mt-1" id="smsCampaignModalWhen"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3" id="smsCampaignModalStats"></div>
+                <div class="text-body-secondary small mb-1">Message</div>
+                <div class="card">
+                    <div class="card-body">
+                        <div id="smsCampaignModalBody" style="white-space: pre-wrap;"></div>
+                        <div class="mt-2 small text-body-secondary" id="smsCampaignModalLink" hidden>
+                            <i class="bi bi-link-45deg"></i> <span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a href="#" class="btn btn-outline-primary btn-sm" id="smsCampaignModalDetailLink">
+                    <i class="bi bi-box-arrow-up-right"></i> Open full campaign
+                </a>
+            </div>
+        </div>
     </div>
 </div>
 </div><!-- /SMS view -->
@@ -1314,7 +1513,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="d-none d-sm-table-cell">{% if a.rfm_segment %}<span class="badge bg-{{ segment_badge_colors|get_item:a.rfm_segment }}">{{ a.rfm_segment }}</span>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
                         <td class="text-end{% if a.events_count >= 2 %} fw-semibold{% endif %}">{{ a.events_count }}</td>
                         <td class="text-end"><span class="revenue">${{ a.lifetime_value|currency }}</span></td>
-                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% else %}—{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{% timezone event.timezone %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% endtimezone %}{% else %}—{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -2418,6 +2617,87 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSurveyResponseModal);
 } else {
     initSurveyResponseModal();
+}
+
+// Marketing SMS row → detail modal. All campaign data is already embedded in the
+// row's data-* attributes, so this just reads them and paints the modal on open.
+// Deferred to DOMContentLoaded so the (defer-loaded) Bootstrap bundle has run.
+function initSmsCampaignModal() {
+    var modalEl = document.getElementById('smsCampaignModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+
+    // The modal markup lives inside the marketing tab-pane, whose ancestors set
+    // `overflow-x: hidden` / `transform` — either establishes a containing block
+    // that traps a `position: fixed` modal, clipping it and letting the backdrop
+    // paint over it. Relocating it to <body> lets it size against the viewport.
+    // The data-bs-toggle triggers still resolve it by its #id selector.
+    if (modalEl.parentElement !== document.body) {
+        document.body.appendChild(modalEl);
+    }
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    var BADGE = {
+        sent: 'bg-success', scheduled: 'bg-info', sending: 'bg-warning',
+        canceled: 'bg-secondary', failed: 'bg-danger', draft: 'bg-light text-dark'
+    };
+
+    modalEl.addEventListener('show.bs.modal', function(ev) {
+        var row = ev.relatedTarget;
+        if (!row) return;
+        var d = row.dataset;
+        var hasLink = !!(d.linkUrl && d.linkUrl.length);
+
+        document.getElementById('smsCampaignModalLabel').textContent = d.name || 'Campaign';
+
+        var badgeClass = BADGE[d.statusKey] || 'bg-light text-dark';
+        var when = (d.whenLabel ? d.whenLabel + ' ' : '') + (d.when || '');
+        document.getElementById('smsCampaignModalWhen').innerHTML =
+            '<span class="badge ' + badgeClass + '">' + esc(d.statusLabel) + '</span> ' + esc(when.trim());
+
+        var cards = [
+            { label: 'Audience', value: d.audience, cls: 'stat-card--info' },
+            { label: 'Sent', value: d.sent, cls: 'stat-card--accent' },
+            { label: 'Delivered', value: d.delivered, cls: 'stat-card--success' },
+            { label: 'Failed', value: d.failed, cls: '' }
+        ];
+        if (hasLink) {
+            cards.push({ label: 'Clicks (unique)', value: d.uniqueClicks, cls: '', sub: (d.totalClicks || 0) + ' total' });
+        }
+        cards.push({ label: 'Unsubscribes', value: d.unsubs, cls: '' });
+
+        var statsHtml = '';
+        cards.forEach(function(c) {
+            statsHtml += '<div class="col-6 col-md-3"><div class="stat-card ' + c.cls + '">' +
+                '<div class="stat-card-label">' + esc(c.label) + '</div>' +
+                '<div class="stat-card-value">' + esc(c.value || 0) + '</div>' +
+                (c.sub ? '<div class="stat-card-label">' + esc(c.sub) + '</div>' : '') +
+                '</div></div>';
+        });
+        document.getElementById('smsCampaignModalStats').innerHTML = statsHtml;
+
+        document.getElementById('smsCampaignModalBody').textContent = d.body || '';
+
+        var linkWrap = document.getElementById('smsCampaignModalLink');
+        if (hasLink) {
+            linkWrap.querySelector('span').textContent = d.linkUrl;
+            linkWrap.hidden = false;
+        } else {
+            linkWrap.hidden = true;
+        }
+
+        var detailLink = document.getElementById('smsCampaignModalDetailLink');
+        detailLink.href = d.detailUrl || '#';
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSmsCampaignModal);
+} else {
+    initSmsCampaignModal();
 }
 
 // Send-survey modal: fetch the recipient count fresh each time it opens. This
@@ -5419,5 +5699,688 @@ document.querySelectorAll('.event-survey-matcher').forEach(setupSurveyMatcher);
 })();
 </script>
 {% endif %}
+
+<script>
+// Sales Pacing — cumulative sales for this event vs. a comparison event, aligned
+// on a days-before-event axis. Metric (tickets/revenue) and scale (absolute/%)
+// are client-side transforms over one embedded payload; changing the comparison
+// event fetches its series from the pacing API.
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('pacingChart');
+    if (!canvas) return;
+    var card = document.getElementById('pacingCard');
+
+    var currentData = JSON.parse(document.getElementById('pacing-current-data').textContent);
+    var compareData = JSON.parse(document.getElementById('pacing-compare-data').textContent);
+    var currentName = card.getAttribute('data-current-name') || 'This event';
+    var pacingUrlTemplate = card.getAttribute('data-pacing-url');
+
+    var rootStyle = getComputedStyle(document.documentElement);
+    function token(name, fallback) {
+        var v = (rootStyle.getPropertyValue(name) || '').trim();
+        return v || fallback;
+    }
+    var gridColor = token('--border-light', 'rgba(255,255,255,0.05)');
+    var labelColor = token('--text-tertiary', '#7A7672');
+    var currentColor = token('--accent', '#00FF87');
+    var compareColor = token('--info', '#7B8FBF');
+    var todayColor = token('--text-secondary', '#9A9691');
+
+    // "Today" on the days-before axis for the current event (blank = past event).
+    var rawToday = card.getAttribute('data-today-days-before');
+    var todayDaysBefore = rawToday === '' || rawToday === null ? null : Number(rawToday);
+    var currentAxis = [];   // day values behind the x labels, kept for the marker
+
+    var metric = 'tickets';   // 'tickets' | 'revenue'
+    var scale = 'abs';        // 'abs' | 'pct'
+
+    // Cumulative value at each axis label: sum of the metric for all days-before
+    // >= the label (axis is sorted descending, so cumulative grows toward day 0).
+    function cumulativeFor(series, axis, key) {
+        var sorted = series.slice().sort(function (a, b) { return b.d - a.d; });
+        var out = [], running = 0, idx = 0;
+        axis.forEach(function (label) {
+            while (idx < sorted.length && sorted[idx].d >= label) {
+                running += sorted[idx][key];
+                idx++;
+            }
+            out.push(running);
+        });
+        return out;
+    }
+
+    function labelFor(d) {
+        if (d === 0) return 'Event day';
+        return d > 0 ? (d + 'd before') : (Math.abs(d) + 'd after');
+    }
+
+    function buildConfig() {
+        var series = [currentData.series || []];
+        if (compareData) series.push(compareData.series || []);
+        // Continuous axis: every day from the earliest sale (largest days-before)
+        // down to the last day, so days with no sales aren't skipped.
+        var maxD = null, minD = null;
+        series.forEach(function (s) {
+            s.forEach(function (p) {
+                if (maxD === null || p.d > maxD) maxD = p.d;
+                if (minD === null || p.d < minD) minD = p.d;
+            });
+        });
+        var axis = [];
+        if (maxD === null) { axis = [0]; }
+        else { for (var d = maxD; d >= minD; d--) axis.push(d); }
+        currentAxis = axis;
+
+        var key = metric;   // 'tickets' | 'revenue'
+        function dataset(data, name, color, dashed) {
+            var values = cumulativeFor(data.series || [], axis, key);
+            if (scale === 'pct') {
+                var total = key === 'tickets' ? data.total_tickets : data.total_revenue;
+                values = values.map(function (v) { return total > 0 ? (v / total * 100) : 0; });
+            }
+            return {
+                label: name,
+                data: values,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                borderDash: dashed ? [5, 4] : [],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                fill: false,
+                tension: 0.35,
+            };
+        }
+
+        var datasets = [dataset(currentData, currentName, currentColor, false)];
+        if (compareData) {
+            datasets.push(dataset(compareData, compareData.name || 'Comparison', compareColor, true));
+        }
+
+        var prefix = (metric === 'revenue' && scale === 'abs') ? '$' : '';
+        var suffix = scale === 'pct' ? '%' : '';
+        function fmt(v) {
+            var n = scale === 'pct' ? Math.round(v * 10) / 10 : Math.round(v);
+            return prefix + n.toLocaleString() + suffix;
+        }
+
+        return {
+            labels: axis.map(labelFor),
+            datasets: datasets,
+            prefix: prefix,
+            suffix: suffix,
+            fmt: fmt,
+        };
+    }
+
+    // Interpolate the x-pixel for an arbitrary days-before value across the
+    // category axis (labels only exist on days with sales, so "today" usually
+    // falls between two ticks). Returns null if it lies outside the drawn range.
+    function pixelForDay(chart, day) {
+        var axis = currentAxis, labels = chart.data.labels;
+        if (!axis.length) return null;
+        var xScale = chart.scales.x;
+        if (day > axis[0] || day < axis[axis.length - 1]) return null;   // off-scale
+        for (var i = 0; i < axis.length - 1; i++) {
+            var a = axis[i], b = axis[i + 1];   // descending: a > b
+            if (day <= a && day >= b) {
+                var t = a === b ? 0 : (a - day) / (a - b);
+                // Category scales resolve by label value, not numeric index.
+                var xa = xScale.getPixelForValue(labels[i]);
+                var xb = xScale.getPixelForValue(labels[i + 1]);
+                return xa + (xb - xa) * t;
+            }
+        }
+        return xScale.getPixelForValue(labels[axis.length - 1]);
+    }
+
+    var todayMarkerPlugin = {
+        id: 'pacingTodayMarker',
+        afterDatasetsDraw: function (chart) {
+            if (todayDaysBefore === null || isNaN(todayDaysBefore)) return;
+            var x = pixelForDay(chart, todayDaysBefore);
+            if (x === null) return;
+            var area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([4, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = todayColor;
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // "Today" pill anchored to the top of the line.
+            var label = 'Today';
+            ctx.font = '600 10px Sora, sans-serif';
+            var padX = 5, w = ctx.measureText(label).width + padX * 2, h = 15;
+            var lx = Math.min(Math.max(x - w / 2, area.left), area.right - w);
+            ctx.fillStyle = todayColor;
+            if (ctx.roundRect) {
+                ctx.beginPath(); ctx.roundRect(lx, area.top - h - 2, w, h, 3); ctx.fill();
+            } else {
+                ctx.fillRect(lx, area.top - h - 2, w, h);
+            }
+            ctx.fillStyle = token('--text-inverse', '#0E0E0E');
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, lx + w / 2, area.top - h / 2 - 2);
+            ctx.restore();
+        }
+    };
+
+    var chart = null;
+    function render() {
+        var cfg = buildConfig();
+        if (chart) {
+            chart.data.labels = cfg.labels;
+            chart.data.datasets = cfg.datasets;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y);
+            };
+            chart.options.scales.y.ticks.callback = function (v) { return cfg.fmt(v); };
+            chart.update();
+            return;
+        }
+        chart = new Chart(canvas, {
+            type: 'line',
+            plugins: [todayMarkerPlugin],
+            data: { labels: cfg.labels, datasets: cfg.datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                layout: { padding: { top: 18 } },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: labelColor, usePointStyle: true, boxWidth: 8, boxHeight: 8 }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: { label: function (ctx) { return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y); } }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return cfg.fmt(v); } }
+                    }
+                }
+            }
+        });
+    }
+
+    // Metric + scale toggles
+    function bindToggle(id, group, apply) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            group.forEach(function (o) { document.getElementById(o).classList.remove('active'); });
+            btn.classList.add('active');
+            apply();
+            render();
+        });
+    }
+    bindToggle('btnPaceTickets', ['btnPaceTickets', 'btnPaceRevenue'], function () { metric = 'tickets'; });
+    bindToggle('btnPaceRevenue', ['btnPaceTickets', 'btnPaceRevenue'], function () { metric = 'revenue'; });
+    bindToggle('btnPaceAbs', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'abs'; });
+    bindToggle('btnPacePct', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'pct'; });
+
+    // Comparison-event combobox: type to filter the past-event list.
+    (function () {
+        var combo = document.getElementById('pacingCompare');
+        if (!combo) return;
+        var input = document.getElementById('pacingCompareInput');
+        var list = document.getElementById('pacingCompareList');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label; input.value = selectedLabel; }
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function showEmpty() {
+            if (emptyEl) return;
+            emptyEl = document.createElement('li');
+            emptyEl.className = 'pacing-combo-empty';
+            emptyEl.textContent = 'No matching events';
+            list.appendChild(emptyEl);
+        }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) showEmpty();
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label;
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            loadComparison(selectedId);
+        }
+
+        function loadComparison(id) {
+            if (!id) return;
+            input.disabled = true;
+            fetch(pacingUrlTemplate.replace('00000000-0000-0000-0000-000000000000', id), {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function (r) { if (!r.ok) throw new Error('pacing fetch failed'); return r.json(); })
+                .then(function (json) { compareData = json; render(); })
+                .catch(function (err) { console.error(err); })
+                .finally(function () { input.disabled = false; });
+        }
+
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
+        });
+        // mousedown (not click) so we act before the input's blur fires.
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    })();
+
+    // The chart is created inside the (initially hidden) Analytics tab, so its
+    // canvas has no size until the tab is shown. Re-measure on first reveal.
+    var tabsEl = document.getElementById('eventDetailTabs');
+    if (tabsEl) {
+        tabsEl.addEventListener('shown.bs.tab', function (e) {
+            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
+                chart.resize();
+            }
+        });
+    }
+
+    render();
+});
+</script>
+
+<script>
+// Inline "Add Expense" — post the form via fetch and drop the new row straight
+// into the Expenses table without navigating away or reloading the page.
+(function () {
+    var card = document.getElementById('expenseCard');
+    if (!card) return;
+
+    var form = card.querySelector('[data-expense-form]');
+    var toggleBtn = card.querySelector('[data-expense-toggle]');
+    var cancelBtn = card.querySelector('[data-expense-cancel]');
+    var submitBtn = card.querySelector('[data-expense-submit]');
+    var tbody = card.querySelector('[data-expense-body]');
+    var tableWrap = card.querySelector('[data-expense-table]');
+    var emptyState = card.querySelector('[data-expense-empty]');
+    var badges = card.querySelector('[data-expense-badges]');
+    var addUrl = card.getAttribute('data-expense-add-url');
+
+    var expensesTotalEl = document.querySelector('[data-expenses-total]');
+    var profitCardEl = document.querySelector('[data-profit-card]');
+    var profitValueEl = document.querySelector('[data-profit-value]');
+
+    function getCsrf() {
+        var m = document.cookie.match(/csrftoken=([^;]+)/);
+        if (m) return m[1];
+        var input = form.querySelector('[name=csrfmiddlewaretoken]');
+        return input ? input.value : '';
+    }
+
+    function clearErrors() {
+        form.querySelectorAll('[data-error-for]').forEach(function (el) { el.textContent = ''; });
+        form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    }
+
+    function showErrors(errors) {
+        Object.keys(errors || {}).forEach(function (field) {
+            var box = form.querySelector('[data-error-for="' + field + '"]');
+            var messages = errors[field];
+            var text = Array.isArray(messages)
+                ? messages.map(function (m) { return m.message || m; }).join(' ')
+                : String(messages);
+            if (box) box.textContent = text;
+            var input = form.querySelector('[name="' + field + '"]');
+            if (input) input.classList.add('is-invalid');
+        });
+    }
+
+    function openForm() {
+        form.classList.remove('d-none');
+        clearErrors();
+        form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        var first = form.querySelector('select, input, textarea');
+        if (first) first.focus({ preventScroll: true });
+    }
+
+    function closeForm() {
+        form.classList.add('d-none');
+        form.reset();
+        clearErrors();
+    }
+
+    function buildRow(exp) {
+        var tr = document.createElement('tr');
+
+        var tdCat = document.createElement('td');
+        tdCat.textContent = exp.category_display;
+        tr.appendChild(tdCat);
+
+        var tdDesc = document.createElement('td');
+        tdDesc.textContent = exp.description;
+        tr.appendChild(tdDesc);
+
+        var tdAmount = document.createElement('td');
+        var strong = document.createElement('strong');
+        strong.textContent = '$' + exp.amount_display;
+        tdAmount.appendChild(strong);
+        tr.appendChild(tdAmount);
+
+        var tdDate = document.createElement('td');
+        if (exp.expense_date_display) {
+            tdDate.textContent = exp.expense_date_display;
+        } else {
+            var muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.innerHTML = '&mdash;';
+            tdDate.appendChild(muted);
+        }
+        tr.appendChild(tdDate);
+
+        var tdActions = document.createElement('td');
+        var group = document.createElement('div');
+        group.className = 'd-flex gap-1';
+        var edit = document.createElement('a');
+        edit.href = exp.edit_url;
+        edit.className = 'btn btn-sm btn-outline-secondary';
+        edit.innerHTML = '<i class="bi bi-pencil"></i>';
+        var del = document.createElement('a');
+        del.href = exp.delete_url;
+        del.className = 'btn btn-sm btn-outline-danger';
+        del.innerHTML = '<i class="bi bi-trash"></i>';
+        group.appendChild(edit);
+        group.appendChild(del);
+        tdActions.appendChild(group);
+        tr.appendChild(tdActions);
+
+        return tr;
+    }
+
+    function renderBadges(categories) {
+        badges.textContent = '';
+        (categories || []).forEach(function (cat) {
+            var span = document.createElement('span');
+            span.className = 'badge bg-secondary me-1 mb-1';
+            span.textContent = cat.label + ' — $' + cat.total_display;
+            badges.appendChild(span);
+        });
+        badges.classList.toggle('d-none', !(categories && categories.length));
+    }
+
+    function updateTotals(totals) {
+        if (expensesTotalEl) expensesTotalEl.textContent = '$' + totals.total_expenses_display;
+        if (profitCardEl) {
+            profitCardEl.classList.toggle('stat-card--success', !totals.profit_negative);
+            profitCardEl.classList.toggle('stat-card--danger', !!totals.profit_negative);
+        }
+        if (profitValueEl) {
+            profitValueEl.style.color = totals.profit_negative ? 'var(--danger)' : '';
+            var html = '$' + totals.profit_display;
+            if (totals.margin_pct !== null && totals.margin_pct !== undefined) {
+                html += ' <small style="font-size:0.6em;">(' + totals.margin_pct + '%)</small>';
+            }
+            profitValueEl.innerHTML = html;
+        }
+    }
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', function () {
+            if (form.classList.contains('d-none')) openForm(); else closeForm();
+        });
+    }
+    if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearErrors();
+        if (submitBtn) submitBtn.disabled = true;
+        fetch(addUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': getCsrf(),
+            },
+            body: new FormData(form),
+        })
+        .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+        .then(function (res) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (res.status === 200 && res.data.ok) {
+                tbody.appendChild(buildRow(res.data.expense));
+                tableWrap.classList.remove('d-none');
+                emptyState.classList.add('d-none');
+                renderBadges(res.data.categories);
+                updateTotals(res.data.totals);
+                closeForm();
+                if (window.showCueToast) window.showCueToast('Expense added.', 'success');
+            } else {
+                showErrors(res.data.errors);
+            }
+        })
+        .catch(function () {
+            if (submitBtn) submitBtn.disabled = false;
+            if (window.showCueToast) window.showCueToast('Something went wrong. Please try again.', 'error');
+        });
+    });
+})();
+</script>
+
+<script>
+// Inline "Add Income" — post the form via fetch and drop the new row straight
+// into the Additional Income table without navigating away or reloading the page.
+(function () {
+    var card = document.getElementById('incomeCard');
+    if (!card) return;
+
+    var form = card.querySelector('[data-income-form]');
+    var toggleBtn = card.querySelector('[data-income-toggle]');
+    if (!form || !toggleBtn) return;
+    var cancelBtn = card.querySelector('[data-income-cancel]');
+    var submitBtn = card.querySelector('[data-income-submit]');
+    var tbody = card.querySelector('[data-income-body]');
+    var tableWrap = card.querySelector('[data-income-table]');
+    var emptyState = card.querySelector('[data-income-empty]');
+    var addUrl = card.getAttribute('data-income-add-url');
+
+    var revenueTotalEl = document.querySelector('[data-revenue-total]');
+    var revenueDetailEl = document.querySelector('[data-revenue-detail]');
+    var revenueTicketsEl = document.querySelector('[data-revenue-tickets]');
+    var revenueOtherEl = document.querySelector('[data-revenue-other]');
+    var profitCardEl = document.querySelector('[data-profit-card]');
+    var profitValueEl = document.querySelector('[data-profit-value]');
+
+    function getCsrf() {
+        var m = document.cookie.match(/csrftoken=([^;]+)/);
+        if (m) return m[1];
+        var input = form.querySelector('[name=csrfmiddlewaretoken]');
+        return input ? input.value : '';
+    }
+
+    function clearErrors() {
+        form.querySelectorAll('[data-error-for]').forEach(function (el) { el.textContent = ''; });
+        form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    }
+
+    function showErrors(errors) {
+        Object.keys(errors || {}).forEach(function (field) {
+            var box = form.querySelector('[data-error-for="' + field + '"]');
+            var messages = errors[field];
+            var text = Array.isArray(messages)
+                ? messages.map(function (m) { return m.message || m; }).join(' ')
+                : String(messages);
+            if (box) box.textContent = text;
+            var input = form.querySelector('[name="' + field + '"]');
+            if (input) input.classList.add('is-invalid');
+        });
+    }
+
+    function openForm() {
+        form.classList.remove('d-none');
+        clearErrors();
+        form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        var first = form.querySelector('select, input, textarea');
+        if (first) first.focus({ preventScroll: true });
+    }
+
+    function closeForm() {
+        form.classList.add('d-none');
+        form.reset();
+        clearErrors();
+    }
+
+    function buildRow(inc) {
+        var tr = document.createElement('tr');
+
+        var tdSource = document.createElement('td');
+        tdSource.textContent = inc.source_name;
+        tr.appendChild(tdSource);
+
+        var tdAmount = document.createElement('td');
+        var strong = document.createElement('strong');
+        strong.textContent = '$' + inc.amount_display;
+        tdAmount.appendChild(strong);
+        tr.appendChild(tdAmount);
+
+        var tdDate = document.createElement('td');
+        if (inc.income_date_display) {
+            tdDate.textContent = inc.income_date_display;
+        } else {
+            var muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.innerHTML = '&mdash;';
+            tdDate.appendChild(muted);
+        }
+        tr.appendChild(tdDate);
+
+        var tdActions = document.createElement('td');
+        var group = document.createElement('div');
+        group.className = 'd-flex gap-1';
+        var edit = document.createElement('a');
+        edit.href = inc.edit_url;
+        edit.className = 'btn btn-sm btn-outline-secondary';
+        edit.innerHTML = '<i class="bi bi-pencil"></i>';
+        var del = document.createElement('a');
+        del.href = inc.delete_url;
+        del.className = 'btn btn-sm btn-outline-danger';
+        del.innerHTML = '<i class="bi bi-trash"></i>';
+        group.appendChild(edit);
+        group.appendChild(del);
+        tdActions.appendChild(group);
+        tr.appendChild(tdActions);
+
+        return tr;
+    }
+
+    function updateTotals(totals) {
+        if (revenueTotalEl) revenueTotalEl.textContent = '$' + totals.total_revenue_display;
+        if (revenueDetailEl) {
+            revenueDetailEl.classList.toggle('d-none', !totals.has_additional_income);
+            if (revenueTicketsEl) revenueTicketsEl.textContent = totals.net_ticket_revenue_display;
+            if (revenueOtherEl) revenueOtherEl.textContent = totals.total_additional_income_display;
+        }
+        if (profitCardEl) {
+            profitCardEl.classList.toggle('stat-card--success', !totals.profit_negative);
+            profitCardEl.classList.toggle('stat-card--danger', !!totals.profit_negative);
+        }
+        if (profitValueEl) {
+            profitValueEl.style.color = totals.profit_negative ? 'var(--danger)' : '';
+            var html = '$' + totals.profit_display;
+            if (totals.margin_pct !== null && totals.margin_pct !== undefined) {
+                html += ' <small style="font-size:0.6em;">(' + totals.margin_pct + '%)</small>';
+            }
+            profitValueEl.innerHTML = html;
+        }
+    }
+
+    toggleBtn.addEventListener('click', function () {
+        if (form.classList.contains('d-none')) openForm(); else closeForm();
+    });
+    if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearErrors();
+        if (submitBtn) submitBtn.disabled = true;
+        fetch(addUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': getCsrf(),
+            },
+            body: new FormData(form),
+        })
+        .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+        .then(function (res) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (res.status === 200 && res.data.ok) {
+                tbody.appendChild(buildRow(res.data.income));
+                tableWrap.classList.remove('d-none');
+                emptyState.classList.add('d-none');
+                updateTotals(res.data.totals);
+                closeForm();
+                if (window.showCueToast) window.showCueToast('Income added.', 'success');
+            } else {
+                showErrors(res.data.errors);
+            }
+        })
+        .catch(function () {
+            if (submitBtn) submitBtn.disabled = false;
+            if (window.showCueToast) window.showCueToast('Something went wrong. Please try again.', 'error');
+        });
+    });
+})();
+</script>
 
 {% endblock %}

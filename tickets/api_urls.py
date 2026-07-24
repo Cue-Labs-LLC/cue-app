@@ -7,6 +7,7 @@ urlpatterns = [
     path('auth/scanner-login/', api_views.scanner_login, name='api_scanner_login'),
     path('auth/phone/start/', api_views.api_phone_start, name='api_phone_start'),
     path('auth/phone/verify/', api_views.api_phone_verify, name='api_phone_verify'),
+    path('auth/org/select/', api_views.api_org_select, name='api_org_select'),
 
     # Scanner (PIN-based guest check-in)
     path('scanner/event/', api_views.scanner_event, name='api_scanner_event'),
@@ -25,13 +26,25 @@ urlpatterns = [
     path('tap-to-pay/terms-acceptance/', api_views.tap_to_pay_terms_acceptance, name='api_ttp_terms_acceptance'),
     path('merchant/status/', api_views.merchant_status, name='api_merchant_status'),
 
+    # Push notifications (APNs device-token registration).
+    # Both slashed and slash-less: a POST to the un-slashed path triggers a 301
+    # (APPEND_SLASH), and clients downgrade the redirected POST to GET + drop the
+    # body, so the registration silently fails. Registering the bare path lets a
+    # client that omits the trailing slash reach the view directly (204).
+    path('notification/device-token',  api_views.register_device_token),
+    path('notification/device-token/', api_views.register_device_token, name='api_register_device_token'),
+
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),
     path('organizer/events/<uuid:event_id>/ticket-types/', api_views.organizer_ticket_types, name='api_organizer_ticket_types'),
+    path('organizer/events/<uuid:event_id>/checkin/', api_views.organizer_event_checkin, name='api_organizer_event_checkin'),
     path('organizer/events/<uuid:event_id>/checkin-stats/', api_views.organizer_checkin_stats, name='api_organizer_checkin_stats'),
     path('organizer/events/<uuid:event_id>/orders/', api_views.organizer_event_orders, name='api_organizer_event_orders'),
     path('organizer/checkin/', api_views.organizer_checkin, name='api_organizer_checkin'),
     path('organizer/sell/', api_views.organizer_sell, name='api_organizer_sell'),
+    # Same dual-auth view as scanner/receipt/ — the organizer app (Token auth)
+    # posts here; the scanner app (Scanner PIN auth) posts to scanner/receipt/.
+    path('organizer/receipt/', api_views.scanner_receipt, name='api_organizer_receipt'),
 
     # Agent / External API (API key auth, no user session)
     path('v1/events/upcoming/', api_views.agent_upcoming_events, name='api_agent_upcoming_events'),

@@ -7,7 +7,8 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint
+from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
 def _default_csv_format_for(organization):
@@ -57,10 +58,13 @@ class OrgProfileForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['photo', 'description', 'website']
+        fields = ['photo', 'description', 'website', 'instagram_url', 'youtube_url', 'tiktok_url']
         widgets = {
-            'description': forms.Textarea(attrs={'rows': 3, 'maxlength': 500}),
-            'website':     forms.URLInput(attrs={'placeholder': 'https://'}),
+            'description':   forms.Textarea(attrs={'rows': 3, 'maxlength': 500}),
+            'website':       forms.URLInput(attrs={'placeholder': 'https://'}),
+            'instagram_url': forms.URLInput(attrs={'placeholder': 'https://instagram.com/yourhandle'}),
+            'youtube_url':   forms.URLInput(attrs={'placeholder': 'https://youtube.com/@yourchannel'}),
+            'tiktok_url':    forms.URLInput(attrs={'placeholder': 'https://tiktok.com/@yourhandle'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -71,6 +75,9 @@ class OrgProfileForm(forms.ModelForm):
             'photo',
             'description',
             'website',
+            'instagram_url',
+            'youtube_url',
+            'tiktok_url',
         )
 
 
@@ -79,17 +86,144 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['ai_event_summary_enabled']
+        fields = ['ai_event_summary_enabled', 'ai_event_summary_auto_regenerate', 'timezone']
         widgets = {
             'ai_event_summary_enabled': forms.CheckboxInput(
                 attrs={'class': 'form-check-input', 'role': 'switch'}
             ),
+            'ai_event_summary_auto_regenerate': forms.CheckboxInput(
+                attrs={'class': 'form-check-input', 'role': 'switch'}
+            ),
+            'timezone': forms.Select(attrs={'class': 'form-select'}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
         self.helper.form_tag = False
+        # A curated shortlist of common zones keeps the dropdown usable; the blank
+        # option means "use the site default".
+        import zoneinfo
+        from django.conf import settings
+        common = [
+            'America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
+            'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu',
+            'America/Toronto', 'America/Mexico_City', 'Europe/London', 'Europe/Paris',
+            'Europe/Berlin', 'Europe/Madrid', 'Australia/Sydney', 'UTC',
+        ]
+        default = getattr(settings, 'TIME_ZONE', 'UTC')
+        available = zoneinfo.available_timezones()
+        names = [z for z in common if z in available]
+        # Include the org's current value even if it's outside the shortlist.
+        current = (self.instance and self.instance.timezone) or ''
+        if current and current not in names and current in available:
+            names.append(current)
+        choices = [('', f'Site default ({default})')] + [(z, z.replace('_', ' ')) for z in names]
+        self.fields['timezone'].widget.choices = choices
+        self.fields['timezone'].choices = choices
+        self.fields['timezone'].required = False
+
+
+class SegmentTuningForm(forms.ModelForm):
+    """Edit an org's segmentation mode + absolute cut-off bands.
+
+    The six band values live in the Organization.segment_bands JSONField; this
+    form flattens them into individual fields for editing and writes them back on
+    save. Recency in days, frequency in order counts, monetary in dollars.
+    """
+
+    recency_active_days = forms.IntegerField(
+        min_value=1, label="Days since last order to still count as active",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Days since last order to still count as active'}),
+    )
+    recency_cooling_days = forms.IntegerField(
+        min_value=2, label="Days since last order before a customer counts as gone",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Days since last order before a customer counts as gone'}),
+    )
+    freq_few = forms.IntegerField(
+        min_value=2, label="Orders that make someone a repeat customer",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Orders that make someone a repeat customer'}),
+    )
+    freq_many = forms.IntegerField(
+        min_value=2, label="Orders that make someone a frequent buyer",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Orders that make someone a frequent buyer'}),
+    )
+    monetary_mid = forms.DecimalField(
+        min_value=0, max_digits=10, decimal_places=2, label="Total spent to count as a good spender",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'step': '0.01', 'aria-label': 'Dollars spent to count as a good spender'}),
+    )
+    monetary_high = forms.DecimalField(
+        min_value=0, max_digits=10, decimal_places=2, label="Total spent to count as a top spender",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'step': '0.01', 'aria-label': 'Dollars spent to count as a top spender'}),
+    )
+
+    class Meta:
+        model = Organization
+        fields = ['segment_mode']
+        widgets = {
+            'segment_mode': forms.Select(attrs={'class': 'form-select'}),
+        }
+
+    BAND_FIELDS = [
+        'recency_active_days', 'recency_cooling_days', 'freq_few', 'freq_many',
+        'monetary_mid', 'monetary_high',
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Seed initial band values from the org's stored bands, falling back to
+        # module defaults (no DB write here — the view seeds monetary on GET).
+        from .services.segmentation.segment_definitions import default_segment_bands
+        stored = (self.instance.segment_bands or {}) if self.instance else {}
+        defaults = default_segment_bands()
+        if not self.is_bound:
+            for f in self.BAND_FIELDS:
+                self.fields[f].initial = stored.get(f, defaults[f])
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+    def clean(self):
+        cleaned = super().clean()
+        active = cleaned.get('recency_active_days')
+        cooling = cleaned.get('recency_cooling_days')
+        few = cleaned.get('freq_few')
+        many = cleaned.get('freq_many')
+        mid = cleaned.get('monetary_mid')
+        high = cleaned.get('monetary_high')
+        if active is not None and cooling is not None and active >= cooling:
+            self.add_error('recency_cooling_days', 'Cooling window must be longer than the active window.')
+        if few is not None and many is not None and few >= many:
+            self.add_error('freq_many', 'Buys-often must be more orders than a few.')
+        if mid is not None and high is not None and mid >= high:
+            self.add_error('monetary_high', 'Top-spender threshold must be higher than the decent-spend threshold.')
+        return cleaned
+
+    def band_values(self):
+        """Return the cleaned band values as a JSON-serializable dict."""
+        return {
+            'recency_active_days': self.cleaned_data['recency_active_days'],
+            'recency_cooling_days': self.cleaned_data['recency_cooling_days'],
+            'freq_few': self.cleaned_data['freq_few'],
+            'freq_many': self.cleaned_data['freq_many'],
+            'monetary_mid': float(self.cleaned_data['monetary_mid']),
+            'monetary_high': float(self.cleaned_data['monetary_high']),
+        }
+
+    def save(self, commit=True):
+        org = super().save(commit=False)
+        org.segment_bands = self.band_values()
+        if commit:
+            # Only write the two tuning columns — a bare save() would clobber
+            # fields like rfm_recalc_in_progress read at request start, racing a
+            # running recalc task.
+            org.save(update_fields=['segment_mode', 'segment_bands'])
+        return org
 
 
 class MemberInviteForm(forms.Form):
@@ -985,7 +1119,7 @@ class EventForm(forms.ModelForm):
         model = Event
         fields = [
             'name', 'ticketing_type', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
-            'description', 'capacity', 'max_tickets_per_customer', 'timezone', 'ticket_link',
+            'description', 'capacity', 'timezone', 'ticket_link',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
@@ -996,7 +1130,6 @@ class EventForm(forms.ModelForm):
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
             'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
-            'max_tickets_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Unlimited', 'min': '1'}),
             'timezone': forms.Select(attrs={'class': 'form-select'}),
             'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
         }
@@ -1017,8 +1150,6 @@ class EventForm(forms.ModelForm):
         )
         self.fields['description'].required = False
         self.fields['capacity'].required = False
-        self.fields['max_tickets_per_customer'].required = False
-        self.fields['max_tickets_per_customer'].help_text = 'Optional cumulative cap per customer across all purchases for this event.'
         self.fields['ticket_link'].required = False
         self.fields['start_time'].required = True
         self.fields['end_time'].required = True
@@ -1049,7 +1180,6 @@ class EventForm(forms.ModelForm):
                 Column('capacity', css_class='form-group col-md-3 mb-0'),
                 Column('timezone', css_class='form-group col-md-3 mb-0'),
             ),
-            Field('max_tickets_per_customer'),
             Field('description'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
         ]
@@ -1275,6 +1405,8 @@ class LoyaltyTierForm(forms.ModelForm):
             'name', 'rank', 'color', 'perks',
             'min_lifetime_value', 'min_order_count', 'min_events_purchased',
             'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+            'min_events_attended', 'attended_within_days',
+            'min_paid_events_recent', 'paid_events_within_days',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Gold'}),
@@ -1287,11 +1419,17 @@ class LoyaltyTierForm(forms.ModelForm):
             'min_tickets_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'max_days_since_last_order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'min_lifetime_points': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_events_attended': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'attended_within_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'All time'}),
+            'min_paid_events_recent': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'paid_events_within_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'All time'}),
         }
 
     RULE_FIELDS = (
         'min_lifetime_value', 'min_order_count', 'min_events_purchased',
         'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+        'min_events_attended', 'attended_within_days',
+        'min_paid_events_recent', 'paid_events_within_days',
     )
 
     def __init__(self, *args, **kwargs):
@@ -1840,6 +1978,10 @@ class SMSCampaignForm(forms.ModelForm):
         queryset=CustomerTag.objects.none(), required=False,
         widget=forms.CheckboxSelectMultiple,
     )
+    market_id = forms.ChoiceField(
+        choices=[('', 'All markets')], required=False,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
     send_mode = forms.ChoiceField(
         choices=[(SEND_NOW, 'Send now'), (SEND_SCHEDULE, 'Schedule for later')],
         initial=SEND_NOW, widget=forms.RadioSelect,
@@ -1857,14 +1999,22 @@ class SMSCampaignForm(forms.ModelForm):
             'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
         }
 
-    def __init__(self, *args, organization=None, event=None, **kwargs):
+    def __init__(self, *args, organization=None, event=None, has_manual_includes=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.event = event
+        self.has_manual_includes = has_manual_includes
         # Assembled in clean(); the view reads this and (in event mode) adds event_id.
         self.filter_criteria = {}
         if organization is not None:
             self.fields['tag_ids'].queryset = CustomerTag.objects.filter(organization=organization)
+            # T10: use shared helper so market options logic lives in one place
+            markets, has_no_market = market_filter_options(organization)
+            choices = [('', 'All markets')]
+            choices.extend((str(m.id), m.name) for m in markets)
+            if has_no_market:
+                choices.append((NO_MARKET_VALUE, 'No market'))
+            self.fields['market_id'].choices = choices
         self.helper = FormHelper()
         self.helper.form_tag = False
 
@@ -1875,11 +2025,16 @@ class SMSCampaignForm(forms.ModelForm):
             criteria['rfm_segment'] = list(cleaned['rfm_segment'])
         if cleaned.get('tag_ids'):
             criteria['tag_ids'] = [str(t.id) for t in cleaned['tag_ids']]
+        if cleaned.get('market_id'):
+            criteria['market_id'] = cleaned['market_id']
         self.filter_criteria = criteria
-        # (D3) Audience must be non-empty: a tag OR a segment OR an event (event
-        # mode supplies event_id in the view). Otherwise it would mean "everyone".
-        if not criteria and self.event is None:
-            self.add_error(None, 'Choose at least one tag or segment.')
+        # A specific market is a valid standalone audience — it resolves to that market's
+        # buyers (a real subset), matching the inline plan send. Only block a completely
+        # empty selection; the empty-criteria fail-safe in SMSCampaign.candidate_customers
+        # still returns nobody, so "All markets + nothing" can't blast the whole list.
+        # Event mode supplies event_id in the view.
+        if not criteria and self.event is None and not self.has_manual_includes:
+            self.add_error(None, 'Choose a market, segment, or tag.')
         if cleaned.get('send_mode') == self.SEND_SCHEDULE:
             scheduled = cleaned.get('scheduled_at')
             if not scheduled:
@@ -1887,3 +2042,104 @@ class SMSCampaignForm(forms.ModelForm):
             elif scheduled <= timezone.now():
                 self.add_error('scheduled_at', 'Scheduled time must be in the future.')
         return cleaned
+
+
+SUBSCRIBE_MARKET_LABEL_DEFAULT = 'Your area'
+
+
+class SubscribeForm(forms.Form):
+    """Public subscribe-to-an-organizer form: phone + SMS consent (+ optional market).
+
+    Name and email are intentionally NOT collected — the subscribe page asks only for a
+    mobile number to minimize friction. Subscriber identity is keyed on phone; a later
+    purchase or import reconciles by phone and can backfill an email. Rendered manually
+    in subscribe.html with float-labels (no crispy helper).
+    """
+    phone = forms.CharField(
+        max_length=20,
+        widget=forms.TextInput(attrs={'type': 'tel', 'autocomplete': 'tel', 'data-testid': 'subscribe-phone'}),
+    )
+    sms_consent = forms.BooleanField(
+        required=True,
+        error_messages={'required': 'Please agree to receive texts to continue.'},
+    )
+    # Shown only when the org opted into market segmentation AND has >1 market (the
+    # field is popped otherwise, so it's never rendered or validated). Required when
+    # shown — the organizer opted in specifically to capture the subscriber's market.
+    market = forms.ChoiceField(
+        required=True,
+        error_messages={'required': 'Please choose your area.'},
+        widget=forms.Select(attrs={'data-testid': 'subscribe-market'}),
+    )
+
+    def __init__(self, *args, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        markets = []
+        if organization is not None and organization.sms_subscribe_segment_by_market:
+            markets, _ = market_filter_options(organization)  # real markets only
+        if len(markets) > 1:
+            self.fields['market'].label = (
+                (organization.sms_subscribe_market_label or '').strip() or SUBSCRIBE_MARKET_LABEL_DEFAULT
+            )
+            self.fields['market'].choices = (
+                [('', 'Choose…')] + [(str(m.id), m.name) for m in markets]
+            )
+        else:
+            self.fields.pop('market', None)
+
+    def clean_phone(self):
+        phone = _normalize_phone(self.cleaned_data['phone'])
+        if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
+            raise forms.ValidationError('Enter a valid mobile number.')
+        return phone
+
+
+class WebhookEndpointForm(forms.ModelForm):
+    """Front-end form for creating/editing a webhook endpoint.
+
+    The signing secret is auto-generated and managed separately (shown/rotated on
+    the endpoint page), so it is not a form field. `event_types` renders as a
+    checkbox set validated against the canonical event types.
+    """
+
+    class Meta:
+        model = WebhookEndpoint
+        fields = ['label', 'url', 'event_types', 'description', 'is_active']
+        widgets = {
+            'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Zapier — new orders'}),
+            'url': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
+            'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Optional note'}),
+            'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('organization', None)  # accepted for call-site symmetry; org is set in the view
+        super().__init__(*args, **kwargs)
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPE_CHOICES
+        self.fields['description'].required = False
+        self.fields['event_types'] = forms.MultipleChoiceField(
+            choices=WEBHOOK_EVENT_TYPE_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+            required=True,
+            label='Event types',
+            help_text='Domain events this endpoint should receive.',
+        )
+        submit_label = 'Save changes' if (self.instance and self.instance.pk) else 'Create endpoint'
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('label'),
+            Field('url'),
+            Field('event_types'),
+            Field('description'),
+            Field('is_active'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+    def clean_url(self):
+        # Reject non-https / private / loopback / reserved destinations up front so
+        # the user gets a clear field error instead of silently-failing deliveries.
+        from tickets.services.webhooks.validation import validate_webhook_url
+        url = self.cleaned_data['url']
+        validate_webhook_url(url)  # raises forms/ValidationError, surfaced on the field
+        return url

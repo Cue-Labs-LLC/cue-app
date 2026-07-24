@@ -258,3 +258,269 @@
 **Depends on:** Nothing. Independent of the conditional-footer PR.
 
 ---
+
+## Markets: Drop legacy `city` serialization aliases and unify the `?market=` param contract
+
+**What:** In a dedicated follow-up (once templates/tests are migrated off them), remove the back-compat cruft left by the city→Market conversion: (a) the `'city': market_name` key emitted by every converted report (views.py `customer_ltv_by_market`, `repeat_customers`, `profitability_overview`; `market_trend_calculator._build_market`; `external_survey/analytics` `city_breakdown`; `marketing/analytics`), (b) the redundant `market_label` field (always equal to `market_name`), (c) the stale `city_raw` key in survey analytics (now holds a market_id), and (d) the inconsistent `?market=` value contract — `survey_analytics` filters by market **UUID** while `sms_campaign_list` still filters by market **name**.
+
+**Why:** `explicit > clever`. A dict key literally named `city` that holds a Market label misleads every future reader, and the same 4-key dict (`market_id`/`market_name`/`market_label`/`city`) is copy-pasted across ~6 sites. The split `?market=` contract (name vs UUID under one param name) is a latent trap: any shared link-builder or future consolidation silently misbehaves (outside-voice review, confidence 4).
+
+**Pros:** One canonical `market_id` + `market_name` shape across all reports; kills the redundant field and the misleading alias; one consistent query-param contract.
+
+**Cons:** Cross-cutting rename touching 6 services/views + their templates + tests. Consumers must migrate in lockstep (templates read `city`, survey links use `city_raw`, LTV sort uses `?sort=city`) or links/sorts break. Best done as its own PR, not squeezed into the shipped conversion.
+
+**Context:** Deferred during /plan-eng-review of "Tie market reporting to Market entity" (PR #302, decision D2). The `city` aliases were intentionally kept in that PR so templates/tests didn't change in the same diff (see `.context/plans/tie-market-reporting-to-market-entity.md`, "Interfaces And Output"). Start by grepping `'city':` and `market_label` in the six converted paths, and `?market=`/`?city=`/`?sort=city` in `survey_analytics.html`, `ltv_by_market.html`, and `sms_campaign_list`.
+
+**Depends on:** "Tie market reporting to Market entity" (PR #302) shipped.
+
+---
+
+## Market Membership Recency Window
+
+**What:** Add a recency dimension to market membership in `filter_customers` — e.g. "in market X" = has an order for an event in X within the last N months (org-configurable or fixed 24 months), instead of ever-bought-there-once-forever.
+
+**Why:** Today a 2019 one-time Austin buyer is a permanent Austin SMS target and inflates every Austin segment count. In an RFM product, market membership is the only slicer with no recency component, so market audiences and market segment counts get staler as the org ages.
+
+**Pros:** Market SMS audiences match who actually lives/attends there now; segment-by-market analytics reflect the current customer base; aligns market membership with the recency philosophy of RFM.
+
+**Cons:** Changes campaign audience sizes materially (needs product sign-off on the window); every market surface (customers list, segments page, SMS preview/materialization) must use the same window or the reconciliation problems return; needs a "why did my audience shrink" explanation in the UI.
+
+**Context:** Raised by the outside-voice review of the market-segments branch (decision D21, 2026-07-02, `.context/plans/market-specific-customer-segments.md`). Current semantics: `filter_customers` market block matches ANY `TicketOrder` → event → market, no date bound. Related risk captured in the same review: markets are auto-reassigned by MarketBuilder/CSV import, so a *scheduled* campaign's market audience can drift or empty between save and send with no zero-recipient warning at send time — a recency window doesn't fix that, but any redesign here should consider a send-time zero-recipient guard in the same pass.
+
+**Depends on:** Market-specific customer segments branch shipped; product decision on window length.
+
+## Segments-by-Market Breakdown: Versioned-Key Cache
+
+**What:** Cache the `_market_segment_breakdown` result (and optionally the market-scoped segment stats) in `customer_segments` using the `event_list`-style versioned cache key pattern (`{view}:{version}:{org_id}`), with a version-bump invalidation helper.
+
+**Why:** The breakdown is a full GROUP BY over every org `TicketOrder` joined through Customer and Event, recomputed on every segments page view. Fine at current org sizes; becomes the slowest thing on the page for a very large org. Caching was considered and deliberately deferred during the market-segments eng review (decision D12, 2026-07-02) to avoid an unmeasured-problem invalidation tax.
+
+**Trigger:** An org exceeds ~200k ticket orders, or the segments page renders slower than ~500ms server-side.
+
+**Pros:** Page stays fast at any scale; follows an established, proven pattern in this codebase.
+
+**Cons:** Five-plus invalidation points must be wired and kept correct — CSV upload success, Market create/edit/delete, event market reassignment (MarketBuilder), RFM recalc completion. Each is a stale-analytics bug if missed.
+
+**Context:** `tickets/views.py:_market_segment_breakdown` and `customer_segments`; cache pattern documented in CLAUDE.md "Caching" (see `_invalidate_event_list_cache`). Note the zero-market gating (task T5 of the same review) already eliminates the cost entirely for orgs with no markets, so this TODO only matters for large market-adopting orgs.
+
+**Depends on:** Market-specific customer segments branch shipped; a measured slow page.
+
+---
+
+## Multi-Market Selection in SMS Audience Builder
+
+**What:** Expose the already-supported `market_ids` criteria as a multi-select in the SMS campaign audience builder ("VIP in Austin OR Seattle"), including multi-value handling in the live preview and `audience_summary`.
+
+**Why:** `filter_customers` and `SMSCampaign.audience_summary` fully support `market_ids` (list of UUIDs and/or `__none__`), but nothing in the UI produces it — it was kept deliberately during the market-segments eng review (decision D1, 2026-07-02) as forward-compatibility for exactly this feature. This TODO is the recorded consumer; without it the plumbing is dead API.
+
+**Pros:** Small UI change (ChoiceField → MultipleChoiceField or checkbox group) over plumbing that is already written and tested end-to-end; persisted `filter_criteria` format already accommodates it.
+
+**Cons:** Audience summary and preview UX need multi-value treatment; the compose form's market group gets visually heavier; needs the same org-scoping and `__none__` gating as the single-select.
+
+**Context:** `tickets/services/customer_filters.py` (`market_ids` handling), `tickets/forms.py SMSCampaignForm.market_id`, `tickets/templates/tickets/marketing/sms/campaign_form.html` (markets audience group). Constraint from the same review (decision D14): markets refine an audience but can never be the sole selector — a tag or segment is still required, regardless of how many markets are picked.
+
+**Depends on:** Market-specific customer segments branch shipped.
+
+## Onboarding: Extract shared real-customers helper (DRY)
+
+**What:** Extract a single `real_customers(org)` queryset helper (or a `PLACEHOLDER_EMAIL_SUFFIX` constant + `.exclude()` mixin) and migrate the ~7 sites that repeat `.exclude(email__endswith='@placeholder.local')`.
+
+**Why:** The synthetic in-person placeholder customer (`csv_processor.py:497`) must be excluded from every customer-facing analytic. The literal `@placeholder.local` is currently copy-pasted across `views.py` (1869, 3035, 3050, 3096, 3634), `csv_processor.py`, and `tasks.py:498`. Each new consumer (the onboarding "imported data" predicate is the newest) re-copies it; one missed exclusion is a silent analytics bug.
+
+**Pros:** One definition of "real customer"; new features can't forget the exclusion. Aligns with DRY-aggressive preference.
+
+**Cons:** Touches ~7 analytics views, several of which were just reworked (segment queries, commits #303-#310). Refactor + regression risk not worth bundling into a feature PR.
+
+**Context:** Deferred from the onboarding eng review (decision D3=3B, 2026-07-02) specifically to avoid churning recently-moved segment-query code. Do it as its own PR with the existing analytics tests as the safety net.
+
+**Depends on:** Onboarding external-first branch shipped.
+
+---
+
+## Onboarding: Self-serve vs invite-only (waitlist + ungated API path)
+
+**What:** Decide and implement the real self-serve funnel: either auto-approve external-first web orgs at `create_organization`, gate the currently-ungated `_ensure_organization_for_user` API path, or both.
+
+**Why:** Today `create_organization` (web, external-first) is hard-gated behind `OrganizerWaitlist` APPROVED for non-superusers, while `_ensure_organization_for_user` (`api_views.py:937`, mobile Stripe-Connect) creates orgs with NO gate. So the only ungated org-creation door is the Stripe-first path — inverted from the external-first strategy. The onboarding plan polishes an invite-only front door and calls it a wedge; it is not self-serve until this is resolved.
+
+**Pros:** Turns the external-first onboarding work into an actual self-serve funnel. Removes the strategic inconsistency.
+
+**Cons:** Auto-approve + trial credits + zero verification invites throwaway-org SMS spam (needs abuse guard first). Gating the API path may break the mobile Stripe onboarding flow — needs care.
+
+**Context:** Accepted-and-documented as out of scope in the onboarding eng review (finding 7.5 / Open Q2, 2026-07-02). Tied to the trial-credit-abuse open question — solve verification/abuse before flipping to auto-approve.
+
+**Depends on:** Onboarding external-first branch shipped; trial-credit amount decided; consent (T1) landed.
+
+---
+
+## Onboarding: Org-level timezone
+
+**What:** Add a `timezone` field to `Organization` + `OrgProfileForm`, and default new event forms to it.
+
+**Why:** Timezone is currently set per-event only, so a brand-new org creates its first events with no sensible default and ambiguous TZ context. Related to a known class of UTC-date bugs (see `effective-status-utc-date-bug` learning) where `django_tz.localdate()` / per-event timezone is the right tool.
+
+**Pros:** Removes a real correctness footgun for new organizers; small, self-contained change.
+
+**Cons:** Must decide precedence (org default vs per-event override) and backfill existing orgs' default (likely from their events or `TIME_ZONE`).
+
+**Context:** Raised during onboarding office-hours/eng review as a parallel nice-to-have (2026-07-02), explicitly NOT part of external-first onboarding. Use `event.timezone` for minute precision and `django_tz.localdate()` for day-granular comparisons (see views.py:11719 comment).
+
+**Depends on:** —
+
+## Onboarding: SMS consent-collection surface (Option C)
+
+**What:** Build a dedicated way for organizers to *collect* marketing-SMS consent from customers, rather than only mapping it from a CSV column or asserting it manually. E.g., a shareable public opt-in link/page, an opt-in checkbox at ticket purchase, or a "text START to..." keyword flow.
+
+**Why:** The onboarding "Send your first SMS campaign" step is consent-gated (imported contacts default to `sms_opt_in=False`, and texting non-consented contacts violates TCPA/carrier rules). Today consent can only be (a) mapped from a CSV consent column on import, or (b) set manually via the customer-list bulk action for customers the org already has documented consent for. The "Review consent" step now shows an explainer pointing at those (commit 068a6ae), but there is no first-party way to *gather new* consent. Without it, an org whose export lacks a consent column has no compliant path to a sendable audience beyond re-importing.
+
+**Pros:** Closes the loop on the SMS revenue path (Cue monetizes SMS tokens); gives organizers a compliant, auditable consent source; makes the "send first campaign" activation step reachable for everyone, not just orgs with consent already in their data.
+
+**Cons:** Real scope — needs a public opt-in page/route, consent record-keeping (timestamp, source, IP/double-opt-in for defensibility), and likely Twilio keyword/webhook handling for STOP/START. Compliance-sensitive; get the record-keeping right.
+
+**Context:** Deferred from the onboarding design review (D5/6B) and the "Review consent" UX fix (2026-07-03). The manual/import paths exist today: `set_sms_opt_in` (tickets/services/sms_consent.py), `customers_bulk_sms_status` (tickets/sms_views.py), and CSV consent mapping (`customer_sms_opt_in` in csv_processor.py / the "SMS Marketing Consent" format row). Consent state lives on `Customer.sms_opt_in` / `sms_opt_in_date`; campaign audiences gate on it (models.py). A public opt-in surface is the missing piece.
+
+**Depends on:** —
+
+---
+
+## Subscribe: Phone-only signups (customer-identity workstream)
+
+**What:** Allow the public subscribe page to accept phone-only signups (no email) without splitting one person into two `Customer` rows. Requires: normalize `phone` to E.164 in `Customer.save()` + backfill existing rows; a `(organization, phone)` partial-unique constraint migration preceded by a dup-phone audit/cleanup; and a shared `resolve_customer(org, email, phone)` helper that checkout (`views.py:10890`), webhook fulfillment (`views.py:11763`), and CSV import (`csv_processor.py:492`) all route through, deduping by email OR normalized phone.
+
+**Why:** The subscribe MVP requires email (eng-review decision A) because the app keys `Customer` identity on `(org, email)` everywhere; phone-only would fork identity. This is the deliberate way to get the original phone-first wedge back once signup volume justifies it.
+
+**Pros:** Unlocks phone-only audience capture (lower signup friction); centralizes customer identity behind one idempotent resolver (matches the `two-org-creation-paths` learning).
+
+**Cons:** Reaches into money-path code (checkout); the `(org,phone)` migration can fail on existing duplicate phones; needs its own review. ~1 week.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05). Codex outside voice flagged customer identity as the biggest risk. `Customer.save()` normalizes email but NOT phone (models.py:106); no merge utility exists. Design doc: owenbarton-obarton-audience-subscribe-page-design-20260705-192530.md.
+
+**Depends on:** Subscribe page (email-keyed) shipped.
+
+---
+
+## Consent: Backfill checkout SMS consent into SMSConsentRecord ledger
+
+**What:** Have ticket checkout write an `SMSConsentRecord` when it flips `sms_opt_in=True` (`views.py:10896`, `11769`), so the provable-consent ledger covers every origination surface, not just `/subscribe/`.
+
+**Why:** After the subscribe page ships, consent proof is inconsistent: subscribe has an immutable record (IP, user-agent, exact disclosure), checkout still flips a boolean with no record. A TCPA audit wants one consistent proof model. (Codex outside-voice Finding 4.)
+
+**Pros:** Uniform, defensible consent audit trail across the app; reuses the `SMSConsentRecord` model.
+
+**Cons:** Touches the checkout/payment path; must capture the checkout consent disclosure text + IP at that point.
+
+**Context:** Raised in /plan-eng-review of the subscribe page (2026-07-05). The `SMSConsentRecord` model + `source` field are designed to accept a `checkout` source with no schema change.
+
+**Depends on:** `SMSConsentRecord` model (subscribe page) shipped.
+
+---
+
+## Subscribe: CAPTCHA abuse escalation
+
+**What:** Add a CAPTCHA (hCaptcha / Cloudflare Turnstile) to the subscribe form as a second abuse layer above rate-limiting + Twilio Fraud Guard.
+
+**Why:** The public OTP endpoint spends real money per send; rate-limit + Fraud Guard is the MVP floor, CAPTCHA is the escalation if bot traffic appears. (Eng-review decision 2A.)
+
+**Pros:** Strong bot mitigation on a paid endpoint.
+
+**Cons:** Friction on the funnel; a JS dependency; premature before any observed abuse.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05), gated on observing real abuse in the rate-limit metrics.
+
+**Depends on:** Subscribe page shipped + abuse observed.
+
+---
+
+## Subscribe: Preference / manage-subscriptions center
+
+**What:** A page where a subscriber can view and update their SMS (and later email) preferences without having to text STOP — e.g. a tokenized `/preferences/<token>/` link.
+
+**Why:** Turns the consent ledger into a real audience primitive and gives subscribers a self-serve opt-down path (better than all-or-nothing STOP).
+
+**Pros:** Better subscriber UX; supports future email channel; builds on the `SMSConsentRecord` + `opted_out_at` lifecycle already in the model.
+
+**Cons:** Not needed until there is an audience to manage; needs secure tokenized access.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05). `SMSConsentRecord.opted_out_at` is already carried for this.
+
+**Depends on:** Subscribe page shipped.
+
+---
+
+## Design: Create a DESIGN.md via /design-consultation
+
+**What:** Run /design-consultation to produce a real DESIGN.md — a named design system (typography scale, color tokens, spacing, component vocabulary, motion) for Cue.
+
+**Why:** No DESIGN.md exists today. The subscribe page had to calibrate against implicit CLAUDE.md conventions (dashboard.css, Outfit/Sora, dark mode, the DISTILLED_AESTHETICS_PROMPT). A named system makes every future design review faster and more consistent, and gives implementers exact tokens instead of vibes.
+
+**Pros:** Consistency across pages; faster design reviews; concrete tokens for implementers.
+
+**Cons:** Time to run the consultation; someone must own keeping DESIGN.md current.
+
+**Context:** Flagged in /plan-design-review of the subscribe page (2026-07-05), which rated design-system alignment 8/10 only because it leaned on implicit conventions. Existing references: dashboard.css, base.html, public_org_profile.html.
+
+**Depends on:** —
+
+---
+
+## SMS: At-most-once send (atomic pre-send claim or Twilio idempotency)
+
+**What:** Close the one remaining true-duplicate path in marketing-SMS sending: make a recipient send atomic so a message can never go to Twilio twice.
+
+**Why:** The double-text fix (drop the `queued` regression + gate re-send/finalize on `twilio_sid`) closes the observed bug, but a residual race survives: if a worker dies after `send_sms()` reaches Twilio but before `send_sms_chunk_task` persists the SID (`tickets/tasks.py:1064-1083`), the row stays `(status=queued, twilio_sid='')` and the recovery cron re-sends it. Same window if a slow-but-healthy send overlaps a recovery re-dispatch and two chunk tasks load the same unsent row before either saves its SID. The `twilio_sid` guard can't catch this because the SID isn't persisted yet.
+
+**Pros:** True at-most-once delivery; removes the last way a recipient can be texted twice; makes the recovery cron fully safe even under worker death / overlap.
+
+**Cons:** Real design work. A compare-and-swap claim (`filter(id=.., status=QUEUED, twilio_sid='').update(...)` before calling Twilio) risks the opposite failure — under-send if the send then fails — so it needs a claimed/leased state + reaper. Twilio's Messages API idempotency support needs verifying before relying on a per-(campaign,recipient) key.
+
+**Context:** Surfaced by the Codex outside-voice review during the double-text fix (plan: `.context/plans/sms-double-text-fix.md`). The observed 2026-07-20 incident did NOT hit this path (waves were cleanly 15+ min apart, no overlap) — it was purely the `queued`-callback regression. `STUCK_MINUTES` was raised 15→30 in `send_due_sms_campaigns.py` as a cheap mitigation against the overlap trigger, but that is not a real guarantee. Options to evaluate: (a) atomic pre-send claim with a lease + reaper for failed claims; (b) deterministic Twilio idempotency key per (campaign, recipient).
+
+**Depends on:** Double-text fix shipped.
+
+---
+
+## Webhooks: Transactional Outbox for Guaranteed Enqueue
+
+**What:** Replace best-effort `deliver_webhook_task.delay()` with a transactional outbox: write a `pending` delivery row in the same DB transaction as the domain write, then a poller/beat task publishes and marks them sent.
+
+**Why:** Today `dispatch()` enqueues after commit and only logs if `.delay()` fails (broker outage, serializer error). The business action succeeds but the webhook is lost forever with no retry path. Flagged by the Codex outside-voice review (finding #4).
+
+**Pros:** True at-least-once delivery even across broker outages. Also gives a natural place to enforce ordering and backpressure.
+
+**Cons:** New table + periodic publisher + dedup logic; more moving parts. Broker outages are rare, so this is reliability insurance, not a hot-path fix.
+
+**Context:** Enqueue failures are currently logged at error level in `tickets/services/webhooks/dispatch.py` (search "delivery lost") so they're alertable in the interim. The delivery task, signing, and `WebhookDelivery` log already exist; an outbox would add a `WebhookOutbox` (or reuse `WebhookDelivery` with a `pending` state) plus a Celery-beat publisher.
+
+**Depends on:** Nothing; independent follow-up.
+
+---
+
+## Webhooks: WebhookDelivery Retention / Pruning
+
+**What:** Add a periodic task to delete `WebhookDelivery` rows older than N days (configurable, e.g. `WEBHOOK_DELIVERY_RETENTION_DAYS`).
+
+**Why:** One row is written per delivery attempt with a full payload snapshot. A high-volume org (many orders) grows this table unbounded. It's an append-only audit log with no cleanup.
+
+**Pros:** Bounds table growth and admin query cost. Small, isolated task.
+
+**Cons:** Deletes audit history past the window — pick the window carefully (support/debugging needs).
+
+**Context:** `WebhookDelivery` (tickets/models.py) is indexed on `(success, created_at)` and `(organization, event_type, created_at)`, so a windowed delete is cheap. Model this on the existing SMS/loyalty cleanup patterns if present.
+
+**Depends on:** Nothing.
+
+---
+
+## Webhooks: Self-Serve Endpoint Management UI
+
+**What:** Org-facing pages under `settings/integrations/webhooks/` to list, create, edit, delete, rotate-secret, and test-send `WebhookEndpoint`s, plus a delivery-log viewer.
+
+**Why:** Endpoints are currently managed only via Django admin (not org-friendly). Orgs can't self-serve webhook setup.
+
+**Pros:** Real product feature; matches the existing integrations hub. Test-send + delivery viewer make debugging self-service.
+
+**Cons:** Full UI surface (templates, forms, views, URLs); the largest remaining chunk of the webhook feature.
+
+**Context:** Backend (models, dispatch, signing, delivery log, triggers, admin) already ships. UI would reuse `WebhookEndpointForm` and the `settings/integrations/` conventions. HMAC verification docs for consumers should ship alongside (sign base is `timestamp.event_type.delivery_id.body`, header `X-Cue-Signature: t=…,v1=…`).
+
+**Depends on:** Nothing.

@@ -24,6 +24,16 @@
     {% endif %}
 </div>
 
+{% if campaign.status == 'failed' and campaign.failure_reason %}
+<div class="alert alert-danger d-flex align-items-start gap-2" role="alert">
+    <i class="bi bi-exclamation-octagon-fill mt-1"></i>
+    <div>
+        <strong>This campaign didn't send.</strong>
+        {{ campaign.failure_reason }}
+    </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Audience</div><div class="stat-card-value">{{ campaign.audience_size }}</div></div></div>
     <div class="col-6 col-md-3"><div class="stat-card stat-card--accent"><div class="stat-card-label">Sent</div><div class="stat-card-value">{{ campaign.sent_count }}</div></div></div>
@@ -34,11 +44,14 @@
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Clicks (unique)</div><div class="stat-card-value">{{ campaign.unique_clicks }}</div><div class="stat-card-label">{{ campaign.total_clicks }} total</div></div></div>
     <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Unsubscribes</div><div class="stat-card-value">{{ campaign.unsub_count }}</div></div></div>
-    {% if buy_stats %}
+    {% if buy_stats and not external_ticket_link %}
     <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Tickets bought</div><div class="stat-card-value">{{ buy_stats.tickets }}</div><div class="stat-card-label">{{ buy_stats.orders }} order{{ buy_stats.orders|pluralize }}</div></div></div>
     <div class="col-6 col-md-3"><div class="stat-card stat-card--success"><div class="stat-card-label">Revenue</div><div class="stat-card-value">${{ buy_stats.revenue|floatformat:2 }}</div><div class="stat-card-label">net of fees</div></div></div>
     {% endif %}
 </div>
+{% if external_ticket_link %}
+<div class="text-muted small mb-3"><i class="bi bi-info-circle"></i> This campaign links to an external ticket page, so clicks are tracked but ticket sales and revenue are not.</div>
+{% endif %}
 {% else %}
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Unsubscribes</div><div class="stat-card-value">{{ campaign.unsub_count }}</div></div></div>

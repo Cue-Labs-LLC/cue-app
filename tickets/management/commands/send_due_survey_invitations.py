@@ -167,8 +167,12 @@ class Command(BaseCommand):
                 send_survey_emails_task.delay(*args)
 
         # One dispatch per (event, org) with at least one due, unsent invitation.
+        # Rows stamped send_failed_at are permanently unsendable — without this
+        # filter an event whose remaining invitations all failed would be
+        # re-dispatched (as a no-op) on every cron run forever.
         due_pairs = SurveyInvitation.objects.filter(
             sent_at__isnull=True,
+            send_failed_at__isnull=True,
             scheduled_send_at__isnull=False,
             scheduled_send_at__lte=now,
         ).values_list('event_id', 'organization_id').distinct()

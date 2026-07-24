@@ -94,6 +94,22 @@ has validation errors; existing rows render collapsed.
                     <span class="rule__input">{{ tier_form.min_lifetime_points }}</span>
                     <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
                 </div>
+                <div class="rule{% if not tier_form.min_events_attended.value and not tier_form.attended_within_days.value %} d-none{% endif %}" data-rule="events-attended">
+                    <label class="form-label" for="{{ tier_form.min_events_attended.id_for_label }}">Attended</label>
+                    <span class="rule__input">{{ tier_form.min_events_attended }}</span>
+                    <span class="rule__joiner">events within</span>
+                    <span class="rule__input">{{ tier_form.attended_within_days }}</span>
+                    <span class="rule__unit">days</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.min_paid_events_recent.value and not tier_form.paid_events_within_days.value %} d-none{% endif %}" data-rule="paid-events">
+                    <label class="form-label" for="{{ tier_form.min_paid_events_recent.id_for_label }}">Paid events</label>
+                    <span class="rule__input">{{ tier_form.min_paid_events_recent }}</span>
+                    <span class="rule__joiner">within</span>
+                    <span class="rule__input">{{ tier_form.paid_events_within_days }}</span>
+                    <span class="rule__unit">days</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
             </div>
             <div class="rule-add">
                 <button type="button" class="rule-add__btn"><i class="bi bi-plus-lg"></i> Add condition</button>
@@ -105,6 +121,8 @@ has validation errors; existing rows render collapsed.
                     <button type="button" class="rule-add__item" data-rule="tickets">Tickets</button>
                     <button type="button" class="rule-add__item" data-rule="days">Ordered within (days)</button>
                     <button type="button" class="rule-add__item" data-rule="points">Lifetime points</button>
+                    <button type="button" class="rule-add__item" data-rule="events-attended">Events attended</button>
+                    <button type="button" class="rule-add__item" data-rule="paid-events">Paid events (recent)</button>
                 </div>
             </div>
         </div>

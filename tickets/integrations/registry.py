@@ -74,6 +74,16 @@ INTEGRATIONS = [
         'is_connected': _gcal_connected,
         'superuser_only': True,
     },
+    {
+        'key': 'webhooks',
+        'label': 'Webhooks',
+        'icon': 'bi-hdd-network',
+        'category': 'Developer',
+        'settings_url': 'tickets:webhook_endpoint_list',
+        'description': 'Send signed HTTP callbacks to your systems when events, orders, and customers are created.',
+        'is_connected': lambda org: org.webhook_endpoints.exists(),
+        'superuser_only': False,
+    },
 ]
 
 

@@ -10,6 +10,7 @@ from .integrations import (
     typeform as typeform_views,
     google_calendar as google_calendar_views,
     hub as integrations_hub,
+    webhooks_ui as webhooks_views,
 )
 
 app_name = 'tickets'
@@ -35,6 +36,9 @@ urlpatterns = [
     path('login/email/verify-phone/', views.verify_phone_after_profile_view, name='verify_phone_after_profile'),
     path('login/email/resend-phone/', views.resend_phone_after_profile_view, name='resend_phone_after_profile'),
     path('logout/', views.logout_view, name='logout'),
+    # Admin impersonation ("Log in as") - superuser-only, triggered from Django admin
+    path('impersonate/<int:user_id>/start/', views.admin_impersonate_start, name='admin_impersonate_start'),
+    path('impersonate/stop/', views.admin_impersonate_stop, name='admin_impersonate_stop'),
     # Inline modal auth (JSON endpoints for checkout flow)
     path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),
     path('auth/modal/verify/', views.modal_auth_verify, name='modal_auth_verify'),
@@ -71,6 +75,9 @@ urlpatterns = [
     # Public attendee paths (no auth required)
     path('join/<slug:org_slug>/', views.attendee_signup_view, name='attendee_signup'),
     path('join/<slug:org_slug>/verify/', views.attendee_verify_otp_view, name='attendee_verify_otp'),
+    # Public "subscribe to an organizer" (accountless Customer + SMS consent)
+    path('subscribe/<slug:org_slug>/', views.subscribe_view, name='subscribe'),
+    path('subscribe/<slug:org_slug>/verify/', views.subscribe_verify_view, name='subscribe_verify'),
     # Old phone login - redirect to unified login
     path('login/phone/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login'),
     path('login/phone/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_verify'),
@@ -91,6 +98,7 @@ urlpatterns = [
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
     path('onboarding/dismiss/', views.dismiss_onboarding, name='dismiss_onboarding'),
+    path('onboarding/dismiss-upsell/', views.dismiss_directticketing_upsell, name='dismiss_directticketing_upsell'),
     path('actions/', views.action_center, name='action_center'),
     path('actions/<uuid:recommendation_id>/review/', views.ai_recommendation_review, name='ai_recommendation_review'),
     path('actions/<uuid:recommendation_id>/dismiss/', views.ai_recommendation_dismiss, name='ai_recommendation_dismiss'),
@@ -98,6 +106,7 @@ urlpatterns = [
     path('actions/<uuid:recommendation_id>/unconfirmed-matches/', views.ai_recommendation_unconfirmed_matches, name='ai_recommendation_unconfirmed_matches'),
 
     # CSV Upload (price entry and results used when uploading from an event)
+    path('sample-import.csv', views.sample_import_csv, name='sample_import_csv'),
     path('upload/price-entry/<uuid:file_id>/', views.price_entry, name='price_entry'),
     path('upload/results/<uuid:file_id>/', views.upload_results, name='upload_results'),
     path('upload/<uuid:file_id>/delete/', views.upload_delete, name='upload_delete'),
@@ -107,8 +116,11 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/columns/', views.customer_list_columns_save, name='customer_list_columns_save'),
+    path('customers/export.csv', views.customer_export_csv, name='customer_export_csv'),
     path('customers/bulk-tag/', sms_views.customers_bulk_tag, name='customers_bulk_tag'),
     path('customers/bulk-sms-status/', sms_views.customers_bulk_sms_status, name='customers_bulk_sms_status'),
+    path('customers/bulk-sms-compose/', sms_views.customers_bulk_sms_compose, name='customers_bulk_sms_compose'),
     path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/tags/', views.customer_tag_list, name='customer_tag_list'),
     path('customers/tags/create/', views.customer_tag_create, name='customer_tag_create'),
@@ -124,6 +136,7 @@ urlpatterns = [
     path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+    path('analytics/audience/', views.audience_analytics, name='audience_analytics'),
     path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
@@ -195,6 +208,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
+    path('events/<uuid:event_id>/pacing/', views.event_pacing_api, name='event_pacing_api'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
     path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),
@@ -262,6 +276,7 @@ urlpatterns = [
 
     # Marketing
     path('marketing/', views.marketing_overview, name='marketing_overview'),
+    path('marketing/subscribe-settings/', views.marketing_subscribe_settings, name='marketing_subscribe_settings'),
     path('marketing/analyze/', views.marketing_ai_analyze, name='marketing_ai_analyze'),
 
     # Marketing SMS — campaigns
@@ -275,10 +290,26 @@ urlpatterns = [
     path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
     path('marketing/sms/credits/success/', sms_views.sms_credits_success, name='sms_credits_success'),
     path('marketing/sms/credits/charge-saved/', sms_views.sms_credits_charge_saved, name='sms_credits_charge_saved'),
+    path('marketing/sms/credits/topup-ajax/', sms_views.sms_credits_topup_ajax, name='sms_credits_topup_ajax'),
+    path('marketing/sms/credits/topup-intent/', sms_views.sms_credits_topup_intent, name='sms_credits_topup_intent'),
+    path('marketing/sms/credits/topup-confirm/', sms_views.sms_credits_topup_confirm, name='sms_credits_topup_confirm'),
     path('marketing/sms/credits/remove-card/', sms_views.sms_credits_remove_card, name='sms_credits_remove_card'),
     # Marketing SMS — audience + ticket-link helpers
     path('marketing/sms/audience-preview/', sms_views.sms_audience_preview, name='sms_audience_preview'),
     path('marketing/sms/ticket-link/', sms_views.sms_ticket_link, name='sms_ticket_link'),
+
+    path('marketing/sms/plans/', sms_views.sms_plan_list, name='sms_plan_list'),
+    path('marketing/sms/plan/new/', sms_views.sms_plan_create, name='sms_plan_create'),
+    path('marketing/sms/plan/<uuid:pk>/', sms_views.sms_plan_detail, name='sms_plan_detail'),
+    path('marketing/sms/plan/<uuid:pk>/delete/', sms_views.sms_plan_delete, name='sms_plan_delete'),
+    path('marketing/sms/plan/<uuid:pk>/rename/', sms_views.sms_plan_rename, name='sms_plan_rename'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/update/', sms_views.sms_plan_update_step, name='sms_plan_update_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/schedule/', sms_views.sms_plan_update_schedule, name='sms_plan_update_schedule'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/audience/', sms_views.sms_plan_update_audience, name='sms_plan_update_audience'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/launch/', sms_views.sms_plan_launch_step, name='sms_plan_launch_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/preview/', sms_views.sms_plan_preview_step, name='sms_plan_preview_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/confirm/', sms_views.sms_plan_confirm_step, name='sms_plan_confirm_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/remove/', sms_views.sms_plan_remove_step, name='sms_plan_remove_step'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
@@ -300,6 +331,7 @@ urlpatterns = [
     # Settings
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
+    path('settings/segment-tuning/', views.settings_segment_tuning, name='settings_segment_tuning'),
 
     # === Integrations ===
     # One place that frames Mailchimp, Typeform, SlickText, Meta Ads, and Google
@@ -327,6 +359,16 @@ urlpatterns = [
 
     path('settings/integrations/google-calendar/', google_calendar_views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/integrations/google-calendar/disconnect/', google_calendar_views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
+
+    # Outbound webhooks (self-serve endpoint management + delivery log)
+    path('settings/integrations/webhooks/', webhooks_views.webhook_endpoint_list, name='webhook_endpoint_list'),
+    path('settings/integrations/webhooks/create/', webhooks_views.webhook_endpoint_create, name='webhook_endpoint_create'),
+    path('settings/integrations/webhooks/deliveries/', webhooks_views.webhook_delivery_list, name='webhook_delivery_list'),
+    path('settings/integrations/webhooks/deliveries/<uuid:delivery_id>/', webhooks_views.webhook_delivery_detail, name='webhook_delivery_detail'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/edit/', webhooks_views.webhook_endpoint_edit, name='webhook_endpoint_edit'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/delete/', webhooks_views.webhook_endpoint_delete, name='webhook_endpoint_delete'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/rotate-secret/', webhooks_views.webhook_endpoint_rotate_secret, name='webhook_endpoint_rotate_secret'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/test/', webhooks_views.webhook_endpoint_test, name='webhook_endpoint_test'),
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/ai-token-usage/', views.ai_token_usage_dashboard, name='ai_token_usage'),
@@ -336,6 +378,10 @@ urlpatterns = [
     path('settings/custom-fields/<int:field_id>/edit/', views.custom_field_edit, name='custom_field_edit'),
     path('settings/custom-fields/<int:field_id>/delete/', views.custom_field_delete, name='custom_field_delete'),
     path('settings/custom-fields/reorder/', views.custom_field_reorder, name='custom_field_reorder'),
+
+    # Markets
+    path('markets/', views.market_list, name='market_list'),
+    path('markets/builder/', views.market_builder, name='market_builder'),
 
     # Venues
     path('venues/', views.venue_list, name='venue_list'),

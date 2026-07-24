@@ -93,6 +93,27 @@ class Organization(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    # How rfm_segment is assigned. "percentile" = population-relative quintiles
+    # (default, legacy). "absolute" = behavior-anchored fixed cut-offs from
+    # segment_bands (see tickets/services/segmentation/segment_definitions.py).
+    SEGMENT_MODE_CHOICES = [
+        ('percentile', 'Percentile (relative)'),
+        ('absolute', 'Absolute (fixed cut-offs)'),
+    ]
+    segment_mode = models.CharField(
+        max_length=12, choices=SEGMENT_MODE_CHOICES, default='percentile', db_index=True,
+    )
+    # Absolute-mode cut-offs. Empty {} means "use module defaults + auto-seeded
+    # monetary". Keys: recency_active_days, recency_cooling_days, freq_few,
+    # freq_many, monetary_mid, monetary_high.
+    segment_bands = models.JSONField(default=dict, blank=True)
+    # Which optional columns appear on the Customers list (list of keys, see
+    # CUSTOMER_LIST_COLUMNS in views). Null = no preference saved, show all defaults.
+    customer_list_columns = models.JSONField(
+        null=True, blank=True, default=None,
+        help_text="Visible optional columns on the Customers table (list of keys). "
+                  "Null = show all default columns.",
+    )
     survey_email_subject = models.CharField(
         max_length=255, blank=True, default='',
         help_text="Org-wide default subject for survey invitation emails. "
@@ -121,11 +142,40 @@ class Organization(BaseModel):
                   "Blank = end.",
     )
     sms_marketing_enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            'Gates the native marketing SMS feature for this org. On by default for '
+            'new orgs (existing orgs unchanged by the default flip). Actual sending is '
+            'still gated by per-customer consent and platform A2P readiness. '
+            'FeatureFlagSettings is a global singleton and cannot scope to individual '
+            'orgs, so the SMS gate lives here.'
+        ),
+    )
+    sms_subscribe_title = models.CharField(
+        max_length=80,
+        blank=True,
+        default='',
+        help_text=(
+            "Optional header shown above the mobile number field on the public "
+            "subscribe page (e.g. 'Join the Tempo Global text list'). Blank shows "
+            "no header (the org name still appears as the page heading)."
+        ),
+    )
+    sms_subscribe_segment_by_market = models.BooleanField(
         default=False,
         help_text=(
-            'Gates the native marketing SMS feature for this org. Off by default; '
-            'enable per-org for pilot rollout. FeatureFlagSettings is a global '
-            'singleton and cannot scope to individual orgs, so the SMS gate lives here.'
+            "When on (and the org has >1 market), the public subscribe page asks each "
+            "new subscriber which market they're in and stores it on Customer.home_market, "
+            "so market-scoped SMS campaigns can reach them before any purchase."
+        ),
+    )
+    sms_subscribe_market_label = models.CharField(
+        max_length=60,
+        blank=True,
+        default='',
+        help_text=(
+            "Custom label for the market picker on the public subscribe page "
+            "(e.g. 'Which city?'). Blank falls back to the default 'Your area'."
         ),
     )
     loyalty_feature_enabled = models.BooleanField(
@@ -170,6 +220,14 @@ class Organization(BaseModel):
     stripe_onboarding_complete = models.BooleanField(
         default=False,
         help_text='True after Stripe confirms details_submitted, charges_enabled, and payouts_enabled.',
+    )
+    tap_to_pay_enabled_push_sent = models.BooleanField(
+        default=False,
+        help_text=(
+            "True once the one-time 'Tap to Pay is ready' push has been sent to "
+            "this org's devices. Guards against duplicate sends across the many "
+            "account.updated webhooks Stripe fires."
+        ),
     )
     stripe_terminal_location_id = models.CharField(
         max_length=64,
@@ -220,11 +278,32 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
     )
-    external_events_enabled = models.BooleanField(
-        default=False,
+    ai_event_summary_auto_regenerate = models.BooleanField(
+        default=True,
         help_text=(
-            'Allow this org to create external (CSV-imported) events. Off by '
-            'default; direct ticketing only.'
+            'Automatically regenerate an event\'s AI summary once a day when its '
+            'underlying data changes after the event ends. When off, summaries are '
+            'only (re)generated when someone clicks Generate.'
+        ),
+    )
+    ai_sms_strategist_enabled = models.BooleanField(
+        default=True,
+        help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
+    )
+    timezone = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text=(
+            'IANA timezone (e.g. America/New_York) used when showing scheduled send '
+            'times. Blank falls back to the site default.'
+        ),
+    )
+    external_events_enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            'Allow this org to create external (CSV-imported) events. On by default '
+            '(external-first onboarding); a data migration backfilled existing orgs.'
         ),
     )
     photo = models.ImageField(
@@ -243,16 +322,45 @@ class Organization(BaseModel):
         blank=True,
         default='',
     )
+    instagram_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
+    youtube_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
+    tiktok_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
     # Set when the organizer dismisses the dashboard "Getting started" checklist.
     # The checklist's step completion is derived from existing data (events, Stripe
     # onboarding); this only records that the card should stay hidden.
     onboarding_dismissed_at = models.DateTimeField(null=True, blank=True)
+    # Same idea for the value-gated "sell through Cue" direct-ticketing upsell.
+    directticketing_upsell_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']
 
     def __str__(self):
         return self.name
+
+    def get_timezone(self):
+        """Return the org's tzinfo, falling back to the site default TIME_ZONE."""
+        import zoneinfo
+        from django.conf import settings
+        for name in (self.timezone, getattr(settings, 'TIME_ZONE', 'UTC')):
+            if name:
+                try:
+                    return zoneinfo.ZoneInfo(name)
+                except Exception:
+                    continue
+        return zoneinfo.ZoneInfo('UTC')
 
 
 class OrderCounter(models.Model):
@@ -301,6 +409,10 @@ def _generate_access_token():
     return f"cue_at_{secrets.token_urlsafe(32)}"
 
 
+def _generate_webhook_secret():
+    return f"whsec_{secrets.token_hex(32)}"
+
+
 class OrganizationAPIKey(BaseModel):
     """Per-organization API key for external AI agent access."""
     organization = models.ForeignKey(
@@ -327,6 +439,116 @@ class OrganizationAPIKey(BaseModel):
     @property
     def masked_key(self):
         return f"{self.key[:14]}...{self.key[-4:]}"
+
+
+class WebhookEndpoint(BaseModel):
+    """Per-organization outbound webhook endpoint.
+
+    An org registers a URL and subscribes it to one or more domain event types
+    (e.g. 'event.created'). When a subscribed event fires, a signed HTTP POST is
+    delivered to `url` asynchronously via `deliver_webhook_task`. Each attempt is
+    recorded as a WebhookDelivery row.
+    """
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='webhook_endpoints',
+    )
+    label = models.CharField(max_length=100, help_text="Label to identify this endpoint, e.g. 'Zapier — new orders'")
+    url = models.URLField(max_length=500)
+    secret = models.CharField(
+        max_length=100,
+        default=_generate_webhook_secret,
+        help_text="Used to HMAC-sign each delivery. Verify with the X-Cue-Signature header. "
+                  "Deliveries sign with the CURRENT secret at send time, so rotating it can "
+                  "cause in-flight/retrying deliveries to fail verification with the old secret.",
+    )
+    event_types = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of subscribed event-type strings, e.g. ['event.created', 'order.created'].",
+    )
+    is_active = models.BooleanField(default=True)
+    description = models.CharField(max_length=255, blank=True, default='')
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+        ]
+        verbose_name = 'Webhook endpoint'
+        verbose_name_plural = 'Webhook endpoints'
+
+    def __str__(self):
+        return f"{self.organization.name} — {self.label}"
+
+    def clean(self):
+        # Validate subscribed event types against the canonical set.
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPES
+        types = self.event_types or []
+        if not isinstance(types, list):
+            raise ValidationError({'event_types': 'Must be a list of event-type strings.'})
+        invalid = [t for t in types if t not in WEBHOOK_EVENT_TYPES]
+        if invalid:
+            raise ValidationError({
+                'event_types': f"Unknown event type(s): {', '.join(map(str, invalid))}. "
+                               f"Valid: {', '.join(WEBHOOK_EVENT_TYPES)}.",
+            })
+        # SSRF guard: reject non-https / private / loopback / reserved destinations.
+        from tickets.services.webhooks.validation import validate_webhook_url
+        if self.url:
+            try:
+                validate_webhook_url(self.url)
+            except ValidationError as exc:
+                raise ValidationError({'url': exc.messages})
+
+    @property
+    def masked_secret(self):
+        return f"{self.secret[:11]}...{self.secret[-4:]}"
+
+
+class WebhookDelivery(BaseModel):
+    """Append-only log of a single outbound webhook delivery attempt.
+
+    One row per attempt: a Celery retry produces a new row with an incremented
+    `attempt`. `payload` is the exact dict that was signed and POSTed, enabling
+    debugging and replay. `created_at` (from BaseModel) is the attempt timestamp.
+    """
+    endpoint = models.ForeignKey(
+        WebhookEndpoint,
+        on_delete=models.CASCADE,
+        related_name='deliveries',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='webhook_deliveries',
+    )
+    event_type = models.CharField(max_length=50, db_index=True)
+    # Stable across all retry attempts of one delivery; sent as X-Cue-Delivery-Id
+    # so consumers can dedupe at-least-once redeliveries. Null only for legacy rows.
+    delivery_id = models.UUIDField(null=True, blank=True, db_index=True)
+    payload = models.JSONField(default=dict)
+    response_status = models.IntegerField(null=True, blank=True)
+    response_body = models.TextField(blank=True, default='')
+    attempt = models.PositiveIntegerField(default=1)
+    success = models.BooleanField(default=False, db_index=True)
+    error_message = models.CharField(max_length=1000, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['endpoint', 'created_at']),
+            models.Index(fields=['organization', 'event_type', 'created_at']),
+            models.Index(fields=['success', 'created_at']),
+        ]
+        verbose_name = 'Webhook delivery'
+        verbose_name_plural = 'Webhook deliveries'
+
+    def __str__(self):
+        status = 'ok' if self.success else 'fail'
+        return f"{self.event_type} → {self.endpoint_id} [{status}]"
 
 
 class OAuthClient(BaseModel):
@@ -807,6 +1029,13 @@ class UploadedFile(AuditBaseModel):
 
 class Customer(BaseModel):
     """Customer information with lifetime value tracking."""
+
+    class AcquisitionSource(models.TextChoices):
+        SUBSCRIBE_FORM  = 'subscribe_form',  'Opt-in form'
+        TICKET_PURCHASE = 'ticket_purchase', 'Ticket purchase'
+        IMPORT          = 'import',          'CSV Import'
+        MANUAL          = 'manual',          'Manual'
+
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -820,8 +1049,11 @@ class Customer(BaseModel):
         related_name='customer_profiles',
         help_text="Linked auth.User account, if the buyer has one. Null for CSV-imported customers without a backing account.",
     )
-    email = models.EmailField(db_index=True)
-    name = models.CharField(max_length=200)
+    # Blank email is allowed for phone-only subscribers (public subscribe page captures
+    # phone + consent only). Uniqueness is enforced only when email is present — see the
+    # partial UniqueConstraint in Meta. Identity for these rows is keyed on phone.
+    email = models.EmailField(db_index=True, blank=True)
+    name = models.CharField(max_length=200, blank=True)
     phone = models.CharField(max_length=50, blank=True)
     lifetime_value = models.DecimalField(
         max_digits=10,
@@ -845,6 +1077,18 @@ class Customer(BaseModel):
     tags = models.ManyToManyField('CustomerTag', blank=True, related_name='customers')
     sms_opt_in = models.BooleanField(default=False)
     sms_opt_in_date = models.DateTimeField(null=True, blank=True)
+    # Market this customer self-declared by joining through a market-tagged subscribe
+    # link (/subscribe/<org>/?m=<market_id>). Unions with purchase-derived market
+    # membership in customer_filters so a market-scoped SMS campaign reaches direct
+    # subscribers who have not (yet) bought a ticket. Null = untagged / org-wide.
+    home_market = models.ForeignKey(
+        'Market',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='home_subscribers',
+        db_index=True,
+    )
     # Loyalty program tier (denormalized; assigned by LoyaltyTierAssigner, mirrors RFM fields)
     loyalty_tier = models.ForeignKey(
         'LoyaltyTier',
@@ -861,6 +1105,16 @@ class Customer(BaseModel):
     # drives the min_lifetime_points tier rule.
     points_balance = models.PositiveIntegerField(default=0)
     lifetime_points = models.PositiveIntegerField(default=0)
+    # How this customer first entered the org. Set once at creation and treated as
+    # immutable — creation sites stamp it, nothing overwrites it. Blank = Unknown
+    # (unattributed legacy rows the backfill couldn't classify).
+    acquisition_source = models.CharField(
+        max_length=20,
+        blank=True,
+        db_index=True,
+        choices=AcquisitionSource.choices,
+        help_text="How this customer first entered the org. Set once at creation; immutable.",
+    )
 
     class Meta:
         ordering = ['-lifetime_value', 'name']
@@ -868,11 +1122,21 @@ class Customer(BaseModel):
             models.Index(fields=['email']),
             models.Index(fields=['lifetime_value']),
             models.Index(fields=['last_order_date']),
+            # Phone-keyed identity: subscribe merge + import/checkout reconciliation.
+            models.Index(fields=['organization', 'phone']),
         ]
         constraints = [
+            # Email is unique per org only when present; blank emails (phone-only
+            # subscribers) are exempt so many can coexist.
             models.UniqueConstraint(
                 fields=['organization', 'email'],
+                condition=~models.Q(email=''),
                 name='customer_org_email_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['organization', 'phone'],
+                condition=models.Q(email='') & ~models.Q(phone=''),
+                name='customer_org_phone_phone_only_unique',
             ),
         ]
 
@@ -1014,6 +1278,61 @@ class Venue(BaseModel):
         return f"{self.name}, {self.city}"
 
 
+MARKET_GEOGRAPHY_CITY = 'city'
+MARKET_GEOGRAPHY_STATE = 'state'
+MARKET_GEOGRAPHY_COUNTRY = 'country'
+MARKET_GEOGRAPHY_CHOICES = [
+    (MARKET_GEOGRAPHY_CITY, 'City'),
+    (MARKET_GEOGRAPHY_STATE, 'State'),
+    (MARKET_GEOGRAPHY_COUNTRY, 'Country'),
+]
+
+
+class Market(BaseModel):
+    """Organization-scoped geographic market for event grouping."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='markets',
+    )
+    name = models.CharField(max_length=120, db_index=True)
+    geography_level = models.CharField(
+        max_length=20,
+        choices=MARKET_GEOGRAPHY_CHOICES,
+        db_index=True,
+    )
+    geography_value = models.CharField(max_length=120, db_index=True)
+
+    class Meta:
+        unique_together = [
+            ['organization', 'name'],
+            ['organization', 'geography_level', 'geography_value'],
+        ]
+        ordering = ['geography_level', 'name']
+        indexes = [
+            models.Index(fields=['organization', 'geography_level', 'geography_value']),
+        ]
+
+    def clean(self):
+        super().clean()
+        valid_levels = {choice[0] for choice in MARKET_GEOGRAPHY_CHOICES}
+        if self.geography_level not in valid_levels:
+            raise ValidationError({'geography_level': 'Choose a valid geography level.'})
+        if not (self.name or '').strip():
+            raise ValidationError({'name': 'Market name is required.'})
+        if not (self.geography_value or '').strip():
+            raise ValidationError({'geography_value': 'Geography value is required.'})
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or '').strip()
+        self.geography_value = (self.geography_value or '').strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 TICKETING_TYPE_DIRECT = 'direct'
 TICKETING_TYPE_EXTERNAL = 'external'
 TICKETING_TYPE_CHOICES = [
@@ -1049,10 +1368,22 @@ class Event(AuditBaseModel):
     summary = models.CharField(max_length=500, blank=True)
     ai_summary = models.TextField(blank=True, default='')
     ai_summary_generated_at = models.DateTimeField(blank=True, null=True)
+    # Fingerprint (hex digest) of the data that produced the current ai_summary.
+    # The daily auto-regeneration job compares a freshly computed fingerprint
+    # against this value to decide whether the underlying data changed and the
+    # summary needs regenerating. Set on every generation (manual or automatic).
+    ai_summary_input_hash = models.CharField(max_length=64, blank=True, default='')
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
         related_name='events'
+    )
+    market = models.ForeignKey(
+        'Market',
+        on_delete=models.SET_NULL,
+        related_name='events',
+        null=True,
+        blank=True,
     )
     start_date = models.DateField(db_index=True)
     start_time = models.TimeField(null=True, blank=True)
@@ -1178,6 +1509,7 @@ class Event(AuditBaseModel):
             models.Index(fields=['name', 'start_date']),
             models.Index(fields=['organization', '-start_date']),
             models.Index(fields=['ticketing_type', 'status', 'start_date']),
+            models.Index(fields=['organization', 'market', '-start_date']),
         ]
 
     def __str__(self):
@@ -1703,6 +2035,132 @@ class PhoneSuppression(BaseModel):
         ).exists()
 
 
+class SMSConsentRecord(AuditBaseModel):
+    """Provable record of marketing-SMS consent captured at a self-serve
+    origination surface (the public /subscribe/ page).
+
+    Cue historically only *imported* already-consented data (CSV, SlickText), so
+    consent lived as booleans on Customer. This is the first surface where Cue
+    *originates* consent directly, so it needs a defensible audit trail: the exact
+    disclosure text shown, the IP and user-agent, and the timestamp. The proof
+    fields are frozen once written (see save()); only lifecycle fields
+    (verified_at, pending_start, opted_out_at, customer) may change afterward.
+
+    A record only counts as consent when ``verified_at`` is set (OTP passed).
+    Unverified rows are pending/abandoned signups and must be excluded everywhere.
+    """
+    class Source(models.TextChoices):
+        SUBSCRIBE_PAGE = 'subscribe_page', 'Subscribe page'
+        TEXT_JOIN = 'text_join', 'Text to join'  # forward-compat (Phase 2)
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='sms_consent_records',
+    )
+    customer = models.ForeignKey(
+        'Customer', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sms_consent_records',
+        help_text='Linked after the Customer upsert on verification.',
+    )
+    # Contact info is denormalized (copied, not read through customer) so the
+    # ledger freezes exactly what was disclosed at consent time.
+    phone = models.CharField(max_length=20, db_index=True)  # E.164
+    email = models.EmailField(blank=True)
+    name = models.CharField(max_length=200, blank=True)
+    consent_given = models.BooleanField(default=False)
+    consent_text = models.TextField(help_text='The exact disclosure the subscriber agreed to.')
+    consent_url = models.CharField(max_length=200, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    source = models.CharField(
+        max_length=20, choices=Source.choices, default=Source.SUBSCRIBE_PAGE, db_index=True,
+    )
+    verified_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Set on OTP success; only verified records count as consent.',
+    )
+    pending_start = models.BooleanField(
+        default=False,
+        help_text='Phone was globally Twilio-suppressed at consent time; consented '
+                  'but unreachable until they text START. Cleared by the inbound webhook.',
+    )
+    opted_out_at = models.DateTimeField(null=True, blank=True)
+
+    # Frozen once written — mutating any of these raises. Lifecycle fields
+    # (verified_at, pending_start, opted_out_at, customer, version) stay mutable.
+    _FROZEN_FIELDS = (
+        'phone', 'email', 'name', 'consent_given', 'consent_text',
+        'consent_url', 'ip_address', 'user_agent', 'source',
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'phone']),
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        state = 'verified' if self.verified_at else 'pending'
+        return f"consent {self.phone} ({self.source}, {state})"
+
+    def save(self, *args, **kwargs):
+        """Freeze proof fields after the row exists (append-only ledger)."""
+        if not self._state.adding:
+            old = type(self).objects.filter(pk=self.pk).only(*self._FROZEN_FIELDS).first()
+            if old is not None:
+                for field in self._FROZEN_FIELDS:
+                    if getattr(old, field) != getattr(self, field):
+                        raise ValidationError(
+                            f"SMSConsentRecord.{field} is immutable once written."
+                        )
+        super().save(*args, **kwargs)
+
+
+class SMSCampaignQuerySet(models.QuerySet):
+    def by_urgency(self):
+        """Order soonest-linked-event first (event-less campaigns last, then oldest
+        scheduled). Under the shared daily carrier-cap budget, time-sensitive blasts
+        (day-of / day-before an event) should consume today's allowance ahead of
+        evergreen ones — so the dispatcher sends and the recovery pass resumes in this
+        order. See tickets/services/sms_limits.py."""
+        return self.order_by(
+            F('event__start_date').asc(nulls_last=True),
+            'scheduled_at',
+        )
+
+    def due(self, now=None):
+        """Scheduled campaigns whose send time has arrived — the scheduler's
+        dispatch set, ordered by urgency. Source of truth shared by the dispatcher
+        and read-only status commands so the two can never disagree about what's pending."""
+        now = now or timezone.now()
+        return self.filter(
+            status=SMSCampaign.Status.SCHEDULED,
+            scheduled_at__lte=now,
+        ).by_urgency()
+
+    def upcoming(self, now=None):
+        """Scheduled campaigns whose send time is still in the future — frozen,
+        charged, and waiting. Not yet dispatchable (that's due()); surfaced for
+        operational visibility so a queued-but-not-due campaign isn't mistaken
+        for a stuck or missing one. Exact complement of due() over SCHEDULED."""
+        now = now or timezone.now()
+        return self.filter(
+            status=SMSCampaign.Status.SCHEDULED,
+            scheduled_at__gt=now,
+        )
+
+    def stuck(self, now=None, minutes=None):
+        """Campaigns wedged in 'sending' past the recovery threshold (worker
+        died mid-send). Re-dispatch is safe — the orchestrator resends only
+        still-queued recipients."""
+        now = now or timezone.now()
+        if minutes is None:
+            minutes = SMSCampaign.STUCK_SENDING_MINUTES
+        return self.filter(
+            status=SMSCampaign.Status.SENDING,
+            started_at__lte=now - timezone.timedelta(minutes=minutes),
+        ).by_urgency()
+
+
 class SMSCampaign(AuditBaseModel):
     """A native marketing-SMS broadcast.
 
@@ -1714,6 +2172,13 @@ class SMSCampaign(AuditBaseModel):
     truth for sent/delivered/failed counts (derived, never incremented here, so
     retried Twilio callbacks can't cause drift).
     """
+    # A campaign stuck in 'sending' longer than this (worker died mid-send) is
+    # re-dispatched by the scheduler; the orchestrator resends only still-queued
+    # recipients. Set comfortably above the worst-case wall-clock of a healthy
+    # max-size send (SMS_CAMPAIGN_MAX_RECIPIENTS under Twilio throttling) so
+    # recovery never fires alongside a slow-but-live send and double-dispatches.
+    STUCK_SENDING_MINUTES = 30
+
     class Status(models.TextChoices):
         DRAFT = 'draft', 'Draft'
         SCHEDULED = 'scheduled', 'Scheduled'
@@ -1721,6 +2186,8 @@ class SMSCampaign(AuditBaseModel):
         SENT = 'sent', 'Sent'
         FAILED = 'failed', 'Failed'
         CANCELED = 'canceled', 'Canceled'
+
+    objects = SMSCampaignQuerySet.as_manager()
 
     organization = models.ForeignKey(
         Organization,
@@ -1763,6 +2230,10 @@ class SMSCampaign(AuditBaseModel):
     # browser retry) reuses the same key, so the unique constraint stops a second
     # campaign from being created, charged, and sent.
     idempotency_key = models.CharField(max_length=64, null=True, blank=True)
+    # Human-readable reason a campaign ended in FAILED (e.g. the daily carrier cap was
+    # reached at send time). Surfaced on the campaign detail page so the organizer knows
+    # to shrink + reschedule. Blank for non-failed campaigns.
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
@@ -1786,11 +2257,11 @@ class SMSCampaign(AuditBaseModel):
         """Org-scoped candidate Customer queryset: criteria ∪ manual includes − excludes,
         restricted to opted-in customers with a phone. Dedupe + suppression happen in
         materialize(). Fail-safe: empty criteria AND no manual includes → none."""
-        from tickets.services.customer_filters import filter_customers
+        from tickets.services.customer_filters import filter_customers, _valid_uuids
         org = organization or self.organization
         criteria = self.filter_criteria or {}
-        include_ids = self.manual_include_ids or []
-        exclude_ids = self.manual_exclude_ids or []
+        include_ids = _valid_uuids(self.manual_include_ids or [])
+        exclude_ids = _valid_uuids(self.manual_exclude_ids or [])
 
         if not criteria and not include_ids:
             return Customer.objects.none()
@@ -1810,9 +2281,12 @@ class SMSCampaign(AuditBaseModel):
 
     def materialize(self, organization=None, cap=None):
         """Return deduped, non-suppressed recipients as a list of
-        {'customer_id', 'phone'} dicts (E.164). Dedupe + suppression are done in
-        Python so they work identically on SQLite (dev) and Postgres (prod)."""
-        from tickets.sms import normalize_phone
+        {'customer_id', 'phone'} dicts (E.164). Dedupe, suppression, and country
+        eligibility are done in Python so they work identically on SQLite (dev) and
+        Postgres (prod). Numbers outside SMS_ALLOWED_COUNTRY_PREFIXES are excluded here
+        — before scheduling/charging — since Twilio Geo Permissions would block them
+        (Error 21408) and they aren't billable."""
+        from tickets.sms import normalize_phone, sms_country_allowed, is_plausible_e164
         org = organization or self.organization
         suppressed = PhoneSuppression.suppressed_phones(org)
         seen = set()
@@ -1820,6 +2294,12 @@ class SMSCampaign(AuditBaseModel):
         for customer in self.candidate_customers(org).only('id', 'phone'):
             phone = normalize_phone(customer.phone)
             if not phone or phone in seen or phone in suppressed:
+                continue
+            if not is_plausible_e164(phone):
+                # Malformed number (e.g. a double country code → '+111…'); Twilio would
+                # reject it (21211). Drop before scheduling/charging.
+                continue
+            if not sms_country_allowed(phone):
                 continue
             seen.add(phone)
             out.append({'customer_id': str(customer.id), 'phone': phone})
@@ -1852,9 +2332,95 @@ class SMSCampaign(AuditBaseModel):
             )
             if names:
                 parts.append("Tags: " + ", ".join(names))
+        # T11: use _as_list/_valid_uuids to guard against malformed persisted criteria
+        from tickets.services.customer_filters import NO_MARKET_VALUE, _as_list, _valid_uuids
+        raw_market_ids = _as_list(criteria.get('market_ids')) + _as_list(criteria.get('market_id'))
+        no_market = any(str(v) == NO_MARKET_VALUE for v in raw_market_ids)
+        valid_market_ids = _valid_uuids(v for v in raw_market_ids if str(v) != NO_MARKET_VALUE)
+        if raw_market_ids:
+            market_names = list(
+                Market.objects.filter(organization=org, id__in=valid_market_ids)
+                .values_list('name', flat=True)
+            )
+            if no_market:
+                market_names.append("No market")
+            if market_names:
+                parts.append("Markets: " + ", ".join(market_names))
         if self.manual_include_ids:
             parts.append("Custom selection")
         return " · ".join(parts) if parts else "No audience"
+
+
+class SMSCampaignPlan(BaseModel):
+    """An AI-generated multi-touch SMS campaign strategy for an event or segment.
+
+    The plan is advisory: it recommends a sequence of timed touches and writes each
+    message, but sends nothing itself. Each step is launched individually into the
+    existing composer (via the session prefill handoff), where the organizer reviews,
+    confirms cost, and sends through the normal SMSCampaign flow. ``steps`` is a JSON
+    list; per-step ``launched_campaign_id`` is filled in when a step is launched.
+
+    ``status`` is a derived label only, rolled up from the live campaign status of each step:
+    Draft (nothing launched) → In progress (some steps launched, some still in draft) →
+    Scheduled (every step launched, at least one still queued) → Sent (every step delivered).
+    It's recomputed from the steps + their campaigns (see ``_plan_progress`` /
+    ``_save_plan_steps``) and never gates sending — steps launch regardless. Because a step's
+    campaign can flip scheduled → sent asynchronously (outside any plan mutation), the display
+    always recomputes live and the stored value is self-healed on render.
+    """
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        IN_PROGRESS = 'in_progress', 'In progress'
+        SCHEDULED = 'scheduled', 'Scheduled'
+        SENT = 'sent', 'Sent'
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='sms_campaign_plans',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_campaign_plans',
+    )
+    # Set for event-based plans; null for pure segment/audience plans.
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_campaign_plans',
+    )
+    # The segment/audience the plan targets (same schema as SMSCampaign.filter_criteria
+    # / filter_customers). Empty for a pure event plan.
+    filter_criteria = models.JSONField(default=dict, blank=True)
+    name = models.CharField(max_length=200)
+    objective = models.CharField(max_length=300, blank=True, default='')
+    strategy_summary = models.TextField(blank=True, default='')
+    model_name = models.CharField(max_length=100, blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    generated_at = models.DateTimeField(default=timezone.now)
+    # Ordered sequence. Each entry:
+    #   {order, purpose, audience_label, audience_criteria, timing_label, body,
+    #    rationale, segments, encoding, launched_campaign_id|null}
+    steps = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"SMS plan: {self.name}"
 
 
 class SMSMessageRecipient(BaseModel):
@@ -2441,6 +3007,7 @@ class AITokenUsage(BaseModel):
     FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
     FEATURE_EVENT_SUMMARY = 'event_summary'
+    FEATURE_SMS_PLAN = 'sms_plan'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -2450,6 +3017,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
         (FEATURE_EVENT_SUMMARY, 'Event summary'),
+        (FEATURE_SMS_PLAN, 'SMS campaign plan'),
     ]
 
     organization = models.ForeignKey(
@@ -2739,7 +3307,13 @@ def _generate_tracking_token():
 
 
 class TrackingLink(BaseModel):
-    """Named short link attached to a direct-ticketing event for click and purchase attribution."""
+    """Named short link attached to an event for click and purchase attribution.
+
+    Blank ``target_url`` → redirect to the event's Cue buy page (direct ticketing).
+    Set ``target_url`` → redirect off-site to a third-party ticket page (imported/
+    external events), while still counting clicks. Purchase/revenue attribution only
+    works for the buy-page case; external clicks are counted but not attributed to orders.
+    """
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -2753,6 +3327,8 @@ class TrackingLink(BaseModel):
     name = models.CharField(max_length=100)
     token = models.CharField(max_length=12, unique=True, db_index=True)
     click_count = models.PositiveIntegerField(default=0)
+    # Off-site redirect target for external ticket links; blank = the Cue buy page.
+    target_url = models.URLField(max_length=500, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
@@ -3018,6 +3594,12 @@ class SurveyInvitation(BaseModel):
     )
     sent_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    send_failed_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Set when a send permanently fails (invalid/refused recipient). "
+                  "Excludes the row from future send attempts.",
+    )
+    send_error = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         unique_together = [['event', 'customer']]
@@ -3460,6 +4042,37 @@ class TapToPayTermsAcceptance(BaseModel):
         return f"{self.organization.name} accepted {self.version} at {self.accepted_at:%Y-%m-%d %H:%M}"
 
 
+class DeviceToken(BaseModel):
+    """APNs device token for a Cue organizer's iOS device.
+
+    Tokens rotate: on each registration we keep the newest token for an
+    organizer and drop the rest. Scoped to the organizer's Organization so
+    pushes (launch announcement, 'Tap to Pay is ready') can be fanned out
+    per-org. Tokens are environment-specific — a sandbox (dev-build) token
+    will not deliver against the production APNs host and vice versa.
+    """
+    organizer = models.ForeignKey(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+    )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+        db_index=True,
+    )
+    token = models.CharField(max_length=200, unique=True, db_index=True)
+    platform = models.CharField(max_length=16, default='ios', choices=[('ios', 'iOS')])
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['organization'])]
+
+    def __str__(self):
+        return f"{self.organizer.get_username()} — {self.token[:16]}… ({self.platform})"
+
+
 class ReceiptSend(BaseModel):
     """Log of receipt sends initiated by the scanner app (successful sales and declined attempts)."""
     organization = models.ForeignKey(
@@ -3615,6 +4228,33 @@ class LoyaltyTier(BaseModel):
         null=True, blank=True,
         help_text="Minimum lifetime points earned to qualify.",
     )
+    # Attendance rules count only tickets actually scanned in at the door
+    # (Ticket.scanned_at), so free-RSVP no-shows never qualify — unlike the
+    # *_purchased rules above, which count every order regardless of attendance.
+    min_events_attended = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of distinct events actually attended (checked in) to qualify.",
+    )
+    attended_within_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Only count events attended within this many days (attendance window). "
+                  "Leave blank to count attendance over all time.",
+    )
+    # "Paid events in the last N days": a paired count + window rule. Counts the
+    # distinct events for which the customer has a non-refunded order where money
+    # was actually paid (total_amount > 0), so free-RSVP orders never qualify and
+    # several paid orders to the same event count once. Mirrors the attendance
+    # pair above in shape.
+    min_paid_events_recent = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of unique events with a paid order (total > $0) "
+                  "within the window below to qualify.",
+    )
+    paid_events_within_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Only count paid events placed within this many days. "
+                  "Leave blank to count paid events over all time.",
+    )
 
     class Meta:
         ordering = ['-rank', 'name']
@@ -3626,8 +4266,24 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0):
-        """Return True if the given per-customer metrics meet every set rule."""
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, events_attended_in_window=0, paid_event_count=0, paid_event_count_in_window=0):
+        """Return True if the given per-customer metrics meet every set rule.
+
+        ``events_attended`` is the all-time distinct-events-attended count;
+        ``events_attended_in_window`` is that count restricted to
+        ``attended_within_days`` (the caller computes it against this tier's
+        window). The attendance rule is active when either ``min_events_attended``
+        or ``attended_within_days`` is set: the customer must have attended at
+        least ``min_events_attended`` (or 1 if only a window is set) distinct
+        events, counted within the window when one is set and over all time
+        otherwise.
+
+        ``paid_event_count`` / ``paid_event_count_in_window`` mirror the
+        attendance pair for the "paid events in the last N days" rule (active
+        when either ``min_paid_events_recent`` or ``paid_events_within_days`` is
+        set); it counts the distinct events for which the customer has an order
+        with money paid (total_amount > 0).
+        """
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
         if self.min_order_count is not None and (order_count or 0) < self.min_order_count:
@@ -3641,6 +4297,16 @@ class LoyaltyTier(BaseModel):
                 return False
         if self.min_lifetime_points is not None and (lifetime_points or 0) < self.min_lifetime_points:
             return False
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            required = self.min_events_attended or 1
+            count = events_attended_in_window if self.attended_within_days is not None else events_attended
+            if (count or 0) < required:
+                return False
+        if self.min_paid_events_recent is not None or self.paid_events_within_days is not None:
+            required = self.min_paid_events_recent or 1
+            count = paid_event_count_in_window if self.paid_events_within_days is not None else paid_event_count
+            if (count or 0) < required:
+                return False
         return True
 
     def has_no_rules(self):
@@ -3650,9 +4316,47 @@ class LoyaltyTier(BaseModel):
             for f in (
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
-                'min_lifetime_points',
+                'min_lifetime_points', 'min_events_attended',
+                'attended_within_days', 'min_paid_events_recent',
+                'paid_events_within_days',
             )
         )
+
+    def qualifying_rules(self):
+        """Human-readable summary of each qualifying rule that is set.
+
+        Returns a list of short strings (one per active rule) in the same order
+        ``qualifies()`` evaluates them, for display on the tier members page.
+        An empty list means the tier is a base/catch-all tier (see
+        ``has_no_rules()``).
+        """
+        rules = []
+        if self.min_lifetime_value is not None:
+            rules.append(f"Lifetime spend ≥ ${self.min_lifetime_value:,.2f}")
+        if self.min_order_count is not None:
+            rules.append(f"Orders ≥ {self.min_order_count}")
+        if self.min_events_purchased is not None:
+            rules.append(f"Events purchased ≥ {self.min_events_purchased}")
+        if self.min_tickets_purchased is not None:
+            rules.append(f"Tickets purchased ≥ {self.min_tickets_purchased}")
+        if self.max_days_since_last_order is not None:
+            rules.append(f"Ordered within {self.max_days_since_last_order} days")
+        if self.min_lifetime_points is not None:
+            rules.append(f"Lifetime points ≥ {self.min_lifetime_points}")
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            # Mirror qualifies(): a bare window still requires at least 1 event.
+            required = self.min_events_attended or 1
+            rule = f"Attended ≥ {required} event{'' if required == 1 else 's'}"
+            if self.attended_within_days is not None:
+                rule += f" within {self.attended_within_days} days"
+            rules.append(rule)
+        if self.min_paid_events_recent is not None or self.paid_events_within_days is not None:
+            required = self.min_paid_events_recent or 1
+            rule = f"Paid events ≥ {required}"
+            if self.paid_events_within_days is not None:
+                rule += f" within {self.paid_events_within_days} days"
+            rules.append(rule)
+        return rules
 
 
 class LoyaltyPointsTransaction(BaseModel):
@@ -3725,3 +4429,55 @@ class LoyaltyPointsTransaction(BaseModel):
 
     def __str__(self):
         return f"{self.get_kind_display()} {self.amount} pts (customer={self.customer_id})"
+
+
+class LoyaltyTierTransition(BaseModel):
+    """Immutable record of a customer moving between loyalty tiers.
+
+    Written by ``LoyaltyTierAssigner`` whenever a customer's assigned tier
+    changes, so the customer timeline can show tier progression over time.
+    Forward-only: no history exists prior to this model being introduced, and
+    ``LoyaltyTierAssigner`` only records changes it observes on subsequent runs.
+
+    ``from_tier`` / ``to_tier`` are nullable — a customer can enter from "no
+    tier" or drop back to none — and use ``SET_NULL`` so deleting a
+    ``LoyaltyTier`` definition never erases the transition history.
+    """
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    from_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    to_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    changed_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+        indexes = [
+            models.Index(fields=['customer', '-changed_at']),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.from_tier_id or 'none'} -> {self.to_tier_id or 'none'} "
+            f"(customer={self.customer_id})"
+        )

@@ -43,6 +43,45 @@ BUILTIN_CSV_FORMATS = [
             "processed_in_person": ["Was Processed In Person"],
         },
     },
+    {
+        "name": "Eventbrite",
+        "description": (
+            "Built-in format for Eventbrite CSV exports. Tuned for the Attendee "
+            "report (one row per ticket — real ticket types + barcodes); also "
+            "handles the Orders report via fallback headers. The customer is the "
+            "Buyer (who paid), so a group buyer's tickets credit one customer."
+        ),
+        "requires_manual_pricing": False,
+        "uses_tiers": False,
+        # Candidate lists cover BOTH reports; the right column resolves per file:
+        #   - Attendee report: Barcode number (unique per ticket, so multi-ticket
+        #     orders don't collapse), Ticket type, per-ticket Ticket price.
+        #   - Orders report: Order ID, Event name (no ticket class), Net sales.
+        # Note: "Ticket tier" is intentionally NOT a ticket_type candidate — it is
+        # present-but-blank in Attendee exports and map_columns picks the first
+        # PRESENT column, which would blank out the required ticket_type.
+        "column_mapping": {
+            "order_number": ["Barcode number", "Order ID"],
+            "order_date": ["Order date"],
+            "customer_name": ["Buyer first name", "Buyer last name"],
+            "customer_email": ["Buyer email"],
+            "customer_phone": ["Phone number"],
+            "ticket_type": ["Ticket type", "Ticket Class Name", "Event name"],
+            "quantity": ["Ticket quantity"],
+            # Attendee report: per-ticket face value (net to organizer).
+            "price": ["Ticket price"],
+            # Orders report: order-level organizer net (used when Ticket price absent).
+            # ASSUMPTION (verified against real exports 2026-07): the Attendee report
+            # has NO revenue column and one ticket per row (quantity=1). The processor
+            # uses total_amount DIRECTLY as the order total when present, so if a future
+            # Attendee export ever carried an order-level "Net sales" on each per-ticket
+            # row, revenue would be multiplied by the ticket count. Re-verify before
+            # trusting a new Eventbrite report shape.
+            "total_amount": ["Net sales", "Ticket + add-ons revenue"],
+            "event_name": ["Event name"],
+            "venue": ["Event location"],
+        },
+    },
 ]
 
 

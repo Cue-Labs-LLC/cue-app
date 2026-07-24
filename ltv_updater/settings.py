@@ -282,6 +282,38 @@ SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENT
 # Messaging Service still enforces STOP. Confirm against your registered 10DLC/toll-free
 # campaign terms before lowering.
 SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '30'))
+# E.164 calling-code prefixes eligible for marketing SMS, comma-separated. Recipients
+# whose number doesn't start with one are dropped before a campaign is scheduled —
+# they'd be blocked by Twilio Geo Permissions (Error 21408) and can't be billed anyway.
+# Default US/CA ('+1'). Must mirror the destinations enabled in your Twilio Geo
+# Permissions; set to an empty string to allow all countries.
+SMS_ALLOWED_COUNTRY_PREFIXES = tuple(
+    p.strip() for p in os.environ.get('SMS_ALLOWED_COUNTRY_PREFIXES', '+1').split(',') if p.strip()
+)
+# Target outbound throughput for a marketing-SMS campaign, in messages/second. The
+# orchestrator staggers chunk dispatch to hold roughly this rate instead of blasting the
+# whole audience at once — a burst from a low-trust-score number gets carrier-filtered as
+# spam (Twilio Error 30007). Keep low on a single sending number; raise only alongside a
+# multi-number Messaging Service pool. At 5/s a 1,800-recipient send finishes in ~6 min.
+SMS_SEND_RATE_PER_SEC = int(os.environ.get('SMS_SEND_RATE_PER_SEC', '5'))
+# Recipients per chunk task. Small chunks make the paced-dispatch staggering (above)
+# smooth; each chunk still sends its recipients sequentially.
+SMS_CHUNK_SIZE = int(os.environ.get('SMS_CHUNK_SIZE', '10'))
+# Account-wide daily ceiling on SMS segments handed to carriers, protecting the brand's
+# T-Mobile A2P daily cap (2,000 segments/day at a low trust score, shared across ALL orgs on
+# the account). A send that would push its send day past this cap is BLOCKED at compose time
+# (day-aware: cap minus what's already sent today + already scheduled for that day) so the
+# organizer trims the recipient list instead of having delivery silently deferred. A rare
+# race the composer can't see fails the campaign at send time with a refund. Counts all
+# segments conservatively (we can't cheaply tell which recipients are T-Mobile). Set to 0 to
+# disable the guard. Raise as the brand's trust score / cap grows.
+SMS_DAILY_SEGMENT_CAP = int(os.environ.get('SMS_DAILY_SEGMENT_CAP', '2000'))
+# Lookback window (days) for the daily AI event-summary auto-regeneration scan. Only
+# events that ended within this many days are re-examined for data changes; changes to
+# older events stop triggering regeneration. Bounds daily cost/work — widen if organizers
+# routinely edit long-past events.
+EVENT_SUMMARY_REGEN_LOOKBACK_DAYS = int(os.environ.get('EVENT_SUMMARY_REGEN_LOOKBACK_DAYS', '180'))
+
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)
@@ -317,6 +349,18 @@ TAP_TO_PAY_SUPPORTED_COUNTRIES = {
 # Stripe API call cheap without making the splash trigger feel laggy.
 TAP_TO_PAY_STATUS_CACHE_TTL = int(os.environ.get('TAP_TO_PAY_STATUS_CACHE_TTL', '60'))
 
+# Apple Push Notifications (APNs) — Auth Key (.p8) / ES256 provider JWT.
+# Device tokens are environment-specific: dev builds register against the
+# sandbox APNs host, App Store / TestFlight builds against production. If no
+# credential is configured the sender no-ops (safe for gradual rollout).
+APNS_KEY_ID    = os.environ.get('APNS_KEY_ID', '')                 # from the portal key detail page
+APNS_TEAM_ID   = os.environ.get('APNS_TEAM_ID', 'X6TZEUAVYR')      # Apple Developer Team ID
+APNS_BUNDLE_ID = os.environ.get('APNS_BUNDLE_ID', 'co.cueup.cue')  # apns-topic
+APNS_AUTH_KEY  = os.environ.get('APNS_AUTH_KEY', '')               # .p8 PEM contents (preferred; Render secret)
+APNS_KEY_PATH  = os.environ.get('APNS_KEY_PATH', '')               # fallback: path to the .p8 file on disk
+APNS_USE_SANDBOX = os.environ.get('APNS_USE_SANDBOX', 'True') == 'True'  # set False for production builds
+PUSH_NOTIFICATION_DELIVERY_TIMEOUT = int(os.environ.get('PUSH_NOTIFICATION_DELIVERY_TIMEOUT', '10'))
+
 # App Store reviewer bypass for the phone-OTP flow. Phones in this dict skip
 # Twilio Verify entirely and accept the mapped fixed OTP code. Use the NANP
 # fictional range (+1 555-01xx) so the numbers can never reach a real person.
@@ -346,6 +390,10 @@ TYPEFORM_WEBHOOK_TAG = os.environ.get('TYPEFORM_WEBHOOK_TAG', 'cue')
 # Optional override for the public host Typeform should POST to (e.g. an ngrok tunnel
 # during local development). Falls back to SITE_URL when empty.
 TYPEFORM_WEBHOOK_BASE_URL = os.environ.get('TYPEFORM_WEBHOOK_BASE_URL', '')
+
+# Outbound (general-purpose) webhooks
+# Per-delivery HTTP timeout in seconds for signed webhook POSTs (deliver_webhook_task).
+WEBHOOK_DELIVERY_TIMEOUT = int(os.environ.get('WEBHOOK_DELIVERY_TIMEOUT', '10'))
 
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

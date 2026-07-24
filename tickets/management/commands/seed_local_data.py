@@ -41,9 +41,14 @@ from tickets.models import (
     ExternalSurveyResponse,
     ExternalSurveyUpload,
     IncomeSource,
+    LoyaltyProgram,
+    LoyaltyTier,
+    Market,
+    MARKET_GEOGRAPHY_CITY,
     OrderCounter,
     Organization,
     OrganizationMembership,
+    PhoneSuppression,
     PromoCode,
     SaleableTicketType,
     SaleableTicketTypeTier,
@@ -84,7 +89,7 @@ SURVEY_TEST_EVENT_NAME = "Survey Test Night — 1 sale, ended"
 SURVEY_TEST_CUSTOMER_EMAIL = OWNER_EMAIL
 
 
-def build_survey_test_event(org, venue, owner, *, when=None):
+def build_survey_test_event(org, venue, owner, *, when=None, market=None):
     """Idempotently create an ENDED direct-ticketing event with exactly one
     ticket sold. Returns the Event. Safe to call repeatedly (keyed on org+name).
 
@@ -98,6 +103,7 @@ def build_survey_test_event(org, venue, owner, *, when=None):
         defaults=dict(
             summary="Tiny fixture: one attendee, event over — ready to send a survey.",
             venue=venue,
+            market=market,
             start_date=(now - timedelta(days=3)).date(),
             end_date=(now - timedelta(days=3)).date(),
             start_time=now.time().replace(microsecond=0),
@@ -209,33 +215,47 @@ class Command(BaseCommand):
             org = self._create_org()
             owner, staff_users = self._create_users(org)
             venues = self._create_venues(org)
+            # Collect all cities (venue cities + market-trend cities) so every
+            # event can be attached to its market.
+            venue_cities = [city for _, city, *_ in [
+                ("The Echo", "Los Angeles"), ("Baby's All Right", "Brooklyn"), ("Mohawk", "Austin"),
+            ]]
+            trend_cities = [city for city, *_ in self.MARKET_TREND_SPECS]
+            all_cities = sorted(set(venue_cities + trend_cities))
+            markets = self._create_markets(org, all_cities)
             csv_formats = self._create_csv_formats(org, owner)
             uploads = self._create_uploads(org, csv_formats, owner)
             tags = self._create_tags(org)
             customers = self._create_customers(org, tags, rng)
-            events = self._create_events(org, venues, owner, today, rng)
+            events = self._create_events(org, venues, markets, owner, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
             # Direct-ticketing catalog must exist before orders so direct events
             # sell against their real SaleableTicketTypes (keeps quantity_sold and
             # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
             self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
-            self._create_market_trend_history(org, owner, today, rng)
+            self._create_market_trend_history(org, markets, owner, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
             self._create_surveys(org, events, customers, owner, rng)
             self._create_external_survey_responses(org, events, owner, rng)
             self._create_sms_broadcasts(org, events, customers, owner, now, rng)
+            self._create_sms_compliance_fixtures(org)
 
             # Minimal fixture for exercising the survey-send flow end-to-end.
-            survey_test_event = build_survey_test_event(org, venues[0], owner, when=now)
+            survey_test_event = build_survey_test_event(
+                org, venues[0], owner, when=now, market=markets.get("Los Angeles"),
+            )
             self.stdout.write(self.style.SUCCESS(f"Survey test event: {survey_test_event.name}"))
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()
 
             recalculate_customer_segments(org)
+
+            # Loyalty last: tier assignment reads fresh lifetime_value + scans.
+            self._create_loyalty_program(org)
 
         self._print_summary(org)
 
@@ -251,6 +271,7 @@ class Command(BaseCommand):
             website="https://cueup.co",
             waitlist_feature_enabled=True,
             sms_marketing_enabled=True,
+            loyalty_feature_enabled=True,
         )
         # Seed a prepaid SMS credit balance via the wallet service so the ledger
         # invariant holds (every balance change writes an SMSCreditTransaction).
@@ -263,6 +284,45 @@ class Command(BaseCommand):
         org.refresh_from_db(fields=["sms_credit_balance_cents"])
         self.stdout.write(self.style.SUCCESS(f"Org: {org.name}"))
         return org
+
+    def _create_loyalty_program(self, org):
+        """Seed "The Circle" — an attendance-based status program.
+
+        Tiers key on distinct events *attended* (scanned in), so free-RSVP
+        no-shows never earn status. Points stay off; status is the reward.
+        """
+        from tickets.services.loyalty import assign_loyalty_tiers
+
+        program = LoyaltyProgram.objects.create(
+            organization=org,
+            name="The Circle",
+            description="Attendance-based status program for Familiar Faces regulars.",
+            is_active=True,
+            points_enabled=False,
+        )
+        # Base tier (no rules) sits lowest; higher ranks need more events attended.
+        LoyaltyTier.objects.create(
+            program=program, name="Regular", rank=0, color="blue",
+            perks="Presale access to every FF drop, member-only lineup reveals, birthday shoutout.",
+        )
+        # Thresholds are demo-scaled to the seed's sparse attendance (customers
+        # attend at most ~2 distinct events) so all three tiers populate. Insider
+        # = attended at least once, which cleanly separates real attendees from
+        # RSVP-only no-shows. A real program would use higher bars (see the
+        # SP-T439 design doc: 3 / 6 events attended).
+        LoyaltyTier.objects.create(
+            program=program, name="Insider", rank=1, color="green",
+            min_events_attended=1,
+            perks="24h early-bird presale, standing discount code, skip-the-line entry.",
+        )
+        LoyaltyTier.objects.create(
+            program=program, name="Legend", rank=2, color="red",
+            min_events_attended=2, attended_within_days=120,
+            perks="Comp +1 guest list, exclusive merch, first dibs on limited events.",
+        )
+        assigned = assign_loyalty_tiers(program)
+        self.stdout.write(self.style.SUCCESS(f"Loyalty: {program.name} ({assigned} members assigned)"))
+        return program
 
     def _create_users(self, org):
         owner = User.objects.create_user(
@@ -312,6 +372,20 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Users: 1 owner + {len(staff)} staff"))
         return owner, staff
+
+    def _create_markets(self, org, cities):
+        """Create one city-level Market per city name. Returns {city: Market}."""
+        markets = {}
+        for city in cities:
+            market = Market.objects.create(
+                organization=org,
+                name=city,
+                geography_level=MARKET_GEOGRAPHY_CITY,
+                geography_value=city,
+            )
+            markets[city] = market
+        self.stdout.write(self.style.SUCCESS(f"Markets: {len(markets)}"))
+        return markets
 
     def _create_venues(self, org):
         data = [
@@ -443,7 +517,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Customers: {len(customers)}"))
         return customers
 
-    def _create_events(self, org, venues, owner, today, rng):
+    def _create_events(self, org, venues, markets, owner, today, rng):
         specs = [
             # (name, days_offset, status, ticketing, capacity, summary)
             ("Late Bloom — Winter", -120, EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 320, "Sold out winter showcase."),
@@ -465,6 +539,7 @@ class Command(BaseCommand):
                 summary=summary,
                 description=f"{summary}\n\nFollow @familiar.faces for the lineup and last-minute drops.",
                 venue=venue,
+                market=markets.get(venue.city),
                 start_date=start_date,
                 end_date=start_date,
                 start_time=timezone.now().time().replace(microsecond=0),
@@ -588,6 +663,10 @@ class Command(BaseCommand):
                         ticket_order=order,
                         ticket_type=tt_name,
                         price=price,
+                        # Mirror the order's check-in onto each ticket so the
+                        # attendance-based loyalty tiers (which read scanned_at)
+                        # have data. Free-RSVP no-shows keep scanned_at=None.
+                        scanned_at=checked_in_at,
                     )
                     tickets_count += 1
                 if is_direct:
@@ -706,7 +785,7 @@ class Command(BaseCommand):
     NPS_PASSIVE_P = 0.30
     NPS_RESPONSES_PER_EVENT = (8, 16)   # rng range
 
-    def _create_market_trend_history(self, org, owner, today, rng):
+    def _create_market_trend_history(self, org, markets, owner, today, rng):
         from tickets.models import (
             EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL,
             ExternalSurveyResponse, ExternalSurveyUpload,
@@ -720,6 +799,11 @@ class Command(BaseCommand):
         )
 
         markets_made = events_made = orders_made = expenses_made = nps_made = 0
+        # Running counter for unique trend-buyer phone numbers (415 area, distinct
+        # from the main pool's 213 numbers) so each market has an SMS-reachable
+        # audience — lets an AI campaign plan default to the venue's market instead
+        # of "All SMS subscribers" when tested on any market-backed event.
+        phone_seq = 0
         for city, venue_name, quarters in self.MARKET_TREND_SPECS:
             n_quarters = len(quarters)
             prom_start, prom_end = self.NPS_PROMOTER_TRAJECTORY.get(
@@ -750,6 +834,7 @@ class Command(BaseCommand):
                         name=f"{city} Nights — Q{qi + 1} #{ei + 1}",
                         summary=f"{city} show.",
                         venue=venue,
+                        market=markets.get(city),
                         start_date=start_date,
                         end_date=start_date,
                         start_time=timezone.now().time().replace(microsecond=0),
@@ -769,10 +854,20 @@ class Command(BaseCommand):
                 new_buyers = []
                 for _ in range(new_target):
                     name = _gen_name(rng)
+                    # Mirror the main pool's opt-in/phone rates so ~a third of each
+                    # market's buyers are SMS-reachable (opted in + has a phone).
+                    sms_opt = rng.random() < 0.55
+                    phone = ""
+                    if rng.random() < 0.6:
+                        phone = f"+1415555{phone_seq:04d}"
+                        phone_seq += 1
                     cust = Customer.objects.create(
                         organization=org,
                         email=f"{slugify(city)}.{slugify(name)}.{cust_seq:04d}@example.test",
                         name=name,
+                        phone=phone,
+                        sms_opt_in=sms_opt,
+                        sms_opt_in_date=timezone.now() if sms_opt else None,
                     )
                     cust_seq += 1
                     new_buyers.append(cust)
@@ -1228,6 +1323,58 @@ class Command(BaseCommand):
             f"SMS: {native_count} native campaigns, {slick_count} SlickText broadcasts"
         ))
 
+    def _create_sms_compliance_fixtures(self, org):
+        """Named fixtures for manually testing the SMS compliance/UX changes:
+
+        - Suppressed-but-opted-in customers → the red "Opted out (STOP)" badge on
+          the customer list + detail (suppression overrides the opt-in flag).
+        - A suppressed, opted-OUT customer → selecting them and hitting
+          "SMS status → Opt in to SMS" fires the "can only re-subscribe by texting
+          START" warning.
+        - An international (UK) opted-in customer → dropped from any campaign
+          audience by the country gate (SMS_ALLOWED_COUNTRY_PREFIXES), which is what
+          prevents Twilio Geo-Permission blocks (Error 21408).
+
+        Recognizable names/emails so they're easy to find via search. Idempotent
+        (get_or_create) so re-seeding with --force won't duplicate them.
+        """
+        specs = [
+            # (name, email, phone, opt_in, suppression) where suppression is
+            # None | 'global' | 'org'.
+            ("Simone Ashford (STOP demo)", "simone.stop@example.test",
+             "+12135550101", True, "global"),
+            ("Priya Nadar (org STOP demo)", "priya.stop@example.test",
+             "+12135550103", True, "org"),
+            ("Marcus Reed (re-opt-in demo)", "marcus.stop@example.test",
+             "+12135550102", False, "global"),
+            ("Liam Fox (UK / geo demo)", "liam.uk@example.test",
+             "+447700900123", True, None),
+        ]
+        for name, email, phone, opt_in, suppression in specs:
+            cust, _ = Customer.objects.get_or_create(
+                organization=org, email=email,
+                defaults={
+                    "name": name,
+                    "phone": phone,
+                    "sms_opt_in": opt_in,
+                    "sms_opt_in_date": timezone.now() if opt_in else None,
+                },
+            )
+            if suppression == "global":
+                PhoneSuppression.objects.get_or_create(
+                    phone=phone, organization=None,
+                    defaults={"reason": PhoneSuppression.Reason.TWILIO_STOP},
+                )
+            elif suppression == "org":
+                PhoneSuppression.objects.get_or_create(
+                    phone=phone, organization=org,
+                    defaults={"reason": PhoneSuppression.Reason.MANUAL},
+                )
+        self.stdout.write(self.style.SUCCESS(
+            f"SMS compliance fixtures: {len(specs)} named customers "
+            "(search 'demo' in the customer list)"
+        ))
+
     # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
@@ -1247,5 +1394,12 @@ class Command(BaseCommand):
         self.stdout.write(f"  Email:  {OWNER_EMAIL}  /  {OWNER_PASSWORD}")
         self.stdout.write(f"  Phone:  {OWNER_PHONE}")
         self.stdout.write("  (Phone OTP needs E2E_TEST_MODE=True or real Twilio creds; test code is 000000.)")
+        self.stdout.write("")
+        self.stdout.write(self.style.WARNING("SMS compliance test data (search 'demo' in the customer list):"))
+        self.stdout.write("  Simone Ashford — opted in but STOP-suppressed → red 'Opted out (STOP)' badge")
+        self.stdout.write("  Priya Nadar    — org-level suppression → same badge (per-org opt-out)")
+        self.stdout.write("  Marcus Reed    — opted OUT + suppressed → select him, 'SMS status → Opt in to")
+        self.stdout.write("                   SMS' should warn 'can only re-subscribe by texting START'")
+        self.stdout.write("  Liam Fox (UK)  — +44 number → dropped from any campaign audience by the country gate")
         self.stdout.write("")
         self.stdout.write("Start the dev server: python manage.py runserver")

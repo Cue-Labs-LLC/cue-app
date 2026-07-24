@@ -506,14 +506,15 @@ class MarketingAnalyticsService:
         """One point per broadcast (native SMS + external SlickText) for the
         audience-over-time line chart and the by-market breakdown.
 
-        Market = the linked event's venue city ('No market' when a native campaign
-        has no event). Market-independent and window-scoped, so it caches with the
+        Market = the linked event's assigned market ('No market' when a campaign
+        has no assigned market). Market-independent and window-scoped, so it caches with the
         rest of the metrics dict — the view applies the market filter afterward.
         """
         from tickets.models import SMSCampaign
+        from tickets.services.markets import NO_MARKET_LABEL
 
-        def market_of(city):
-            return (city or '').strip() or 'No market'
+        def market_of(name):
+            return (name or '').strip() or NO_MARKET_LABEL
 
         rows = []
 
@@ -524,37 +525,45 @@ class MarketingAnalyticsService:
                 status=SMSCampaign.Status.SENT,
                 sent_at__isnull=False,
             )
-            .select_related('event', 'event__venue')
+            .select_related('event', 'event__market')
         )
         if self.window_start is not None:
             native = native.filter(sent_at__gte=self.window_start)
-        for c in native.values('name', 'sent_at', 'audience_size', 'event__venue__city'):
+        for c in native.values('name', 'sent_at', 'audience_size', 'event__market_id', 'event__market__name'):
             sent_at = c['sent_at']
+            market_name = market_of(c['event__market__name'])
             rows.append({
                 'channel': 'native',
                 'name': c['name'] or 'Untitled SMS',
                 'sent_at': sent_at.isoformat(),
                 'sent_ms': int(sent_at.timestamp() * 1000),
                 'audience': c['audience_size'] or 0,
-                'market': market_of(c['event__venue__city']),
+                'market_id': str(c['event__market_id']) if c['event__market_id'] else '',
+                'market_name': market_name,
+                'market_label': market_name,
+                'market': market_name,
             })
 
         slicktext = (
             self._sms_qs()
             .exclude(send_time__isnull=True)
-            .select_related('event', 'event__venue')
+            .select_related('event', 'event__market')
             .annotate(eff_audience=self._coalesce_int('manual_audience', 'audience_size'))
-            .values('name', 'send_time', 'eff_audience', 'event__venue__city')
+            .values('name', 'send_time', 'eff_audience', 'event__market_id', 'event__market__name')
         )
         for c in slicktext:
             send_time = c['send_time']
+            market_name = market_of(c['event__market__name'])
             rows.append({
                 'channel': 'slicktext',
                 'name': c['name'] or 'Untitled SMS',
                 'sent_at': send_time.isoformat(),
                 'sent_ms': int(send_time.timestamp() * 1000),
                 'audience': c['eff_audience'] or 0,
-                'market': market_of(c['event__venue__city']),
+                'market_id': str(c['event__market_id']) if c['event__market_id'] else '',
+                'market_name': market_name,
+                'market_label': market_name,
+                'market': market_name,
             })
 
         rows.sort(key=lambda r: r['sent_ms'])

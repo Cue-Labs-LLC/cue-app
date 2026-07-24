@@ -1,5 +1,5 @@
 """
-Detects and diagnoses declining turnout per market (Event.venue.city) over time.
+Detects and diagnoses declining turnout per assigned market over time.
 
 Turnout is measured per event as *revenue* (default), *tickets sold*, or
 *profitability*. For each market we build a per-period time series, fit an
@@ -9,7 +9,7 @@ softer demand, lower prices, higher costs, fewer new buyers, or fewer returning
 buyers).
 
 All data derives from existing Event / TicketOrder / Customer / EventExpense /
-EventIncome / StripeCheckoutSession tables; no new models. A few grouped queries
+EventIncome / StripeCheckoutSession tables. A few grouped queries
 + one flat pull keep this independent of the number of markets, events, or
 periods (no N+1).
 """
@@ -25,6 +25,7 @@ from tickets.models import (
     Event, EventExpense, EventIncome, ExternalSurveyResponse,
     StripeCheckoutSession, TicketOrder,
 )
+from tickets.services.markets import NO_MARKET_LABEL
 
 
 # Tunable thresholds.
@@ -36,6 +37,12 @@ CONFIDENCE_R2 = 0.5      # R^2 of the fit at/above this => "high" confidence
 NPS_SCALE = 100.0
 
 _VALID_METRICS = ('revenue', 'tickets', 'profitability', 'nps')
+
+# Synthetic "portfolio" row: every market's cells summed per period, pinned to the
+# top of the leaderboard. Its id is a sentinel (never a real Market PK) and its
+# label doubles as the JS/table key, so it must not collide with a real market name.
+ALL_MARKETS_ID = 'all'
+ALL_MARKETS_LABEL = 'All Markets'
 
 # Trailing time-window keys -> number of years to look back ('all' => no bound).
 # Bounds how far back the per-period trend reads, so the slope/diagnosis reflect
@@ -115,15 +122,15 @@ class MarketTrendCalculator:
                 kw[prefix + 'start_date__gte'] = start_cutoff
             return kw
 
-        # Query A — events held per (city, period).
+        # Query A — events held per (market, period).
         events_rows = (
             Event.objects.filter(organization=org, **_date_kwargs(''))
             .annotate(period=trunc('start_date'))
-            .values('venue__city', 'period')
+            .values('market_id', 'market__name', 'period')
             .annotate(events_held=Count('id'))
         )
 
-        # Query B — tickets sold per (city, period). Counting the reverse
+        # Query B — tickets sold per (market, period). Counting the reverse
         # TicketOrder->Ticket relation is a single join; no Sum over a
         # different relation is mixed in, so there is no row inflation. In-person
         # (door/cash) sales ARE counted here so turnout and revenue reflect every
@@ -135,11 +142,11 @@ class MarketTrendCalculator:
                 **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
-            .values('event__venue__city', 'period')
+            .values('event__market_id', 'event__market__name', 'period')
             .annotate(sold=Count('tickets'))
         )
 
-        # Query B2 — gross revenue per (city, period). Summed over TicketOrder
+        # Query B2 — gross revenue per (market, period). Summed over TicketOrder
         # only (no ticket join), so it must be a SEPARATE query from `sold` —
         # mixing Sum('total_amount') with Count('tickets') would inflate rows.
         # Includes in-person orders so revenue/profit reconcile with the
@@ -150,18 +157,18 @@ class MarketTrendCalculator:
                 **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
-            .values('event__venue__city', 'period')
+            .values('event__market_id', 'event__market__name', 'period')
             .annotate(revenue=Coalesce(Sum('total_amount'), Decimal('0.00')))
         )
 
-        # Queries D/E/F — profit components per (city, period). Each is isolated
+        # Queries D/E/F — profit components per (market, period). Each is isolated
         # (single relation, no ticket join) and bucketed by the EVENT's start
         # date so it lines up with the revenue/tickets series.
         expense_rows = (
             EventExpense.objects.visible()
             .filter(event__organization=org, **_date_kwargs('event__'))
             .annotate(period=trunc('event__start_date'))
-            .values('event__venue__city', 'period')
+            .values('event__market_id', 'event__market__name', 'period')
             .annotate(expenses=Coalesce(Sum('amount'), Decimal('0.00')))
         )
         income_rows = (
@@ -171,7 +178,7 @@ class MarketTrendCalculator:
                 **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
-            .values('event__venue__city', 'period')
+            .values('event__market_id', 'event__market__name', 'period')
             .annotate(income=Coalesce(Sum('amount'), Decimal('0.00')))
         )
         fee_rows = (
@@ -181,11 +188,11 @@ class MarketTrendCalculator:
                 **_date_kwargs('ticket_order__event__'),
             )
             .annotate(period=trunc('ticket_order__event__start_date'))
-            .values('ticket_order__event__venue__city', 'period')
+            .values('ticket_order__event__market_id', 'ticket_order__event__market__name', 'period')
             .annotate(fee_cents=Coalesce(Sum('platform_fee_cents'), 0))
         )
 
-        # Query G — NPS response counts per (city, period). Bucketed by the
+        # Query G — NPS response counts per (market, period). Bucketed by the
         # EVENT's start_date (not the survey submission date) so NPS lines up on
         # the same period axis as the financial series. Promoters 9-10,
         # detractors 0-6 (matches services/external_survey/analytics.py).
@@ -197,7 +204,7 @@ class MarketTrendCalculator:
                 **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
-            .values('event__venue__city', 'period')
+            .values('event__market_id', 'event__market__name', 'period')
             .annotate(
                 nps_responses=Count('id'),
                 promoters=Count('id', filter=Q(nps_score__gte=9)),
@@ -206,60 +213,62 @@ class MarketTrendCalculator:
             )
         )
 
-        # markets[city][period_key] = {events_held, sold, revenue, expenses, income, fees, nps..., ...}
+        # markets[(market_id, market_label)][period_key] = {events_held, sold, revenue, expenses, income, fees, nps..., ...}
         markets = {}
 
-        def _bucket(city):
-            return markets.setdefault(city or 'Unknown', {})
+        def _bucket(market_id, market_name):
+            label = (market_name or '').strip() or NO_MARKET_LABEL
+            key = (str(market_id) if market_id else '', label)
+            return markets.setdefault(key, {})
 
         for r in events_rows:
-            p = _bucket(r['venue__city'])
+            p = _bucket(r['market_id'], r['market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['events_held'] = r['events_held']
 
         for r in sold_rows:
-            p = _bucket(r['event__venue__city'])
+            p = _bucket(r['event__market_id'], r['event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['sold'] = r['sold']
 
         for r in revenue_rows:
-            p = _bucket(r['event__venue__city'])
+            p = _bucket(r['event__market_id'], r['event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['revenue'] = float(r['revenue'] or 0)
 
         for r in expense_rows:
-            p = _bucket(r['event__venue__city'])
+            p = _bucket(r['event__market_id'], r['event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['expenses'] = float(r['expenses'] or 0)
 
         for r in income_rows:
-            p = _bucket(r['event__venue__city'])
+            p = _bucket(r['event__market_id'], r['event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['income'] = float(r['income'] or 0)
 
         for r in fee_rows:
-            p = _bucket(r['ticket_order__event__venue__city'])
+            p = _bucket(r['ticket_order__event__market_id'], r['ticket_order__event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['fees'] = float(r['fee_cents'] or 0) / 100.0
 
         for r in nps_rows:
-            p = _bucket(r['event__venue__city'])
+            p = _bucket(r['event__market_id'], r['event__market__name'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['nps_responses'] = r['nps_responses']
             cell['promoters'] = r['promoters']
             cell['passives'] = r['passives']
             cell['detractors'] = r['detractors']
 
-        # Query C — new vs returning buyers per (city, period), reusing the
+        # Query C — new vs returning buyers per (market, period), reusing the
         # earliest-order = "new" rule from RepeatCustomerCalculator.
-        for city, key, new_count, ret_count in self._new_returning_by_market_period(today, start_cutoff):
-            cell = _bucket(city).setdefault(key, self._empty_cell())
+        for market_id, market_name, key, new_count, ret_count in self._new_returning_by_market_period(today, start_cutoff):
+            cell = _bucket(market_id, market_name).setdefault(key, self._empty_cell())
             cell['new_count'] = new_count
             cell['returning_count'] = ret_count
 
         market_results = []
-        for city, period_map in markets.items():
-            market_results.append(self._build_market(city, period_map))
+        for (market_id, market_name), period_map in markets.items():
+            market_results.append(self._build_market(market_id, market_name, period_map))
 
         # Leaderboard order: highest to lowest by the selected metric's total.
         total_field = {
@@ -270,12 +279,27 @@ class MarketTrendCalculator:
         }[self.metric]
         market_results.sort(key=lambda m: m[total_field], reverse=True)
 
+        # Summary counts reflect only real markets — computed before the aggregate
+        # row is prepended below.
         summary = {
             'markets_count': len(market_results),
             'declining_count': sum(1 for m in market_results if m['trend'] == 'declining'),
             'growing_count': sum(1 for m in market_results if m['trend'] == 'growing'),
             'stable_count': sum(1 for m in market_results if m['trend'] == 'stable'),
         }
+
+        # Portfolio row: aggregate every market's cells and run the same trend/
+        # diagnosis machinery, so "All Markets" behaves exactly like a market and
+        # sits pinned at index 0 regardless of the per-metric sort above. Skip when
+        # there's only one market (it would just duplicate that market).
+        if len(market_results) > 1:
+            agg = self._build_market(
+                ALL_MARKETS_ID, ALL_MARKETS_LABEL,
+                self._aggregate_all_markets(markets),
+            )
+            agg['is_aggregate'] = True
+            market_results.insert(0, agg)
+
         return {'period': self.period, 'window': self.window,
                 'markets': market_results, 'summary': summary}
 
@@ -288,8 +312,24 @@ class MarketTrendCalculator:
                 'new_count': 0, 'returning_count': 0,
                 'nps_responses': 0, 'promoters': 0, 'passives': 0, 'detractors': 0}
 
+    def _aggregate_all_markets(self, markets):
+        """Sum every market's per-period cells into one org-wide period map.
+
+        Every cell field is additive across markets within a period, including
+        new_count/returning_count: the "new to the org" flag is assigned globally
+        (a buyer is new at exactly one event across ALL markets), so summing the
+        per-market new-buyer counts in a period yields the correct org-wide count.
+        """
+        combined = {}
+        for period_map in markets.values():
+            for k, cell in period_map.items():
+                agg = combined.setdefault(k, self._empty_cell())
+                for field in cell:
+                    agg[field] += cell[field]
+        return combined
+
     def _new_returning_by_market_period(self, today, start_cutoff):
-        """Yield (city, period_key, new_count, returning_count) tuples."""
+        """Yield (market_id, market_name, period_key, new_count, returning_count) tuples."""
         date_filter = {'event__start_date__lt': today}
         if start_cutoff is not None:
             date_filter['event__start_date__gte'] = start_cutoff
@@ -300,7 +340,7 @@ class MarketTrendCalculator:
                 **date_filter,
             ).values(
                 'customer_id', 'event_id', 'order_date',
-                'event__venue__city', 'event__start_date',
+                'event__market_id', 'event__market__name', 'event__start_date',
             )
         )
         if not rows:
@@ -315,17 +355,19 @@ class MarketTrendCalculator:
         # cumcount on unsorted rows, which can demote the genuine first event.
         df = (
             df.groupby(
-                ['customer_id', 'event_id', 'event__venue__city', 'event__start_date'],
+                ['customer_id', 'event_id', 'event__market_id', 'event__market__name', 'event__start_date'],
                 as_index=False,
+                dropna=False,
             )['order_date'].min()
             .sort_values(['customer_id', 'order_date', 'event_id'])
         )
         df['is_new'] = ~df.duplicated('customer_id')
 
-        df['city'] = df['event__venue__city'].fillna('Unknown')
+        df['market_id'] = df['event__market_id'].fillna('')
+        df['market_name'] = df['event__market__name'].fillna(NO_MARKET_LABEL)
         df['period_key'] = df['event__start_date'].apply(self._period_key)
 
-        grouped = df.groupby(['city', 'period_key']).agg(
+        grouped = df.groupby(['market_id', 'market_name', 'period_key']).agg(
             total=('customer_id', 'count'),
             new_count=('is_new', 'sum'),
         ).reset_index()
@@ -333,9 +375,9 @@ class MarketTrendCalculator:
         for _, r in grouped.iterrows():
             new_count = int(r['new_count'])
             returning = int(r['total']) - new_count
-            yield r['city'], r['period_key'], new_count, returning
+            yield str(r['market_id']) if r['market_id'] else '', r['market_name'], r['period_key'], new_count, returning
 
-    def _build_market(self, city, period_map):
+    def _build_market(self, market_id, market_name, period_map):
         keys = sorted(period_map.keys())
         periods = []
         for k in keys:
@@ -410,7 +452,10 @@ class MarketTrendCalculator:
         tot_detr = sum(period_map[k]['detractors'] for k in keys)
         total_nps = round((tot_prom - tot_detr) / tot_resp * 100) if tot_resp else 0
         result = {
-            'city': city,
+            'city': market_name,
+            'market_id': market_id,
+            'market_name': market_name,
+            'market_label': market_name,
             'metric': self.metric,
             'change_unit': 'pts' if is_nps else '%',
             'periods': periods,
@@ -535,9 +580,9 @@ class MarketTrendCalculator:
                 # Decline isn't cleanly attributable to one declining driver.
                 result['dominant_driver'] = None
                 result['diagnosis_text'] = (
-                    '{} in {} is trending down ~{}{} per {}, but no single driver '
+                    '{} {} is trending down ~{}{} per {}, but no single driver '
                     'stands out — worth a closer look.'.format(
-                        self._metric_noun(), result['city'],
+                        self._metric_noun(), self._location_phrase(result),
                         abs(result['norm_slope_pct']), self._change_unit(), self.period,
                     )
                 )
@@ -555,8 +600,8 @@ class MarketTrendCalculator:
             else:
                 result['dominant_driver'] = None
                 result['diagnosis_text'] = (
-                    '{} in {} is up ~{}{} per {} — keep doing what works here.'.format(
-                        self._metric_noun(), result['city'],
+                    '{} {} is up ~{}{} per {} — keep doing what works here.'.format(
+                        self._metric_noun(), self._location_phrase(result),
                         abs(result['norm_slope_pct']), self._change_unit(), self.period,
                     )
                 )
@@ -622,9 +667,16 @@ class MarketTrendCalculator:
     def _change_unit(self):
         return 'pts' if self.metric == 'nps' else '%'
 
+    def _location_phrase(self, result):
+        """Grammatical location phrase for the diagnosis text: the aggregate
+        portfolio row reads 'across all markets'; a real market reads 'in <name>'.
+        Detected via the sentinel market_id, which is set before _diagnose runs."""
+        if result.get('market_id') == ALL_MARKETS_ID:
+            return 'across all markets'
+        return 'in {}'.format(result['city'])
+
     def _diagnosis_text(self, result, dominant):
         drop = abs(result['norm_slope_pct'])
-        city = result['city']
         key = dominant['key']
         if key == 'events':
             phrase = 'fewer events on the calendar (about {} down to {} per {})'.format(
@@ -658,21 +710,22 @@ class MarketTrendCalculator:
             phrase = 'fewer returning buyers (repeat mix fell {}%→{}%)'.format(
                 dominant['first'], dominant['last'],
             )
-        return '{} in {} is down ~{}{} per {}, driven mainly by {}.'.format(
-            self._metric_noun(), city, drop, self._change_unit(), self.period, phrase,
+        return '{} {} is down ~{}{} per {}, driven mainly by {}.'.format(
+            self._metric_noun(), self._location_phrase(result), drop,
+            self._change_unit(), self.period, phrase,
         )
 
     def _growth_text(self, result, lead):
-        return '{} in {} is up ~{}{} per {}, led by {}.'.format(
-            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+        return '{} {} is up ~{}{} per {}, led by {}.'.format(
+            self._metric_noun(), self._location_phrase(result), abs(result['norm_slope_pct']),
             self._change_unit(), self.period, self._boost_phrase(lead),
         )
 
     def _steady_text(self, result):
         lever = ('turning passives into promoters' if self.metric == 'nps'
                  else 'bringing in new buyers')
-        return '{} in {} is holding steady (~{}{} per {}). Best lever to grow: {}.'.format(
-            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+        return '{} {} is holding steady (~{}{} per {}). Best lever to grow: {}.'.format(
+            self._metric_noun(), self._location_phrase(result), abs(result['norm_slope_pct']),
             self._change_unit(), self.period, lever,
         )
 

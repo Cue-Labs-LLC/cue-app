@@ -21,6 +21,11 @@
         <span class="hub-link-title">Venues</span>
         <p class="hub-link-copy">Maintain venues used when creating and reporting on events.</p>
     </a>
+    <a href="{% url 'tickets:market_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-map"></i></span>
+        <span class="hub-link-title">Markets</span>
+        <p class="hub-link-copy">Build geographic markets from event city, state, or country.</p>
+    </a>
     <a href="{% url 'tickets:customer_tag_list' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-tags"></i></span>
         <span class="hub-link-title">Customer Tags</span>
@@ -46,6 +51,11 @@
         <span class="hub-link-title">Display Preferences</span>
         <p class="hub-link-copy">Choose which optional cards appear on event pages.</p>
     </a>
+    <a href="{% url 'tickets:settings_segment_tuning' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-diagram-3"></i></span>
+        <span class="hub-link-title">Segment Settings</span>
+        <p class="hub-link-copy">Choose whether customer segments use automatic scoring or custom cut-offs.</p>
+    </a>
     <a href="{% url 'tickets:custom_field_list' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-sliders"></i></span>
         <span class="hub-link-title">Custom Fields</span>
@@ -65,6 +75,11 @@
         <span class="hub-link-icon"><i class="bi bi-key"></i></span>
         <span class="hub-link-title">API Keys</span>
         <p class="hub-link-copy">Create and revoke organization API credentials.</p>
+    </a>
+    <a href="{% url 'tickets:webhook_endpoint_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-hdd-network"></i></span>
+        <span class="hub-link-title">Webhooks</span>
+        <p class="hub-link-copy">Send signed HTTP callbacks to your systems when events, orders, and customers are created.</p>
     </a>
     <a href="{% url 'tickets:ai_token_usage' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-cpu"></i></span>

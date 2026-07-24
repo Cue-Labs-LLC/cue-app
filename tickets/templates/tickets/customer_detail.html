@@ -221,6 +221,127 @@
     }
     .cd-back { margin-top: 32px; }
 
+    /* Timeline — a quiet ledger spine: hairline rail, glyph nodes, mono data - */
+    .cd-tl-panel { border-color: var(--border-light); }
+    .cd-timeline { list-style: none; margin: 0; padding: 2px 0; }
+    .cd-tl {
+        display: grid;
+        grid-template-columns: 74px 18px 1fr;
+        gap: 0 16px;
+    }
+    .cd-tl-time {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--text-tertiary);
+        text-align: right;
+        padding-top: 2px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+    .cd-tl-time-sub { display: block; opacity: 0.55; }
+
+    /* Rail: a single hairline the glyph nodes sit on. The node's surface-fill
+       masks the line so it reads as passing behind each marker. */
+    .cd-tl-rail { position: relative; }
+    .cd-tl-rail::before {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        transform: translateX(-50%);
+        width: 1px;
+        background: var(--border-light);
+    }
+    .cd-tl:first-child .cd-tl-rail::before { top: 6px; }
+    .cd-tl:last-child .cd-tl-rail::before { bottom: auto; height: 6px; }
+    .cd-tl-node {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 15px;
+        margin-top: 1px;
+        background: var(--bg-surface);
+        color: var(--text-tertiary);
+        font-size: 11px;
+    }
+    .cd-tl-node--order { color: var(--accent); }
+
+    .cd-tl-body { min-width: 0; padding-bottom: 20px; }
+    .cd-tl:last-child .cd-tl-body { padding-bottom: 2px; }
+    .cd-tl-title {
+        font-size: 13.5px;
+        font-weight: 500;
+        line-height: 1.35;
+        color: var(--text-primary);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 5px 9px;
+    }
+    /* Titles deep-link to the underlying record. Hover reveals the accent + a
+       small out-arrow rather than a persistent underline (no layout shift). */
+    a.cd-tl-link {
+        color: inherit;
+        text-decoration: none;
+        transition: color 0.14s ease;
+    }
+    a.cd-tl-link:hover,
+    a.cd-tl-link:focus-visible { color: var(--accent); }
+    .cd-tl-go {
+        font-size: 9.5px;
+        margin-left: 3px;
+        color: var(--text-tertiary);
+        opacity: 0;
+        transform: translateX(-2px);
+        transition: opacity 0.14s ease, transform 0.14s ease;
+    }
+    a.cd-tl-link:hover .cd-tl-go,
+    a.cd-tl-link:focus-visible .cd-tl-go {
+        opacity: 1;
+        transform: none;
+        color: var(--accent);
+    }
+
+    /* Delivery state as a quiet mono micro-label instead of a filled pill. */
+    .cd-tl-status {
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+    }
+    .cd-tl-status--ok   { color: #3f9b74; }
+    .cd-tl-status--warn { color: #b1802f; }
+    .cd-tl-status--bad  { color: #c05a4d; }
+
+    /* Meta reads like a statement line: mono, tabular, slash-delimited. */
+    .cd-tl-meta {
+        margin-top: 4px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-tertiary);
+        font-variant-numeric: tabular-nums;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 3px 8px;
+    }
+    .cd-tl-meta strong { color: var(--text-secondary); font-weight: 500; }
+    .cd-tl-meta .cd-tl-amt { color: var(--text-primary); }
+    .cd-tl-meta .cd-tl-sep { color: var(--border); }
+
+    @media (max-width: 640px) {
+        .cd-tl { grid-template-columns: 58px 16px 1fr; gap: 0 12px; }
+        .cd-tl-go { opacity: 1; transform: none; }
+    }
+
     /* Reveal ---------------------------------------------------------- */
     @media (prefers-reduced-motion: no-preference) {
         @keyframes cdReveal {
@@ -329,6 +450,18 @@
         {% endif %}
 
         <div class="cd-attr-row">
+            <div class="cd-attr-label">Source</div>
+            <div class="cd-attr-value">
+                {% if customer.acquisition_source %}
+                <span class="badge bg-{{ acquisition_source_badge_color }} fs-6">{{ customer.get_acquisition_source_display }}</span>
+                {% else %}
+                <span class="badge bg-secondary fs-6">Unknown</span>
+                {% endif %}
+                <span class="cd-muted">How this customer was acquired</span>
+            </div>
+        </div>
+
+        <div class="cd-attr-row">
             <div class="cd-attr-label">Tags</div>
             <div class="cd-attr-value">
                 {% for tag in assigned_tags %}
@@ -381,201 +514,137 @@
     </div>
 </div>
 
-<!-- ===== Tabs ===== -->
+<!-- ===== Timeline ===== -->
 <div class="cd-reveal cd-reveal-2">
-{% if sms_marketing_enabled %}
-<nav class="nav nav-tabs" id="customerDetailTabs" role="tablist">
-    <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing Activity{% if sms_stats.total %} ({{ sms_stats.total }}){% endif %}</button>
-</nav>
-{% endif %}
-<div class="tab-content">
-
-<!-- ===== TAB: Overview ===== -->
-<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
-
-    <div class="cd-section">
-        <h2 class="cd-section-title">Order History</h2>
-        {% if page_obj %}
-        <div class="cd-panel">
-            <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                    <thead>
-                        <tr>
-                            <th>Order Number</th>
-                            <th>Date</th>
-                            <th>Event</th>
-                            <th>Venue</th>
-                            <th>Total Amount</th>
-                            <th>Tickets</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for order in page_obj %}
-                        <tr>
-                            <td><strong>{{ order.display_order_number }}</strong></td>
-                            <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
-                            <td>{{ order.event.name }}</td>
-                            <td>{{ order.event.venue.name }}</td>
-                            <td><strong>${{ order.net_amount|currency }}</strong></td>
-                            <td>{{ order.tickets_count }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-
-            {% if page_obj.has_other_pages %}
-            <div class="d-flex justify-content-center py-3">
-                <nav>
-                    <ul class="pagination mb-0">
-                        {% if page_obj.has_previous %}
-                        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
-                        {% endif %}
-                        <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
-                        {% if page_obj.has_next %}
-                        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
-                        {% endif %}
-                    </ul>
-                </nav>
-            </div>
-            {% endif %}
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;"><p class="mb-0">No orders found.</p></div>
-        {% endif %}
-    </div>
-
-
-</div><!-- /tab-overview -->
 
 {% if sms_marketing_enabled %}
-<!-- ===== TAB: Marketing Activity ===== -->
-<div class="tab-pane fade" id="tab-marketing" role="tabpanel">
+<!-- SMS summary: consent + delivery scoreboard, carried over from the old Marketing tab -->
+<div class="cd-consent">
+    <span class="cd-attr-label" style="padding-top:0;">SMS Consent</span>
+    {% if sms_suppressed %}
+    <span class="badge bg-danger">Opted out (STOP)</span>
+    <span class="cd-muted">can only re-subscribe by texting START</span>
+    {% elif customer.sms_opt_in %}
+    <span class="badge bg-success">Opted in</span>
+    {% if customer.sms_opt_in_date %}<span class="cd-muted">since {{ customer.sms_opt_in_date|date:"M d, Y" }}</span>{% endif %}
+    {% else %}
+    <span class="badge bg-secondary">Not opted in</span>
+    {% endif %}
+    <span class="cd-updated">{{ customer.phone|default:"No phone on file" }}</span>
+</div>
 
-    <div class="cd-consent">
-        <span class="cd-attr-label" style="padding-top:0;">SMS Consent</span>
-        {% if customer.sms_opt_in %}
-        <span class="badge bg-success">Opted in</span>
-        {% if customer.sms_opt_in_date %}<span class="cd-muted">since {{ customer.sms_opt_in_date|date:"M d, Y" }}</span>{% endif %}
-        {% else %}
-        <span class="badge bg-secondary">Not opted in</span>
-        {% endif %}
-        <span class="cd-updated">{{ customer.phone|default:"No phone on file" }}</span>
+<div class="cd-rail">
+    <div class="cd-rail-item">
+        <div class="cd-rail-label">Messages Sent</div>
+        <div class="cd-rail-value">{{ sms_stats.total }}</div>
     </div>
-
-    <div class="cd-rail">
-        <div class="cd-rail-item">
-            <div class="cd-rail-label">Messages Sent</div>
-            <div class="cd-rail-value">{{ sms_stats.total }}</div>
-        </div>
-        <div class="cd-rail-item">
-            <div class="cd-rail-label">Delivered</div>
-            <div class="cd-rail-value">{{ sms_stats.delivered }}</div>
-        </div>
-        <div class="cd-rail-item">
-            <div class="cd-rail-label">Link Clicks</div>
-            <div class="cd-rail-value">{{ sms_stats.clicked }}</div>
-        </div>
-        <div class="cd-rail-item">
-            <div class="cd-rail-label">Failed</div>
-            <div class="cd-rail-value">{{ sms_stats.failed }}</div>
-        </div>
+    <div class="cd-rail-item">
+        <div class="cd-rail-label">Delivered</div>
+        <div class="cd-rail-value">{{ sms_stats.delivered }}</div>
     </div>
-
-    <div class="cd-section">
-        <h2 class="cd-section-title">SMS Activity</h2>
-        {% if sms_page_obj %}
-        <div class="cd-panel">
-            <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                    <thead>
-                        <tr>
-                            <th>Campaign</th>
-                            <th>Status</th>
-                            <th>Sent</th>
-                            <th>Received</th>
-                            <th>Link Clicked</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for msg in sms_page_obj %}
-                        <tr>
-                            <td>
-                                <strong>{{ msg.campaign.name }}</strong>
-                                {% if msg.opted_out_at %}<span class="badge bg-secondary ms-1">Opted out</span>{% endif %}
-                                {% if msg.error_message %}<div class="cd-muted small">{{ msg.error_message }}</div>{% endif %}
-                            </td>
-                            <td>
-                                {% if msg.status == 'delivered' %}<span class="badge bg-success">Delivered</span>
-                                {% elif msg.status == 'sent' %}<span class="badge bg-primary">Sent</span>
-                                {% elif msg.status == 'queued' %}<span class="badge bg-warning text-dark">Queued</span>
-                                {% else %}<span class="badge bg-danger">{{ msg.get_status_display }}</span>{% endif %}
-                            </td>
-                            <td>{% if msg.sent_at %}{{ msg.sent_at|date:"M d, Y H:i" }}{% else %}<span class="cd-muted">&mdash;</span>{% endif %}</td>
-                            <td>{% if msg.delivered_at %}{{ msg.delivered_at|date:"M d, Y H:i" }}{% else %}<span class="cd-muted">&mdash;</span>{% endif %}</td>
-                            <td>
-                                {% if msg.first_clicked_at %}
-                                {{ msg.first_clicked_at|date:"M d, Y H:i" }}{% if msg.click_count > 1 %} <span class="cd-muted small">(&times;{{ msg.click_count }})</span>{% endif %}
-                                {% else %}<span class="cd-muted">&mdash;</span>{% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-
-            {% if sms_page_obj.has_other_pages %}
-            <div class="d-flex justify-content-center py-3">
-                <nav>
-                    <ul class="pagination mb-0">
-                        {% if sms_page_obj.has_previous %}
-                        <li class="page-item"><a class="page-link" href="?sms_page={{ sms_page_obj.previous_page_number }}&tab=marketing">Previous</a></li>
-                        {% endif %}
-                        <li class="page-item active"><span class="page-link">{{ sms_page_obj.number }} / {{ sms_page_obj.paginator.num_pages }}</span></li>
-                        {% if sms_page_obj.has_next %}
-                        <li class="page-item"><a class="page-link" href="?sms_page={{ sms_page_obj.next_page_number }}&tab=marketing">Next</a></li>
-                        {% endif %}
-                    </ul>
-                </nav>
-            </div>
-            {% endif %}
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;"><p class="mb-0">No marketing messages sent to this customer yet.</p></div>
-        {% endif %}
+    <div class="cd-rail-item">
+        <div class="cd-rail-label">Link Clicks</div>
+        <div class="cd-rail-value">{{ sms_stats.clicked }}</div>
     </div>
-
-</div><!-- /tab-marketing -->
+    <div class="cd-rail-item">
+        <div class="cd-rail-label">Failed</div>
+        <div class="cd-rail-value">{{ sms_stats.failed }}</div>
+    </div>
+</div>
 {% endif %}
 
-</div><!-- /tab-content -->
-</div><!-- /tabs reveal -->
+<div class="cd-section">
+    <h2 class="cd-section-title">Timeline</h2>
+    {% if page_obj %}
+    <div class="cd-panel cd-tl-panel">
+        <div style="padding: 18px 22px 4px;">
+            <ul class="cd-timeline">
+                {% for item in page_obj %}
+                {% with obj=item.obj %}
+                <li class="cd-tl">
+                    <div class="cd-tl-time">
+                        {{ item.ts|date:"M d, Y" }}
+                        <span class="cd-tl-time-sub">{{ item.ts|date:"H:i" }}</span>
+                    </div>
+                    <div class="cd-tl-rail">
+                        <span class="cd-tl-node{% if item.kind == 'order' %} cd-tl-node--order{% endif %}">
+                            {% if item.kind == 'order' %}<i class="bi bi-bag"></i>
+                            {% elif item.kind == 'sms' %}<i class="bi bi-chat"></i>
+                            {% elif item.kind == 'survey' %}<i class="bi bi-clipboard"></i>
+                            {% elif item.kind == 'tier' %}<i class="bi bi-award"></i>{% endif %}
+                        </span>
+                    </div>
+                    <div class="cd-tl-body">
+                        {% if item.kind == 'order' %}
+                        <div class="cd-tl-title">
+                            <a class="cd-tl-link" href="{{ item.url }}">Purchased {{ obj.tickets_count }} ticket{{ obj.tickets_count|pluralize }} &mdash; {{ obj.event.name }}<i class="bi bi-arrow-up-right cd-tl-go"></i></a>
+                        </div>
+                        <div class="cd-tl-meta">
+                            <strong>{{ obj.display_order_number }}</strong>
+                            <span class="cd-tl-sep">/</span>
+                            <span class="cd-tl-amt">${{ obj.net_amount|currency }}</span>
+                            {% if obj.event.venue.name %}<span class="cd-tl-sep">/</span><span>{{ obj.event.venue.name }}</span>{% endif %}
+                            {% if obj.event.start_date %}<span class="cd-tl-sep">/</span><span>Event {{ obj.event.start_date|date:"M d, Y" }}</span>{% endif %}
+                        </div>
+                        {% elif item.kind == 'sms' %}
+                        <div class="cd-tl-title">
+                            <a class="cd-tl-link" href="{{ item.url }}">SMS: {{ obj.campaign.name }}<i class="bi bi-arrow-up-right cd-tl-go"></i></a>
+                            {% if obj.status == 'delivered' %}<span class="cd-tl-status cd-tl-status--ok">Delivered</span>
+                            {% elif obj.status == 'sent' %}<span class="cd-tl-status">Sent</span>
+                            {% elif obj.status == 'queued' %}<span class="cd-tl-status cd-tl-status--warn">Queued</span>
+                            {% else %}<span class="cd-tl-status cd-tl-status--bad">{{ obj.get_status_display }}</span>{% endif %}
+                            {% if obj.opted_out_at %}<span class="cd-tl-status">Opted out</span>{% endif %}
+                        </div>
+                        {% if obj.delivered_at or obj.first_clicked_at or obj.error_message %}
+                        <div class="cd-tl-meta">
+                            {% if obj.delivered_at %}<span>Delivered {{ obj.delivered_at|date:"M d, Y H:i" }}</span>{% endif %}
+                            {% if obj.first_clicked_at %}{% if obj.delivered_at %}<span class="cd-tl-sep">/</span>{% endif %}<span>Link clicked {{ obj.first_clicked_at|date:"M d, Y H:i" }}{% if obj.click_count > 1 %} (&times;{{ obj.click_count }}){% endif %}</span>{% endif %}
+                            {% if obj.error_message %}<span class="cd-tl-sep">/</span><span>{{ obj.error_message }}</span>{% endif %}
+                        </div>
+                        {% endif %}
+                        {% elif item.kind == 'survey' %}
+                        <div class="cd-tl-title">
+                            {% if item.url %}<a class="cd-tl-link" href="{{ item.url }}">Completed survey &mdash; {{ obj.event.name }}<i class="bi bi-arrow-up-right cd-tl-go"></i></a>
+                            {% else %}Completed survey{% endif %}
+                        </div>
+                        {% elif item.kind == 'tier' %}
+                        <div class="cd-tl-title">
+                            {% if item.url %}<a class="cd-tl-link" href="{{ item.url }}">{% if obj.to_tier %}Reached {{ obj.to_tier.name }} tier{% else %}Left {{ obj.from_tier.name }} tier{% endif %}<i class="bi bi-arrow-up-right cd-tl-go"></i></a>
+                            {% else %}{% if obj.to_tier %}Reached {{ obj.to_tier.name }} tier{% else %}Left {{ obj.from_tier.name }} tier{% endif %}{% endif %}
+                        </div>
+                        {% if obj.from_tier and obj.to_tier %}<div class="cd-tl-meta">from {{ obj.from_tier.name }}</div>{% endif %}
+                        {% endif %}
+                    </div>
+                </li>
+                {% endwith %}
+                {% endfor %}
+            </ul>
+        </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 32px;"><p class="mb-0">No activity yet.</p></div>
+    {% endif %}
+</div>
+
+</div><!-- /timeline reveal -->
 
 <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary cd-back"><i class="bi bi-arrow-left"></i> Back to Customers</a>
 </div><!-- /cd-wrap -->
 {% endblock %}
 
-{% block extra_js %}
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    var tabs = document.getElementById('customerDetailTabs');
-    if (!tabs) return;
-    var params = new URLSearchParams(window.location.search);
-    var activeTab = params.get('tab');
-    if (activeTab) {
-        var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
-        if (btn) { new bootstrap.Tab(btn).show(); }
-    }
-    tabs.addEventListener('shown.bs.tab', function(e) {
-        var target = e.target.getAttribute('data-bs-target');
-        if (!target) return;
-        var tabName = target.replace('#tab-', '');
-        var url = new URL(window.location);
-        if (tabName === 'overview') { url.searchParams.delete('tab'); }
-        else { url.searchParams.set('tab', tabName); }
-        history.replaceState(null, '', url.toString());
-    });
-});
-</script>
-{% endblock %}

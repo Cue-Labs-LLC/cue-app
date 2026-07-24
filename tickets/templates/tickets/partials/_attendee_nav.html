@@ -10,9 +10,15 @@
             <i class="bi bi-ticket-perforated"></i> My Tickets
         </a>
         {% if user_role != 'organizer' %}
+        {% if organizer_waitlist_approved %}
+        <a href="{% url 'tickets:create_organization' %}" class="nav-link{% if '/create-organization/' in request.path %} active{% endif %}">
+            <i class="bi bi-gear"></i> Set up organization
+        </a>
+        {% else %}
         <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
             <i class="bi bi-briefcase"></i> Become an Organizer
         </a>
+        {% endif %}
         {% endif %}
     </div>
 
@@ -66,9 +72,15 @@
         <i class="bi bi-ticket-perforated"></i> My Tickets
     </a>
     {% if user_role != 'organizer' %}
+    {% if organizer_waitlist_approved %}
+    <a href="{% url 'tickets:create_organization' %}" class="nav-link{% if '/create-organization/' in request.path %} active{% endif %}">
+        <i class="bi bi-gear"></i> Set up organization
+    </a>
+    {% else %}
     <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
         <i class="bi bi-briefcase"></i> Become an Organizer
     </a>
+    {% endif %}
     {% endif %}
 </div>
 

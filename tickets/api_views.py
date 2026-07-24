@@ -28,6 +28,7 @@ from rest_framework.response import Response
 
 from .models import (
     Customer,
+    DeviceToken,
     Event,
     EventCustomFieldValue,
     EventExpense,
@@ -920,6 +921,19 @@ def api_phone_verify(request):
         or org is None
     )
 
+    memberships = (
+        OrganizationMembership.objects
+        .filter(user=user)
+        .select_related('organization')
+        .order_by('organization__name')
+    )
+    orgs = [
+        {'id': str(m.organization_id), 'name': m.organization.name, 'role': m.org_role}
+        for m in memberships
+    ]
+    if not orgs and org:
+        orgs = [{'id': str(org.pk), 'name': org.name, 'role': profile.org_role}]
+
     return Response({
         'token': token.key,
         'user_type': profile.role,
@@ -927,6 +941,47 @@ def api_phone_verify(request):
         'org_name': org.name if org else '',
         'org_id': str(org.pk) if org else None,
         'profile_incomplete': profile_incomplete,
+        'orgs': orgs,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Org selection (mobile: pick active org after phone verify)
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def api_org_select(request):
+    """
+    POST /api/auth/org/select/
+    Body: {org_id}
+    Sets the caller's active organization. Validates that the user is a member
+    of the requested org, then writes it to profile.organization so that all
+    subsequent token-authenticated API calls scope to this org.
+    """
+    org_id = (request.data.get('org_id') or '').strip()
+    if not org_id:
+        return Response({'error': 'org_id is required'}, status=400)
+
+    membership = (
+        OrganizationMembership.objects
+        .select_related('organization')
+        .filter(user=request.user, organization_id=org_id)
+        .first()
+    )
+    if membership is None:
+        return Response({'error': 'Organization not found or access denied'}, status=400)
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    profile.organization = membership.organization
+    profile.org_role = membership.org_role
+    profile.save(update_fields=['organization', 'org_role'])
+
+    return Response({
+        'org_id': str(membership.organization_id),
+        'org_name': membership.organization.name,
+        'org_role': membership.org_role,
     })
 
 
@@ -969,6 +1024,9 @@ def _ensure_organization_for_user(user):
         profile.role = UserProfile.Role.ORGANIZER
         profile.org_role = UserProfile.OrgRole.OWNER
         profile.save(update_fields=['organization', 'role', 'org_role'])
+    # Seed trial SMS credits after the org is committed (idempotent + non-fatal).
+    from .services.org_onboarding import initialize_new_organization
+    initialize_new_organization(org)
     return org
 
 
@@ -1108,10 +1166,14 @@ def organizer_ticket_types(request, event_id):
 
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
+    # In-person (Tap to Pay) inventory: only paid types. Free types (price 0 or
+    # null) have no valid card-present path — Stripe can't charge below the
+    # per-currency minimum. price__gt=0 excludes both.
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
         is_password_protected=False,
+        price__gt=0,
     )
     on_sale = [t for t in ticket_types if t.is_on_sale()]
 
@@ -1283,6 +1345,94 @@ def organizer_checkin(request):
     }, status=200)
 
 
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def organizer_event_checkin(request, event_id):
+    """
+    POST /api/organizer/events/<uuid:event_id>/checkin/
+    Body: {order_number}
+    Event-scoped check-in for the organizer app. event_id comes from the URL
+    path (unlike /api/organizer/checkin/ which takes it in the body).
+    All four business outcomes (checked_in, already_checked_in, refunded,
+    not_found) return 200 — non-2xx responses are transport errors only.
+    """
+    org = _get_org_from_user(request.user)
+    if org is None:
+        return Response({'error': 'No organization found for this user'}, status=403)
+
+    order_number = request.data.get('order_number', '').strip()
+    if not order_number:
+        return Response({'error': 'order_number is required'}, status=400)
+
+    # 404 if event doesn't exist or belongs to a different org (no data leak).
+    event = get_object_or_404(Event.objects.filter(organization=org), pk=event_id)
+
+    with transaction.atomic():
+        order = (
+            TicketOrder.objects
+            .select_for_update()
+            .filter(
+                customer__organization=org,
+                event=event,
+                order_number=order_number,
+            )
+            .select_related('customer')
+            .prefetch_related('tickets')
+            .first()
+        )
+
+        if order is None:
+            return Response({
+                'status': 'not_found',
+                'order_number': order_number,
+                'customer_name': '',
+            }, status=200)
+
+        if order.refunded_at is not None:
+            return Response({
+                'status': 'refunded',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+            }, status=200)
+
+        if order.checked_in_at is not None:
+            checked_in_count = TicketOrder.objects.filter(
+                event=event,
+                customer__organization=org,
+                checked_in_at__isnull=False,
+            ).count()
+            return Response({
+                'status': 'already_checked_in',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'checked_in_at': order.checked_in_at.isoformat(),
+                'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'checked_in_count': checked_in_count,
+            }, status=200)
+
+        now = timezone.now()
+        order.checked_in_at = now
+        order.checked_in_by = request.user
+        order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        order.tickets.update(scanned_at=now)
+
+    checked_in_count = TicketOrder.objects.filter(
+        event=event,
+        customer__organization=org,
+        checked_in_at__isnull=False,
+    ).count()
+
+    return Response({
+        'status': 'checked_in',
+        'order_number': order.order_number,
+        'customer_name': order.customer.name,
+        'checked_in_at': order.checked_in_at.isoformat(),
+        'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'checked_in_count': checked_in_count,
+    }, status=200)
+
+
 # ---------------------------------------------------------------------------
 # Stripe Terminal — Connection Token
 # ---------------------------------------------------------------------------
@@ -1417,6 +1567,21 @@ def _get_or_create_terminal_location(org):
     return location.id
 
 
+def _is_free_ticket_type(tt):
+    """A ticket type is free (not sellable in person) when its unit price is
+    zero or absent. Paid = unit price strictly greater than 0."""
+    return tt.price is None or tt.price <= 0
+
+
+# Per-currency Stripe minimum charge, in minor units (e.g. USD cents). Tap to Pay
+# rejects charges below this, so we validate server-side before hitting Stripe.
+_STRIPE_MIN_CHARGE_CENTS = {'usd': 50}
+
+
+def _stripe_minimum_charge_cents(currency):
+    return _STRIPE_MIN_CHARGE_CENTS.get((currency or '').lower(), 50)
+
+
 def _create_terminal_payment_intent(event, line_items):
     """Validate ticket-type inventory and create a card-present PaymentIntent
     on the merchant's Stripe Connect account.
@@ -1448,11 +1613,20 @@ def _create_terminal_payment_intent(event, line_items):
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found for this event'}, 400
 
+        if _is_free_ticket_type(tt):
+            return {'error': 'free_ticket_not_sellable',
+                    'detail': "Free tickets can't be sold in person."}, 400
+
         remaining = tt.remaining_quantity()
         if remaining is not None and qty > remaining:
             return {'error': f'Only {remaining} tickets remaining for {tt.name}'}, 400
 
         amount_cents += int((tt.price * qty * 100).to_integral_value())
+
+    # Belt-and-suspenders: never hand Stripe a sub-minimum amount (it would throw).
+    from django.conf import settings as django_settings
+    if amount_cents < _stripe_minimum_charge_cents(django_settings.STRIPE_CURRENCY):
+        return {'error': 'amount_below_minimum'}, 400
 
     # Resolve the merchant's Stripe Terminal Location before creating the
     # PaymentIntent — the iOS app needs both to call connectReader.
@@ -1464,7 +1638,6 @@ def _create_terminal_payment_intent(event, line_items):
         return {'error': 'Could not provision a Stripe Terminal location for this merchant.'}, 502
 
     import stripe as stripe_lib
-    from django.conf import settings as django_settings
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
@@ -1589,17 +1762,23 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     for item in line_items:
         tt_id = item.get('ticket_type_id', '')
         qty = int(item.get('quantity', 1))
-        item_name = item.get('name', '')
 
         try:
             tt = SaleableTicketType.objects.get(id=tt_id, event=event)
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found'}, 400
 
-        # Server price, not the client payload — the PI was created from
-        # tt.price, and tickets/orders must record the money that moved.
+        if _is_free_ticket_type(tt):
+            return {'error': 'free_ticket_not_sellable',
+                    'detail': "Free tickets can't be sold in person."}, 400
+
+        # Server price and name, not the client payload — the PI was created
+        # from tt.price, and tickets/orders must record the money that moved.
         expected_cents += int((tt.price * qty * 100).to_integral_value())
-        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': tt.price})
+        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': tt.name, 'price': tt.price})
+
+    if expected_cents < _stripe_minimum_charge_cents(django_settings.STRIPE_CURRENCY):
+        return {'error': 'amount_below_minimum'}, 400
 
     charged_cents = int(getattr(pi, 'amount_received', 0) or 0)
     if charged_cents != expected_cents:
@@ -1611,11 +1790,17 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     total_amount = (Decimal(charged_cents) / 100).quantize(Decimal('0.01'))
 
     now = timezone.now()
-    customer, _ = Customer.objects.get_or_create(
+    customer, customer_created = Customer.objects.get_or_create(
         email=buyer_email,
         organization=org,
-        defaults={'name': buyer_name or buyer_email},
+        defaults={
+            'name': buyer_name or buyer_email,
+            'acquisition_source': Customer.AcquisitionSource.TICKET_PURCHASE,
+        },
     )
+    if customer_created:
+        from .services.webhooks import fire_customer_created
+        fire_customer_created(customer)
     link_customer_to_buyer(customer, buyer_email)
 
     with transaction.atomic():
@@ -1676,6 +1861,9 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
                 'fulfilled_at': now,
             },
         )
+
+        from .services.webhooks import fire_order_created
+        fire_order_created(order)
 
     customer.update_lifetime_value()
     # Loyalty points: swallow failures — the sale must never fail on points.
@@ -2063,10 +2251,14 @@ def scanner_ticket_types(request):
         return mismatch
 
     event = request.auth.event
+    # In-person (Tap to Pay) inventory: only paid types. Free types (price 0 or
+    # null) have no valid card-present path — Stripe can't charge below the
+    # per-currency minimum. price__gt=0 excludes both.
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
         is_password_protected=False,
+        price__gt=0,
     )
     on_sale = [t for t in ticket_types if t.is_on_sale()]
 
@@ -2318,6 +2510,75 @@ def _send_receipt_email_for_intent(summary, to_email):
         return 'failed', str(exc)[:1000]
 
 
+@api_view(['POST'])
+def register_device_token(request):
+    """
+    POST /api/notification/device-token/
+    Authorization: Token <organizer_token>
+    Body: {"token": "<hex>", "platform": "ios"}
+
+    Upsert the caller's APNs device token. Tokens rotate, so we keep the newest
+    token for the organizer and drop the rest. Returns 204 No Content. (The
+    route simply 404s before this endpoint is deployed — the app swallows that,
+    so a gradual rollout is safe.)
+    """
+    token = (request.data.get('token') or '').strip()
+    platform = (request.data.get('platform') or 'ios').strip() or 'ios'
+    if not token:
+        logger.info("device-token register rejected (missing token) user=%s", request.user.pk)
+        return Response({'error': 'token is required'}, status=400)
+
+    org = _get_org_from_user(request.user)
+    if org is None:
+        logger.info("device-token register rejected (no org) user=%s", request.user.pk)
+        return Response({'error': 'No organization for this user'}, status=403)
+
+    # The token string is globally unique — reassign it to this organizer/org
+    # (it may have been registered by someone else on a reused device), then
+    # drop this organizer's other (now-stale) tokens.
+    _dt, created = DeviceToken.objects.update_or_create(
+        token=token,
+        defaults={'organizer': request.user, 'organization': org, 'platform': platform},
+    )
+    DeviceToken.objects.filter(organizer=request.user).exclude(token=token).delete()
+    logger.info(
+        "device-token registered user=%s org=%s platform=%s created=%s token=%s…",
+        request.user.pk, org.pk, platform, created, token[:12],
+    )
+    return Response(status=204)
+
+
+def _tap_to_pay_status_from_account(account):
+    """Derive Tap to Pay facts from a Stripe Account (SDK object or plain dict).
+
+    Shared by the /merchant/status/ resolver and the account.updated webhook so
+    the two never drift. Returns (status, capability_state, country) where
+    status is 'pending' | 'enabled' | 'unsupported'.
+    """
+    from django.conf import settings as django_settings
+    from .views import _read_stripe_capability
+
+    if account is None:
+        return 'pending', 'unknown', ''
+
+    if isinstance(account, dict):
+        capabilities = account.get('capabilities')
+        country = (account.get('country') or '').upper()
+    else:
+        capabilities = getattr(account, 'capabilities', None)
+        country = (getattr(account, 'country', '') or '').upper()
+
+    card_cap = _read_stripe_capability(capabilities, 'card_payments')
+    capability_state = card_cap or 'unrequested'
+
+    status = 'pending'
+    if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
+        status = 'unsupported'
+    elif card_cap == 'active':
+        status = 'enabled'
+    return status, capability_state, country
+
+
 def _resolve_tap_to_pay_facts(org):
     """Inspect the org's Stripe Connect account and return a dict of facts.
 
@@ -2357,17 +2618,7 @@ def _resolve_tap_to_pay_facts(org):
         if account is None:
             capability_state = 'unknown'
         else:
-            from .views import _read_stripe_capability
-            card_cap = _read_stripe_capability(
-                getattr(account, 'capabilities', None), 'card_payments',
-            )
-            capability_state = card_cap or 'unrequested'
-            country = (getattr(account, 'country', '') or '').upper()
-
-            if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
-                status = 'unsupported'
-            elif card_cap == 'active':
-                status = 'enabled'
+            status, capability_state, country = _tap_to_pay_status_from_account(account)
 
     facts = {
         'status': status,
@@ -2502,9 +2753,19 @@ def scanner_receipt(request):
         return Response({'error': 'channel not supported'}, status=422)
 
     if order_id:
+        # The client may send either the human order_number ("#00042") or the
+        # order's UUID pk — the in-person sale response (_finalize_in_person_sale)
+        # returns both, so accept whichever the app passes. Only add the pk
+        # branch when order_id actually parses as a UUID, else id= raises.
+        lookup = Q(order_number=order_id)
+        import uuid as _uuid
+        try:
+            lookup |= Q(pk=_uuid.UUID(order_id))
+        except (ValueError, AttributeError, TypeError):
+            pass
         order = (
             TicketOrder.objects
-            .filter(customer__organization=org, order_number=order_id)
+            .filter(Q(customer__organization=org) & lookup)
             .only('id')
             .first()
         )

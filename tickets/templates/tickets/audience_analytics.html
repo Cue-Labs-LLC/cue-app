@@ -1,0 +1,184 @@
+{% extends 'tickets/base.html' %}
+
+{% load humanize %}
+{% block title %}Audience Growth{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Audience Growth</h1>
+        <p class="page-header-subtitle">Total customers over time, based on each buyer's first order.</p>
+    </div>
+    <form method="get" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="window" value="{{ active_window }}">
+        {% if active_window == 'custom' %}
+        <input type="hidden" name="start" value="{{ window_start }}">
+        <input type="hidden" name="end" value="{{ window_end }}">
+        {% endif %}
+        <label for="market" class="text-muted small mb-0">Market</label>
+        <select name="market" id="market" class="form-select form-select-sm" style="width:auto"
+                onchange="this.form.submit()">
+            <option value="">All markets</option>
+            {% for m in markets %}
+            <option value="{{ m.id }}"{% if selected_market == m.id|stringformat:'s' %} selected{% endif %}>{{ m.name }}</option>
+            {% endfor %}
+            {% if has_no_market %}
+            <option value="none"{% if selected_market == 'none' %} selected{% endif %}>No market</option>
+            {% endif %}
+        </select>
+    </form>
+</div>
+
+<div class="window-selector mb-3">
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-calendar3"></i>
+      {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+    </button>
+    <ul class="dropdown-menu">
+      {% for label, key in window_choices %}
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if active_window == 'custom' %}
+  <form class="d-flex flex-wrap align-items-center gap-2" method="get">
+    <input type="hidden" name="window" value="custom">
+    {% if selected_market %}<input type="hidden" name="market" value="{{ selected_market }}">{% endif %}
+    <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
+    <span class="text-muted small">to</span>
+    <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
+    <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if has_data %}
+<script type="application/json" id="series-data">{{ series_json|safe }}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Total Customers</div>
+            <div class="stat-value">{{ summary.total_customers|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">New in Window</div>
+            <div class="stat-value">{{ summary.new_in_window|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Peak Month</div>
+            <div class="stat-value">{{ summary.peak_month }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Customers Over Time</h5></div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 360px;">
+            <canvas id="audienceChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('series-data');
+    if (!el || typeof Chart === 'undefined') return;
+    var data = JSON.parse(el.textContent);
+    if (!data.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var PRIMARY = '#0d6efd';
+    var BAR = isDark ? 'rgba(13,110,253,0.35)' : 'rgba(13,110,253,0.25)';
+
+    var labels = data.map(function(d) { return d.month; });
+
+    new Chart(document.getElementById('audienceChart').getContext('2d'), {
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    type: 'line',
+                    label: 'Total customers',
+                    data: data.map(function(d) { return d.cumulative; }),
+                    borderColor: PRIMARY,
+                    backgroundColor: 'transparent',
+                    tension: 0.3,
+                    pointRadius: 2,
+                    borderWidth: 2,
+                    yAxisID: 'y',
+                    order: 0,
+                },
+                {
+                    type: 'bar',
+                    label: 'New customers',
+                    data: data.map(function(d) { return d.new_customers; }),
+                    backgroundColor: BAR,
+                    borderColor: PRIMARY,
+                    borderWidth: 1,
+                    yAxisID: 'y1',
+                    order: 1,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { labels: { color: textColor } }
+            },
+            scales: {
+                x: {
+                    ticks: { color: textColor, maxRotation: 0, autoSkip: true },
+                    grid: { color: gridColor }
+                },
+                y: {
+                    beginAtZero: true,
+                    position: 'left',
+                    title: { display: true, text: 'Total customers', color: textColor },
+                    ticks: { color: textColor, precision: 0 },
+                    grid: { color: gridColor }
+                },
+                y1: {
+                    beginAtZero: true,
+                    position: 'right',
+                    title: { display: true, text: 'New per month', color: textColor },
+                    ticks: { color: textColor, precision: 0 },
+                    grid: { drawOnChartArea: false }
+                }
+            }
+        }
+    });
+});
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-people d-block"></i>
+            {% if summary.total_customers %}
+            <p>No customer activity in the selected window{% if selected_market %} for this market{% endif %}. Try a wider range.</p>
+            <a href="?{% if selected_market %}market={{ selected_market }}&amp;{% endif %}window=all" class="btn btn-primary"><i class="bi bi-calendar3"></i> View all time</a>
+            {% else %}
+            <p>No customers yet{% if selected_market %} in this market{% endif %}. Upload ticket orders to see how your audience grows over time.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -75,6 +75,23 @@
 
     .org-header__website:hover { color: var(--text); }
 
+    .org-header__social {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 8px;
+    }
+
+    .org-header__social-link {
+        font-size: 1.1rem;
+        color: var(--text-3);
+        text-decoration: none;
+        transition: color 0.15s;
+        line-height: 1;
+    }
+
+    .org-header__social-link:hover { color: var(--text); }
+
     /* ── EVENTS SECTION ── */
     .section-label {
         font-size: 0.72rem;
@@ -121,6 +138,25 @@
         <a href="{{ org.website }}" class="org-header__website" target="_blank" rel="noopener noreferrer">
             <i class="bi bi-link-45deg"></i>{{ org.website|truncatechars:50 }}
         </a>
+        {% endif %}
+        {% if org.instagram_url or org.youtube_url or org.tiktok_url %}
+        <div class="org-header__social">
+            {% if org.instagram_url %}
+            <a href="{{ org.instagram_url }}" class="org-header__social-link" target="_blank" rel="noopener noreferrer" aria-label="Instagram">
+                <i class="bi bi-instagram"></i>
+            </a>
+            {% endif %}
+            {% if org.youtube_url %}
+            <a href="{{ org.youtube_url }}" class="org-header__social-link" target="_blank" rel="noopener noreferrer" aria-label="YouTube">
+                <i class="bi bi-youtube"></i>
+            </a>
+            {% endif %}
+            {% if org.tiktok_url %}
+            <a href="{{ org.tiktok_url }}" class="org-header__social-link" target="_blank" rel="noopener noreferrer" aria-label="TikTok">
+                <i class="bi bi-tiktok"></i>
+            </a>
+            {% endif %}
+        </div>
         {% endif %}
     </div>
 </div>

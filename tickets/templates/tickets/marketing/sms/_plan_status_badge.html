@@ -1,0 +1,5 @@
+{% comment %}Four-state AI-plan status badge. Expects `status` (an SMSCampaignPlan.Status value).{% endcomment %}
+{% if status == 'sent' %}<span class="badge bg-success">Sent</span>
+{% elif status == 'scheduled' %}<span class="badge bg-info">Scheduled</span>
+{% elif status == 'in_progress' %}<span class="badge bg-warning text-dark">In progress</span>
+{% else %}<span class="badge bg-secondary">Draft</span>{% endif %}

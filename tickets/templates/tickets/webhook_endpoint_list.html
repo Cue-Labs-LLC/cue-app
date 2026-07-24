@@ -1,0 +1,72 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Webhooks{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Webhooks</h1>
+        <p class="text-muted mb-0" style="font-size: 13px;">Send signed HTTP callbacks to your systems when events, orders, and customers are created.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:webhook_delivery_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-list-check"></i> Delivery log</a>
+        <a href="{% url 'tickets:webhook_endpoint_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> Add Endpoint</a>
+    </div>
+</div>
+
+{% if endpoints %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>URL</th>
+                        <th>Events</th>
+                        <th>Status</th>
+                        <th>Last used</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for endpoint in endpoints %}
+                    <tr>
+                        <td class="fw-medium">{{ endpoint.label }}</td>
+                        <td style="max-width: 280px;"><code class="text-truncate d-inline-block" style="max-width: 280px; vertical-align: bottom;">{{ endpoint.url }}</code></td>
+                        <td style="font-size: 12px;">
+                            {% for et in endpoint.event_types|slice:":3" %}<span class="badge bg-secondary">{{ et }}</span> {% endfor %}
+                            {% if endpoint.event_types|length > 3 %}<span class="badge bg-secondary">+{{ endpoint.event_types|length|add:"-3" }}</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if endpoint.is_active %}
+                            <span class="badge bg-success">Active</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size: 13px; color: var(--text-muted);">{{ endpoint.last_used_at|date:"M j, Y g:i A"|default:"Never" }}</td>
+                        <td class="text-end text-nowrap">
+                            <a href="{% url 'tickets:webhook_endpoint_edit' endpoint.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a>
+                            <form method="post" action="{% url 'tickets:webhook_endpoint_delete' endpoint.id %}" class="d-inline"
+                                  onsubmit="return confirm('Delete “{{ endpoint.label }}”? In-flight deliveries will be abandoned.');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-hdd-network d-block"></i>
+    <h3>No webhook endpoints yet</h3>
+    <p class="text-muted">Register a URL and Cue will POST a signed payload whenever a subscribed event fires. Great for Zapier, Make, or your own backend.</p>
+    <a href="{% url 'tickets:webhook_endpoint_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Add your first endpoint</a>
+</div>
+{% endif %}
+{% endblock %}
