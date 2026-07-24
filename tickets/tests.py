@@ -20943,3 +20943,197 @@ class TapToPayEnabledPushConcurrencyTests(TestCase):
         self.org.refresh_from_db()
         self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
         self.assertFalse(mock_fire.called)
+
+
+class EventDuplicateViewTests(TestCase):
+    """Tests for the event_duplicate view (modal-driven server-side copy)."""
+
+    def setUp(self):
+        from .models import PromoCode, TrackingLink, EventTalent
+        self.client = Client()
+        self.org = Organization.objects.create(name='Dup Org', slug='dup-org')
+        self.user = User.objects.create_user(
+            username='dupuser', email='dup@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='dup@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='The Spot', city='Las Vegas',
+        )
+        self.source = Event.objects.create(
+            organization=self.org, name='Familiar Faces', venue=self.venue,
+            ticketing_type='direct', status='live',
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+            end_date=date(2024, 1, 2), end_time=time(2, 0),
+            cached_ticket_count=50, computed_total_revenue=Decimal('1234.00'),
+        )
+        # Two ticket types, the second unlocking after the first; both with sales.
+        self.tt1 = SaleableTicketType.objects.create(
+            event=self.source, name='GA', price=Decimal('20.00'),
+            quantity_limit=100, quantity_sold=40, order=0,
+        )
+        self.tt2 = SaleableTicketType.objects.create(
+            event=self.source, name='VIP', price=Decimal('50.00'),
+            quantity_limit=20, quantity_sold=5, order=1, unlocks_after=self.tt1,
+        )
+        SaleableTicketTypeTier.objects.create(
+            ticket_type=self.tt1, name='Early Bird', price=Decimal('15.00'),
+            allotment=30, quantity_sold=30, order=0,
+        )
+        PromoCode.objects.create(
+            organization=self.org, event=self.source, code='SAVE10',
+            discount_type=PromoCode.PERCENTAGE, discount_value=Decimal('10.00'),
+            times_used=7,
+        )
+        TrackingLink.objects.create(
+            organization=self.org, event=self.source, name='IG', token='origtoken123',
+            click_count=99,
+        )
+        EventTalent.objects.create(event=self.source, name='DJ Shadow', order=0)
+
+    def _future(self, days_ahead, hour):
+        d = timezone.localdate() + timedelta(days=days_ahead)
+        return f"{d.isoformat()}T{hour:02d}:00"
+
+    def test_duplicate_creates_draft_copy_with_reset_config(self):
+        from .models import PromoCode, TrackingLink, EventTalent
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': self._future(30, 20), 'end': self._future(31, 2)},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+
+        copies = Event.objects.filter(organization=self.org, name='Familiar Faces').exclude(id=self.source.id)
+        self.assertEqual(copies.count(), 1)
+        new = copies.first()
+
+        # Draft, future dates, denormalized counters reset, fresh public_id.
+        self.assertEqual(new.status, 'draft')
+        self.assertEqual(new.start_date, timezone.localdate() + timedelta(days=30))
+        self.assertEqual(new.cached_ticket_count, 0)
+        self.assertEqual(new.computed_total_revenue, Decimal('0.00'))
+        self.assertNotEqual(new.public_id, self.source.public_id)
+        self.assertEqual(new.venue_id, self.venue.id)  # same venue reused
+
+        # Ticket types copied with sold counts reset and unlock relationship preserved.
+        new_tts = {t.name: t for t in new.saleable_ticket_types.all()}
+        self.assertEqual(set(new_tts), {'GA', 'VIP'})
+        self.assertEqual(new_tts['GA'].quantity_sold, 0)
+        self.assertEqual(new_tts['VIP'].unlocks_after_id, new_tts['GA'].id)
+        # Tier copied, sold reset.
+        tier = new_tts['GA'].tiers.first()
+        self.assertEqual(tier.name, 'Early Bird')
+        self.assertEqual(tier.quantity_sold, 0)
+
+        # Promo code copied with usage reset; tracking link gets a fresh token.
+        pc = PromoCode.objects.get(event=new)
+        self.assertEqual(pc.code, 'SAVE10')
+        self.assertEqual(pc.times_used, 0)
+        tl = TrackingLink.objects.get(event=new)
+        self.assertEqual(tl.click_count, 0)
+        self.assertNotEqual(tl.token, 'origtoken123')
+        self.assertTrue(EventTalent.objects.filter(event=new, name='DJ Shadow').exists())
+
+        # Source is untouched.
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.status, 'live')
+        self.assertEqual(self.source.cached_ticket_count, 50)
+
+    def test_custom_title_is_applied(self):
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': 'Familiar Faces: Reunion', 'start': self._future(30, 20)},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        new = Event.objects.get(organization=self.org, name='Familiar Faces: Reunion')
+        self.assertNotEqual(new.id, self.source.id)
+        # Blank/whitespace title falls back to the source name.
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': '   ', 'start': self._future(31, 20)},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='Familiar Faces')
+            .exclude(id=self.source.id).exists()
+        )
+
+    def test_past_start_is_rejected(self):
+        past = timezone.localdate() - timedelta(days=1)
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': f"{past.isoformat()}T20:00"},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        self.assertFalse(
+            Event.objects.filter(organization=self.org, name='Familiar Faces')
+            .exclude(id=self.source.id).exists()
+        )
+
+    def test_other_org_event_is_404(self):
+        other_org = Organization.objects.create(name='Other', slug='other-org')
+        other_venue = Venue.objects.create(organization=other_org, name='V', city='X')
+        other_event = Event.objects.create(
+            organization=other_org, name='Theirs', venue=other_venue,
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+        )
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[other_event.id]),
+            {'start': self._future(10, 20)},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_is_not_allowed(self):
+        resp = self.client.get(reverse('tickets:event_duplicate', args=[self.source.id]))
+        self.assertEqual(resp.status_code, 405)
+
+
+class EventDuplicateCsrfCookieTests(TestCase):
+    """The events list has no rendered {% csrf_token %} (its HTML is cached), so the
+    duplicate modal reads the token from the csrftoken cookie. event_list must therefore
+    set that cookie (@ensure_csrf_cookie) or the real browser POST fails CSRF with 403.
+    Uses a CSRF-enforcing client to reproduce the browser, unlike the default test client.
+    """
+
+    def setUp(self):
+        self.client = Client(enforce_csrf_checks=True)
+        self.org = Organization.objects.create(name='CsrfDupOrg', slug='csrf-dup-org')
+        self.user = User.objects.create_user(
+            username='csrfdup', email='csrfdup@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='csrfdup@test.com', password='pass12345')
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.source = Event.objects.create(
+            organization=self.org, name='CsrfSrc', venue=self.venue,
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+        )
+
+    def test_events_page_sets_csrf_cookie_and_post_succeeds(self):
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+        token = self.client.cookies.get('csrftoken')
+        self.assertIsNotNone(token, 'csrftoken cookie not set on /events/ — browser POST would 403')
+        self.assertTrue(token.value)
+
+        future = (timezone.localdate() + timedelta(days=10)).isoformat() + 'T20:00'
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': future, 'csrfmiddlewaretoken': token.value},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertEqual(
+            Event.objects.filter(organization=self.org, name='CsrfSrc').count(), 2,
+        )

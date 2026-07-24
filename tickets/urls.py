@@ -223,6 +223,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/export-csv/', views.event_export_csv, name='event_export_csv'),
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
+    path('events/<uuid:event_id>/duplicate/', views.event_duplicate, name='event_duplicate'),
     path('events/<uuid:event_id>/custom-fields/', views.event_custom_fields, name='event_custom_fields'),
     path('events/<uuid:event_id>/publish/', views.event_publish, name='event_publish'),
     path('events/<uuid:event_id>/end-sales/', views.event_end_sales, name='event_end_sales'),
