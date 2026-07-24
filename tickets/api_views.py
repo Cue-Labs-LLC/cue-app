@@ -2525,20 +2525,26 @@ def register_device_token(request):
     token = (request.data.get('token') or '').strip()
     platform = (request.data.get('platform') or 'ios').strip() or 'ios'
     if not token:
+        logger.info("device-token register rejected (missing token) user=%s", request.user.pk)
         return Response({'error': 'token is required'}, status=400)
 
     org = _get_org_from_user(request.user)
     if org is None:
+        logger.info("device-token register rejected (no org) user=%s", request.user.pk)
         return Response({'error': 'No organization for this user'}, status=403)
 
     # The token string is globally unique — reassign it to this organizer/org
     # (it may have been registered by someone else on a reused device), then
     # drop this organizer's other (now-stale) tokens.
-    DeviceToken.objects.update_or_create(
+    _dt, created = DeviceToken.objects.update_or_create(
         token=token,
         defaults={'organizer': request.user, 'organization': org, 'platform': platform},
     )
     DeviceToken.objects.filter(organizer=request.user).exclude(token=token).delete()
+    logger.info(
+        "device-token registered user=%s org=%s platform=%s created=%s token=%s…",
+        request.user.pk, org.pk, platform, created, token[:12],
+    )
     return Response(status=204)
 
 

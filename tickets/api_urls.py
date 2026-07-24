@@ -26,7 +26,12 @@ urlpatterns = [
     path('tap-to-pay/terms-acceptance/', api_views.tap_to_pay_terms_acceptance, name='api_ttp_terms_acceptance'),
     path('merchant/status/', api_views.merchant_status, name='api_merchant_status'),
 
-    # Push notifications (APNs device-token registration)
+    # Push notifications (APNs device-token registration).
+    # Both slashed and slash-less: a POST to the un-slashed path triggers a 301
+    # (APPEND_SLASH), and clients downgrade the redirected POST to GET + drop the
+    # body, so the registration silently fails. Registering the bare path lets a
+    # client that omits the trailing slash reach the view directly (204).
+    path('notification/device-token',  api_views.register_device_token),
     path('notification/device-token/', api_views.register_device_token, name='api_register_device_token'),
 
     # Organizer

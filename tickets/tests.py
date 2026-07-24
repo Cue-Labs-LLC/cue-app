@@ -20248,6 +20248,15 @@ class DeviceTokenRegistrationTests(TestCase):
         self.assertEqual(dt.organization, self.org)
         self.assertEqual(dt.platform, 'ios')
 
+    def test_register_without_trailing_slash_reaches_view_directly(self):
+        """A client omitting the trailing slash must hit the view (204), not eat a
+        301 that downgrades the POST to GET and drops the body."""
+        resp = self.client.post(
+            '/api/notification/device-token', {'token': 'noslash'}, **self.auth,
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertTrue(DeviceToken.objects.filter(token='noslash').exists())
+
     def test_second_token_rotates_out_the_first(self):
         self.client.post(self.url, {'token': 'old-token'}, **self.auth)
         self.client.post(self.url, {'token': 'new-token'}, **self.auth)
