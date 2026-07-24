@@ -12307,8 +12307,44 @@ def stripe_connect_webhook(request):
         # Direct (in-person) charges live on connected accounts, so their
         # refund events arrive here, not on the platform endpoint.
         _sync_charge_refund(event['data']['object'])
+    elif event_type == 'account.updated':
+        _handle_connect_account_updated(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+def _handle_connect_account_updated(account):
+    """Fire the one-time 'Tap to Pay is ready' push when a merchant goes live.
+
+    Stripe emits many account.updated events; the per-org
+    `tap_to_pay_enabled_push_sent` flag guarantees the push is sent exactly
+    once, the first time the card_payments capability reads 'active' in a
+    supported country. Server-driven so it reaches a backgrounded app — the
+    /merchant/status/ poll only runs while the app is foregrounded.
+    """
+    from tickets.api_views import _tap_to_pay_status_from_account
+    from tickets.services.push_notifications.dispatch import fire_tap_to_pay_enabled
+
+    account_id = account.get('id') if isinstance(account, dict) else getattr(account, 'id', None)
+    if not account_id:
+        return
+
+    org = Organization.objects.filter(stripe_account_id=account_id).first()
+    if org is None or org.tap_to_pay_enabled_push_sent:
+        return
+
+    status, _capability_state, _country = _tap_to_pay_status_from_account(account)
+    if status != 'enabled':
+        return
+
+    org.tap_to_pay_enabled_push_sent = True
+    org.save(update_fields=['tap_to_pay_enabled_push_sent'])
+    # Bust the cached status so the next /merchant/status/ poll reflects reality.
+    try:
+        django_cache.delete(f'tap_to_pay_status:{org.pk}')
+    except Exception:
+        pass
+    fire_tap_to_pay_enabled(org)
 
 
 # Stripe payout status → local Payout status. 'pending' matters for

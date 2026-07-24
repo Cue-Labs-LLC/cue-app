@@ -24,6 +24,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
     PhoneSuppression, SMSConsentRecord,
+    DeviceToken,
     TICKETING_TYPE_DIRECT,
 )
 from .utils import extract_fee_from_display_cents
@@ -20149,3 +20150,167 @@ class SMSPlanBannerTopupTests(TestCase):
         self.assertRedirects(resp, reverse('tickets:sms_credits'))
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 500 * self.price)
+
+
+class DeviceTokenRegistrationTests(TestCase):
+    """POST /api/notification/device-token/ — organizer-authed token upsert."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Push Org', slug='push-org')
+        cls.user = User.objects.create_user(username='pushuser', email='push@example.com')
+        UserProfile.objects.create(
+            user=cls.user, organization=cls.org,
+            org_role=UserProfile.OrgRole.OWNER, role=UserProfile.Role.ORGANIZER,
+        )
+        cls.token = Token.objects.create(user=cls.user)
+        cls.auth = {'HTTP_AUTHORIZATION': f'Token {cls.token.key}'}
+        cls.url = '/api/notification/device-token/'
+
+    def test_register_returns_204_and_stores_token(self):
+        resp = self.client.post(
+            self.url, {'token': 'abc123', 'platform': 'ios'}, **self.auth,
+        )
+        self.assertEqual(resp.status_code, 204)
+        dt = DeviceToken.objects.get(token='abc123')
+        self.assertEqual(dt.organizer, self.user)
+        self.assertEqual(dt.organization, self.org)
+        self.assertEqual(dt.platform, 'ios')
+
+    def test_second_token_rotates_out_the_first(self):
+        self.client.post(self.url, {'token': 'old-token'}, **self.auth)
+        self.client.post(self.url, {'token': 'new-token'}, **self.auth)
+        tokens = list(DeviceToken.objects.filter(organizer=self.user).values_list('token', flat=True))
+        self.assertEqual(tokens, ['new-token'])
+
+    def test_reregistering_same_token_is_idempotent(self):
+        self.client.post(self.url, {'token': 'same'}, **self.auth)
+        resp = self.client.post(self.url, {'token': 'same'}, **self.auth)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(DeviceToken.objects.filter(organizer=self.user).count(), 1)
+
+    def test_missing_token_returns_400(self):
+        resp = self.client.post(self.url, {'platform': 'ios'}, **self.auth)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unauthenticated_returns_401(self):
+        resp = self.client.post(self.url, {'token': 'abc'})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_user_without_org_returns_403(self):
+        orphan = User.objects.create_user(username='orphan')
+        UserProfile.objects.create(user=orphan, organization=None)
+        token = Token.objects.create(user=orphan)
+        resp = self.client.post(
+            self.url, {'token': 'orphan-tok'},
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+
+class SendPushNotificationTaskTests(TestCase):
+    """send_push_notification_task — delivery, stale-token cleanup, retry."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Task Org', slug='task-org')
+        self.user = User.objects.create_user(username='taskuser')
+        self.dt = DeviceToken.objects.create(
+            organizer=self.user, organization=self.org, token='dev-token-1',
+        )
+        self.payload = {'aps': {'alert': {'title': 'Hi', 'body': 'There'}}}
+
+    def test_stale_token_is_deleted(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        stale = PushResult(ok=False, status=410, reason='Unregistered')
+        with patch('tickets.services.push_notifications.apns.send', return_value=stale):
+            send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertFalse(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+    def test_successful_send_keeps_token(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        ok = PushResult(ok=True, status=200)
+        with patch('tickets.services.push_notifications.apns.send', return_value=ok):
+            send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertTrue(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+    def test_transient_failure_retries(self):
+        from tickets.tasks import send_push_notification_task
+        from tickets.services.push_notifications.apns import PushResult
+
+        transient = PushResult(ok=False, status=503)
+        with patch('tickets.services.push_notifications.apns.send', return_value=transient), \
+                patch.object(send_push_notification_task, 'retry', side_effect=Exception('retried')) as mock_retry:
+            with self.assertRaises(Exception):
+                send_push_notification_task(str(self.dt.id), self.payload)
+        self.assertTrue(mock_retry.called)
+        self.assertTrue(DeviceToken.objects.filter(id=self.dt.id).exists())
+
+
+class LaunchPushCommandTests(TestCase):
+    """send_launch_push management command — dry-run vs --confirm."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Cmd Org', slug='cmd-org')
+        self.user = User.objects.create_user(username='cmduser')
+        for i in range(3):
+            DeviceToken.objects.create(
+                organizer=self.user, organization=self.org, token=f'tok-{i}',
+            )
+
+    def test_dry_run_enqueues_nothing(self):
+        with patch('tickets.tasks.send_push_notification_task.delay') as mock_delay:
+            call_command('send_launch_push')
+        mock_delay.assert_not_called()
+
+    def test_confirm_enqueues_all(self):
+        with patch('tickets.tasks.send_push_notification_task.delay') as mock_delay:
+            call_command('send_launch_push', '--confirm')
+        self.assertEqual(mock_delay.call_count, 3)
+
+
+class TapToPayEnabledPushTriggerTests(TestCase):
+    """_handle_connect_account_updated — fire once on pending -> enabled."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Merchant Org', slug='merchant-org',
+            stripe_account_id='acct_123', tap_to_pay_enabled_push_sent=False,
+        )
+
+    def _account(self, card_state='active', country='US'):
+        return {'id': 'acct_123', 'country': country,
+                'capabilities': {'card_payments': card_state}}
+
+    def test_fires_and_sets_flag_when_enabled(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.tap_to_pay_enabled_push_sent)
+        self.assertTrue(mock_fire.called)
+
+    def test_idempotent_second_event_does_not_fire(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account())
+            _handle_connect_account_updated(self._account())
+        self.assertEqual(mock_fire.call_count, 1)
+
+    def test_does_not_fire_while_pending(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated(self._account(card_state='pending'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
+        self.assertFalse(mock_fire.called)
+
+    def test_unknown_account_is_ignored(self):
+        from tickets.views import _handle_connect_account_updated
+        with patch('tickets.services.push_notifications.dispatch.fire_tap_to_pay_enabled') as mock_fire:
+            _handle_connect_account_updated({'id': 'acct_unknown',
+                                             'capabilities': {'card_payments': 'active'}})
+        self.assertFalse(mock_fire.called)
