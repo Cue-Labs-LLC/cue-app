@@ -24,6 +24,16 @@
     {% endif %}
 </div>
 
+{% if campaign.status == 'failed' and campaign.failure_reason %}
+<div class="alert alert-danger d-flex align-items-start gap-2" role="alert">
+    <i class="bi bi-exclamation-octagon-fill mt-1"></i>
+    <div>
+        <strong>This campaign didn't send.</strong>
+        {{ campaign.failure_reason }}
+    </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Audience</div><div class="stat-card-value">{{ campaign.audience_size }}</div></div></div>
     <div class="col-6 col-md-3"><div class="stat-card stat-card--accent"><div class="stat-card-label">Sent</div><div class="stat-card-value">{{ campaign.sent_count }}</div></div></div>

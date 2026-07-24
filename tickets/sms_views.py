@@ -23,6 +23,7 @@ from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.http import urlencode, url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
@@ -157,16 +158,57 @@ def sms_audience_preview(request):
     criteria, includes, excludes = _criteria_from_post(request.POST)
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     if not criteria and not includes:
-        return JsonResponse({'count': 0, 'exceeds_cap': False, 'cap': cap})
+        return JsonResponse({
+            'count': 0, 'exceeds_cap': False, 'cap': cap,
+            'daily_cap_blocked': False,
+            'daily_cap_message': '',
+            'daily_cap_allowed': None,
+            'daily_cap': None,
+        })
     tmp = SMSCampaign(
         organization=org, filter_criteria=criteria,
         manual_include_ids=includes, manual_exclude_ids=excludes,
     )
     recipients = tmp.materialize(org, cap=cap + 1)
+    daily_cap_blocked = False
+    daily_cap_message = ''
+    daily_cap_allowed = None
+    daily_cap = None
+    if recipients:
+        from .services.sms_campaigns import DailyCapExceededError
+        from .services.sms_credits import plan_campaign_footers
+        from .services.sms_limits import daily_capacity_for, daily_segment_cap, fit_within_budget
+
+        send_at = timezone.now()
+        if request.POST.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE:
+            parsed = parse_datetime(request.POST.get('scheduled_at') or '')
+            if parsed:
+                send_at = timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+
+        _, footer_plan = plan_campaign_footers(
+            org, request.POST.get('body', ''),
+            [r['phone'] for r in recipients], as_of=send_at,
+        )
+        capacity = daily_capacity_for(send_at)
+        daily_cap = daily_segment_cap()
+        if capacity is not None:
+            allowed = fit_within_budget(
+                [footer_plan[r['phone']][1] for r in recipients], capacity,
+            )
+            daily_cap_allowed = allowed
+            if allowed < len(recipients):
+                daily_cap_blocked = True
+                daily_cap_message = DailyCapExceededError(
+                    len(recipients), allowed, daily_cap, timezone.localdate(send_at),
+                ).user_message()
     return JsonResponse({
         'count': min(len(recipients), cap),
         'exceeds_cap': len(recipients) > cap,
         'cap': cap,
+        'daily_cap_blocked': daily_cap_blocked,
+        'daily_cap_message': daily_cap_message,
+        'daily_cap_allowed': daily_cap_allowed,
+        'daily_cap': daily_cap,
     })
 
 
@@ -538,6 +580,7 @@ def sms_campaign_create(request):
     confirm_cost_cents = None
     confirm_cost_tokens = None
     insufficient_credits = False
+    daily_cap_block = None  # message when the send would exceed the daily carrier cap
     prefill = None
     strategist_prefill = None
     manual_include_ids = []
@@ -640,11 +683,28 @@ def sms_campaign_create(request):
                 )
                 insufficient_credits = confirm_cost_cents > org.sms_credit_balance_cents
 
+                # Day-aware daily-cap check during review so the confirm bar warns BEFORE the
+                # user commits — same numbers finalize_campaign_send enforces on confirm.
+                from .services.sms_limits import daily_capacity_for, daily_segment_cap, fit_within_budget
+                from .services.sms_campaigns import DailyCapExceededError
+                _capacity = daily_capacity_for(send_at)
+                if _capacity is not None:
+                    _allowed = fit_within_budget(
+                        [footer_plan[r['phone']][1] for r in recipients], _capacity
+                    )
+                    if _allowed < confirm_count:
+                        daily_cap_block = DailyCapExceededError(
+                            confirm_count, _allowed, daily_segment_cap(),
+                            timezone.localdate(send_at),
+                        ).user_message()
+
                 if request.POST.get('confirm') and insufficient_credits:
                     form.add_error(
                         None,
                         'Not enough SMS tokens to send this campaign. Top up to continue.',
                     )
+                elif request.POST.get('confirm') and daily_cap_block:
+                    form.add_error(None, daily_cap_block)
                 elif request.POST.get('confirm'):
                     from .services.sms_campaigns import (
                         finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError,
@@ -671,6 +731,8 @@ def sms_campaign_create(request):
                             f'This audience resolves to more than {cap} recipients. '
                             f'Narrow the audience before sending.',
                         )
+                    except DailyCapExceededError as exc:
+                        form.add_error(None, exc.user_message())
                     else:
                         # A send that originated from an AI plan step marks that step
                         # launched + links it to the new campaign — only on a real send.
@@ -776,6 +838,7 @@ def sms_campaign_create(request):
         'confirm_cost_tokens': confirm_cost_tokens,
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
+        'daily_cap_block': daily_cap_block,
         'idempotency_key': idem_key,
         'prefill': prefill,
         'prefill_plan_id': prefill_plan_id,
@@ -2403,6 +2466,7 @@ def sms_plan_confirm_step(request, pk, step):
 
     from .services.sms_campaigns import (
         finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError,
+        DailyCapExceededError,
     )
     from .services.sms_credits import InsufficientCreditsError
     try:
@@ -2422,6 +2486,8 @@ def sms_plan_confirm_step(request, pk, step):
                       'Narrow it before sending.'},
             status=400,
         )
+    except DailyCapExceededError as exc:
+        return JsonResponse({'ok': False, 'error': exc.user_message()}, status=400)
     except InsufficientCreditsError:
         return JsonResponse(
             {'ok': False,
