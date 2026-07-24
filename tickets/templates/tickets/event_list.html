@@ -113,7 +113,7 @@
                         <td class="event-actions-cell">
                             <!-- Desktop: View + Duplicate buttons + dots dropdown for secondary actions -->
                             <div class="d-none d-sm-flex align-items-center gap-2">
-                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-secondary btn-icon" title="View event"><i class="bi bi-eye-fill fs-6"></i></a>
+                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-secondary btn-icon" title="View event"><i class="bi bi-eye fs-6"></i></a>
                                 <button type="button" class="btn btn-sm btn-secondary btn-icon js-duplicate-event" title="Duplicate event"
                                     data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
                                     data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
