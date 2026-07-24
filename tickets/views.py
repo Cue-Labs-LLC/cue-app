@@ -6760,7 +6760,7 @@ def event_delete(request, event_id):
     return render(request, 'tickets/event_delete.html', context)
 
 
-def _duplicate_event(source, org, user, start_date, start_time, end_date, end_time, flyer_file):
+def _duplicate_event(source, org, user, name, start_date, start_time, end_date, end_time, flyer_file):
     """Deep-copy an event and its configuration into a new draft event.
 
     Copies ticket types (+ pricing tiers), promo codes, tracking links, talent, and
@@ -6775,7 +6775,7 @@ def _duplicate_event(source, org, user, start_date, start_time, end_date, end_ti
         organization=org,
         created_by=user,
         venue=source.venue,
-        name=source.name,
+        name=name,
         summary=source.summary,
         description=source.description,
         capacity=source.capacity,
@@ -6906,6 +6906,7 @@ def event_duplicate(request, event_id):
         id=event_id,
     )
 
+    name = ((request.POST.get('name') or '').strip() or source.name)[:200]
     start_raw = (request.POST.get('start') or '').strip()
     end_raw = (request.POST.get('end') or '').strip()
 
@@ -6945,7 +6946,7 @@ def event_duplicate(request, event_id):
     try:
         with transaction.atomic():
             _duplicate_event(
-                source, org, request.user,
+                source, org, request.user, name,
                 start_date, start_time, end_date, end_time,
                 request.FILES.get('flyer'),
             )

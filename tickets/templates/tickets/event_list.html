@@ -201,7 +201,10 @@
                 </div>
                 <div class="modal-body">
                     <p class="text-muted">Duplicating an event copies over all its settings, tickets, and other attributes. You can change them later in the event's settings.</p>
-                    <h6 class="mb-3" id="duplicate-event-name"></h6>
+                    <div class="mb-3">
+                        <label class="form-label" for="duplicate-name">Event Title</label>
+                        <input type="text" class="form-control" id="duplicate-name" name="name" maxlength="200" required>
+                    </div>
                     <div class="row g-3">
                         <div class="col-md-7">
                             <div class="mb-3">
@@ -253,7 +256,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var form = document.getElementById('duplicate-event-form');
     var csrfInput = form.querySelector('input[name="csrfmiddlewaretoken"]');
-    var nameEl = document.getElementById('duplicate-event-name');
+    var nameEl = document.getElementById('duplicate-name');
     var startEl = document.getElementById('duplicate-start');
     var endEl = document.getElementById('duplicate-end');
     var venueEl = document.getElementById('duplicate-venue');
@@ -294,7 +297,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var d = btn.dataset;
             form.action = '/events/' + d.eventId + '/duplicate/';
             csrfInput.value = getCookie('csrftoken');
-            nameEl.textContent = d.eventName || 'Event';
+            nameEl.value = d.eventName || '';
             venueEl.value = d.venueName || '';
             locationEl.value = d.location || '';
             var minVal = localNowValue();

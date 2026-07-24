@@ -21024,6 +21024,25 @@ class EventDuplicateViewTests(TestCase):
         self.assertEqual(self.source.status, 'live')
         self.assertEqual(self.source.cached_ticket_count, 50)
 
+    def test_custom_title_is_applied(self):
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': 'Familiar Faces: Reunion', 'start': self._future(30, 20)},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        new = Event.objects.get(organization=self.org, name='Familiar Faces: Reunion')
+        self.assertNotEqual(new.id, self.source.id)
+        # Blank/whitespace title falls back to the source name.
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': '   ', 'start': self._future(31, 20)},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='Familiar Faces')
+            .exclude(id=self.source.id).exists()
+        )
+
     def test_past_start_is_rejected(self):
         past = timezone.localdate() - timedelta(days=1)
         resp = self.client.post(
