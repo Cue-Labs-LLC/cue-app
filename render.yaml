@@ -54,6 +54,21 @@ services:
         sync: false
       - key: STRIPE_CURRENCY
         value: usd
+      # Apple Push Notifications (APNs). The push SEND runs on the worker; these
+      # live here too so the device-token endpoint + account.updated webhook are
+      # consistent. Paste the .p8 contents into APNS_AUTH_KEY as a Render secret.
+      # APNS_USE_SANDBOX=false targets the production APNs host (App Store /
+      # TestFlight builds); "true" targets the sandbox host (dev builds).
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        value: X6TZEUAVYR
+      - key: APNS_BUNDLE_ID
+        value: co.cueup.cue
+      - key: APNS_AUTH_KEY
+        sync: false
+      - key: APNS_USE_SANDBOX
+        value: "false"
     healthCheckPath: /health/
 
   # Redis for Celery broker (schema requires ipAllowList)
@@ -105,6 +120,21 @@ services:
         sync: false
       - key: TWILIO_SMS_FROM
         sync: false
+      # Apple Push Notifications (APNs). The push send runs here
+      # (send_push_notification_task + the send_launch_push broadcast), so the
+      # worker needs the credentials. Paste the .p8 contents into APNS_AUTH_KEY
+      # as a Render secret. APNS_USE_SANDBOX=false for App Store / TestFlight
+      # builds; "true" for dev builds (device tokens are environment-specific).
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        value: X6TZEUAVYR
+      - key: APNS_BUNDLE_ID
+        value: co.cueup.cue
+      - key: APNS_AUTH_KEY
+        sync: false
+      - key: APNS_USE_SANDBOX
+        value: "false"
 
   # Daily AI opportunity scan. Enqueues one Celery task per organization.
   - type: cron

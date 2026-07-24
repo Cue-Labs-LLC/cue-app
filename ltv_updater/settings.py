@@ -349,6 +349,18 @@ TAP_TO_PAY_SUPPORTED_COUNTRIES = {
 # Stripe API call cheap without making the splash trigger feel laggy.
 TAP_TO_PAY_STATUS_CACHE_TTL = int(os.environ.get('TAP_TO_PAY_STATUS_CACHE_TTL', '60'))
 
+# Apple Push Notifications (APNs) — Auth Key (.p8) / ES256 provider JWT.
+# Device tokens are environment-specific: dev builds register against the
+# sandbox APNs host, App Store / TestFlight builds against production. If no
+# credential is configured the sender no-ops (safe for gradual rollout).
+APNS_KEY_ID    = os.environ.get('APNS_KEY_ID', '')                 # from the portal key detail page
+APNS_TEAM_ID   = os.environ.get('APNS_TEAM_ID', 'X6TZEUAVYR')      # Apple Developer Team ID
+APNS_BUNDLE_ID = os.environ.get('APNS_BUNDLE_ID', 'co.cueup.cue')  # apns-topic
+APNS_AUTH_KEY  = os.environ.get('APNS_AUTH_KEY', '')               # .p8 PEM contents (preferred; Render secret)
+APNS_KEY_PATH  = os.environ.get('APNS_KEY_PATH', '')               # fallback: path to the .p8 file on disk
+APNS_USE_SANDBOX = os.environ.get('APNS_USE_SANDBOX', 'True') == 'True'  # set False for production builds
+PUSH_NOTIFICATION_DELIVERY_TIMEOUT = int(os.environ.get('PUSH_NOTIFICATION_DELIVERY_TIMEOUT', '10'))
+
 # App Store reviewer bypass for the phone-OTP flow. Phones in this dict skip
 # Twilio Verify entirely and accept the mapped fixed OTP code. Use the NANP
 # fictional range (+1 555-01xx) so the numbers can never reach a real person.

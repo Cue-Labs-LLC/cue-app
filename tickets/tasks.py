@@ -1309,3 +1309,41 @@ def deliver_webhook_task(self, endpoint_id, event_type, delivery_id, payload):
         resp.status_code, endpoint_id, event_type,
     )
     raise self.retry(exc=requests.RequestException(f"HTTP {resp.status_code}"))
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_push_notification_task(self, device_token_id, payload):
+    """Send one APNs push to a registered device.
+
+    Enqueued by ``tickets.services.push_notifications.dispatch`` (Tap to Pay
+    enabled) and by the ``send_launch_push`` management command (§6.3 launch).
+    A stale token (BadDeviceToken / Unregistered) is deleted; transient
+    failures (network error, timeout, 429, 5xx) are retried.
+    """
+    from tickets.models import DeviceToken
+    from tickets.services.push_notifications import apns
+
+    try:
+        dt = DeviceToken.objects.get(id=device_token_id)
+    except DeviceToken.DoesNotExist:
+        logger.warning("DeviceToken %s not found, skipping push", device_token_id)
+        return
+
+    result = apns.send(dt.token, payload)
+
+    if result.ok:
+        logger.info("Push delivered device_token=%s", device_token_id)
+        return
+    if result.skipped:
+        return
+    if result.stale:
+        logger.info("Deleting stale device_token=%s (reason=%s)", device_token_id, result.reason)
+        dt.delete()
+        return
+    if result.transient:
+        raise self.retry(exc=Exception(f"APNs transient failure (status={result.status})"))
+    # Non-retryable, non-stale (e.g. 403 bad auth) — log and drop.
+    logger.error(
+        "Push permanently failed device_token=%s status=%s reason=%s",
+        device_token_id, result.status, result.reason,
+    )
