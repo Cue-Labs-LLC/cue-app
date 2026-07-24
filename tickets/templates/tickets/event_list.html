@@ -111,21 +111,21 @@
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td class="event-actions-cell">
-                            <!-- Desktop: View button + dots dropdown for secondary actions -->
+                            <!-- Desktop: View + Duplicate buttons + dots dropdown for secondary actions -->
                             <div class="d-none d-sm-flex align-items-center gap-2">
                                 <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
+                                <button type="button" class="btn btn-sm btn-outline-secondary js-duplicate-event"
+                                    data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
+                                    data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
+                                    data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
+                                    data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
+                                    data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files me-1"></i>Duplicate</button>
                                 <div class="dropdown">
                                     <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Event actions">
                                         <i class="bi bi-three-dots-vertical"></i>
                                     </button>
                                     <ul class="dropdown-menu dropdown-menu-end">
                                         <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
-                                        <li><button type="button" class="dropdown-item js-duplicate-event"
-                                            data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
-                                            data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
-                                            data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
-                                            data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
-                                            data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files me-2"></i>Duplicate</button></li>
                                         {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
