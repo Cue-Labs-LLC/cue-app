@@ -2981,6 +2981,77 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Payout.objects.count(), 0)
 
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_skips_negative_balance_recovery_payout(self, mock_construct):
+        # Stripe's automatic "withdrawal to cover a negative balance" arrives as a
+        # payout with a negative amount and empty metadata. It must be acked (200)
+        # and must NOT create a Payout row.
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_neg_balance',
+                    'status': 'in_transit',
+                    'amount': -40,
+                    'metadata': {},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Payout.objects.filter(stripe_payout_id='po_neg_balance').exists())
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_acks_200_when_handler_raises(self, mock_construct):
+        # An unexpected handler failure must never escape as a 500 (Stripe would
+        # retry for days) — the webhook logs and acks with 200.
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {'object': {'id': 'po_boom', 'status': 'pending', 'amount': 500, 'metadata': {}}},
+        }
+        with patch('tickets.views._handle_stripe_payout_event', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                self.connect_webhook_url,
+                data='{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='sig_test',
+            )
+        self.assertEqual(response.status_code, 200)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_duplicate_stripe_account_id_does_not_500(self, mock_construct):
+        # stripe_account_id is not unique; a duplicate org row must not raise
+        # MultipleObjectsReturned and 500.
+        Organization.objects.create(
+            name='Dup Account Org',
+            slug='dup-account-org',
+            stripe_account_id=self.org.stripe_account_id,
+        )
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {'object': {'id': 'po_dup_acct', 'status': 'pending', 'amount': 700, 'metadata': {}}},
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Payout.objects.filter(stripe_payout_id='po_dup_acct').count(), 1)
+
     @patch('stripe.Balance.retrieve')
     @patch('stripe.Account.retrieve')
     def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve, mock_balance_retrieve):
