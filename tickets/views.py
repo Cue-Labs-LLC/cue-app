@@ -328,7 +328,7 @@ def _invalidate_event_campaign_match_cache(event_id):
             pass
 
 
-EVENT_STATS_CACHE_VERSION = 5
+EVENT_STATS_CACHE_VERSION = 6
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -354,6 +354,8 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'page_views_over_time',
     'survey_invitations_count',
     'survey_responses_count',
+    'survey_sent_count',
+    'survey_last_sent_at',
     'external_survey_responses_count',
     'survey_total_response_count',
     'survey_results',
@@ -5210,6 +5212,15 @@ def _compute_event_stats(event):
     survey_scheduled_send_at = SurveyInvitation.objects.filter(
         event=event, sent_at__isnull=True, scheduled_send_at__isnull=False,
     ).aggregate(earliest=Min('scheduled_send_at'))['earliest']
+    # How many invitations have actually been emailed, and when the most recent
+    # one went out — powers the "Survey sent to N attendees" confirmation so a
+    # completed send doesn't read as "nothing has happened yet."
+    survey_sent_count = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=False,
+    ).count()
+    survey_last_sent_at = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=False,
+    ).aggregate(latest=Max('sent_at'))['latest']
 
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
@@ -5453,6 +5464,8 @@ def _compute_event_stats(event):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
+        'survey_sent_count': survey_sent_count,
+        'survey_last_sent_at': survey_last_sent_at,
         'external_survey_responses_count': ext_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -6106,6 +6119,12 @@ def event_detail(request, event_id):
         _format_survey_send_time(event, survey_scheduled_send_at)
         if survey_scheduled_send_at else None
     )
+    # Confirmation of what already went out (distinct from the schedule above).
+    survey_sent_count = stats['survey_sent_count']
+    survey_last_sent_display = (
+        _format_survey_send_time(event, stats['survey_last_sent_at'])
+        if stats['survey_last_sent_at'] else None
+    )
     # Resolved send schedule (event override → org default) shown read-only in the
     # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
     # itself is configured in the survey builder, not here.
@@ -6365,6 +6384,8 @@ def event_detail(request, event_id):
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
         'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_sent_count': survey_sent_count,
+        'survey_last_sent_display': survey_last_sent_display,
         'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,

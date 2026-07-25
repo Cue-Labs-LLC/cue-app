@@ -1660,8 +1660,13 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-    {# Left: where the survey's automatic send time comes from. #}
+    {# Left: what already went out (if anything) + where the automatic send time comes from. #}
     <div class="text-body-secondary small">
+        {% if survey_sent_count %}
+        <div class="text-success mb-1">
+            <i class="bi bi-check-circle-fill me-1"></i>Survey sent to {{ survey_sent_count }} attendee{{ survey_sent_count|pluralize }}{% if survey_last_sent_display %} &middot; last sent {{ survey_last_sent_display }}{% endif %}.
+        </div>
+        {% endif %}
         {% if survey_scheduled_send_display %}
         <i class="bi bi-clock-history me-1"></i>Scheduled to send {{ survey_scheduled_send_display }}.
         {% elif survey_schedule_resolved.opted_out %}
@@ -1993,6 +1998,15 @@ document.addEventListener('DOMContentLoaded', function() {
         {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
+    {% if survey_sent_count %}
+    <div class="empty-state" style="padding: 28px 24px;">
+        <i class="bi bi-send-check" style="font-size: 16px;"></i>
+        <p class="mb-1">Survey sent to {{ survey_sent_count }} attendee{{ survey_sent_count|pluralize }}</p>
+        <p class="text-body-secondary small mb-0">
+            Responses will appear here as they come in.
+        </p>
+    </div>
+    {% else %}
     <div class="empty-state" style="padding: 28px 24px;">
         <i class="bi bi-clipboard2-data" style="font-size: 16px;"></i>
         <p class="mb-1">No survey responses yet</p>
@@ -2004,6 +2018,7 @@ document.addEventListener('DOMContentLoaded', function() {
             <a href="{% url 'tickets:typeform_settings' %}">Connect a survey integration</a>.
         </p>
     </div>
+    {% endif %}
     {% endif %}
 {% endif %}
 
@@ -2531,6 +2546,11 @@ document.addEventListener('DOMContentLoaded', function() {
             <p>This will email the survey <strong>now</strong> to
               <strong id="sendSurveyCount">0</strong> attendee(s)
               who haven't received it yet.</p>
+            {% if survey_sent_count %}
+            <p class="small text-body-secondary mb-0">
+              <i class="bi bi-check-circle me-1"></i>{{ survey_sent_count }} attendee{{ survey_sent_count|pluralize }} already received this survey.
+            </p>
+            {% endif %}
 
             {% if survey_schedule_resolved.has_schedule %}
             <div class="small text-body-secondary border-top pt-2 mt-2">

@@ -88,6 +88,14 @@ SURVEY_TEST_EVENT_NAME = "Survey Test Night — 1 sale, ended"
 # a real inbox the developer controls.
 SURVEY_TEST_CUSTOMER_EMAIL = OWNER_EMAIL
 
+# A fixture for the "survey sent, but no responses yet" state: an ENDED direct
+# event whose attendees have all been emailed the survey (SurveyInvitation.sent_at
+# set) but nobody has answered. The Surveys tab should show the green
+# "Survey sent to N attendees · last sent …" confirmation and the
+# "responses will appear here as they come in" empty state.
+SURVEY_SENT_NO_RESPONSES_EVENT_NAME = "Survey Sent — awaiting responses"
+SURVEY_SENT_NO_RESPONSES_ATTENDEES = 8
+
 
 def build_survey_test_event(org, venue, owner, *, when=None, market=None):
     """Idempotently create an ENDED direct-ticketing event with exactly one
@@ -152,6 +160,87 @@ def build_survey_test_event(org, venue, owner, *, when=None, market=None):
         price=ticket_type.price,
     )
     customer.update_lifetime_value()
+    return event
+
+
+def build_survey_sent_no_responses_event(org, venue, owner, *, when=None, market=None):
+    """Idempotently create an ENDED direct event whose survey has already been
+    emailed to every attendee, with zero responses recorded. Returns the Event.
+    Safe to call repeatedly (keyed on org+name).
+
+    Exercises the "survey sent — awaiting responses" UI: the Surveys tab shows the
+    green "Survey sent to N attendees · last sent …" confirmation and the
+    "responses will appear here as they come in" empty state (no NPS/star cards,
+    since nobody has answered). Used by the seed command and runnable standalone to
+    drop the fixture into an already-populated dev database.
+    """
+    now = when or timezone.now()
+    event, created = Event.objects.get_or_create(
+        organization=org,
+        name=SURVEY_SENT_NO_RESPONSES_EVENT_NAME,
+        defaults=dict(
+            summary="Survey went out to every attendee — waiting on the first response.",
+            venue=venue,
+            market=market,
+            start_date=(now - timedelta(days=5)).date(),
+            end_date=(now - timedelta(days=5)).date(),
+            start_time=now.time().replace(microsecond=0),
+            capacity=50,
+            max_tickets_per_customer=4,
+            ticketing_type=TICKETING_TYPE_DIRECT,
+            status=EVENT_STATUS_ENDED,
+            timezone="America/Los_Angeles",
+            created_by=owner,
+        ),
+    )
+    if not created:
+        return event
+
+    ticket_type = SaleableTicketType.objects.create(
+        event=event,
+        name="General Admission",
+        price=_decimal(25),
+        quantity_limit=50,
+        max_per_customer=4,
+        quantity_sold=SURVEY_SENT_NO_RESPONSES_ATTENDEES,
+        order=1,
+        sale_start=now - timedelta(days=21),
+        sale_end=now - timedelta(days=5),
+        description="Standing room. First come, first served.",
+    )
+
+    # One attendee per invitation, each already emailed the survey. The most recent
+    # send is 1 day ago so "last sent" reads as a real, recent timestamp.
+    for i in range(SURVEY_SENT_NO_RESPONSES_ATTENDEES):
+        customer, _ = Customer.objects.get_or_create(
+            organization=org,
+            email=f"survey-sent-{i:02d}@example.test",
+            defaults=dict(name=f"Survey Sent Attendee {i + 1}"),
+        )
+        order = TicketOrder.objects.create(
+            customer=customer,
+            event=event,
+            order_number=f"ORD-SURVEYSENT-{OrderCounter.next():06d}",
+            order_date=now - timedelta(days=6),
+            total_amount=ticket_type.price,
+            is_in_person=False,
+            created_by=owner,
+        )
+        Ticket.objects.create(
+            ticket_order=order,
+            ticket_type=ticket_type.name,
+            price=ticket_type.price,
+        )
+        SurveyInvitation.objects.create(
+            event=event,
+            customer=customer,
+            organization=org,
+            email=customer.email,
+            # Newest send 1 day ago; older ones staggered before it.
+            sent_at=now - timedelta(days=1, hours=i),
+        )
+        customer.update_lifetime_value()
+
     return event
 
 FIRST_NAMES = [
@@ -248,6 +337,12 @@ class Command(BaseCommand):
                 org, venues[0], owner, when=now, market=markets.get("Los Angeles"),
             )
             self.stdout.write(self.style.SUCCESS(f"Survey test event: {survey_test_event.name}"))
+
+            # Fixture for the "survey sent, no responses yet" confirmation state.
+            survey_sent_event = build_survey_sent_no_responses_event(
+                org, venues[0], owner, when=now, market=markets.get("Los Angeles"),
+            )
+            self.stdout.write(self.style.SUCCESS(f"Survey sent (no responses) event: {survey_sent_event.name}"))
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()

@@ -5749,6 +5749,104 @@ class EventDetailCacheTest(TestCase):
         self.assertContains(response, '$35.00')
 
 
+class SurveySentConfirmationTests(TestCase):
+    """The Surveys tab must confirm a completed send. When invitations have been
+    emailed but nobody has responded yet, the tab shows a "Survey sent to N
+    attendees" confirmation and a delivered-awaiting empty state — not the
+    "Build a survey and send it" copy that reads as "nothing has happened."
+    """
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Survey Sent Org', slug='survey-sent-org',
+        )
+        self.user = User.objects.create_user(
+            username='surveysent', email='surveysent@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Survey Venue', city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Survey Sent Event', venue=self.venue,
+            start_date=date.today() - timedelta(days=5),
+            ticketing_type=TICKETING_TYPE_DIRECT, status='ended',
+        )
+        self.assertTrue(
+            self.client.login(username='surveysent@example.com', password='testpass123')
+        )
+        self.client.get(reverse('tickets:home'))  # seed session _org_id
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _add_attendee(self, i, *, sent_at):
+        """Create an attendee with an order for the event and one survey invitation.
+        sent_at=None leaves the invitation unsent."""
+        customer = Customer.objects.create(
+            organization=self.org, email=f'attendee{i}@example.com', name=f'Attendee {i}',
+        )
+        TicketOrder.objects.create(
+            customer=customer, event=self.event, order_number=f'ORD-{i}',
+            order_date=timezone.now() - timedelta(days=6), total_amount=Decimal('25.00'),
+        )
+        return SurveyInvitation.objects.create(
+            event=self.event, customer=customer, organization=self.org,
+            email=customer.email, sent_at=sent_at,
+        )
+
+    def _get_surveys_tab(self):
+        url = reverse('tickets:event_detail', args=[self.event.id]) + '?tab=surveys'
+        return self.client.get(url)
+
+    def test_sent_no_responses_shows_confirmation(self):
+        now = timezone.now()
+        for i in range(3):
+            self._add_attendee(i, sent_at=now - timedelta(days=1, hours=i))
+
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 3)
+        self.assertIsNotNone(response.context['survey_last_sent_display'])
+        # Header confirmation + delivered-awaiting empty state.
+        self.assertContains(response, 'Survey sent to 3 attendees')
+        self.assertContains(response, 'Responses will appear here as they come in.')
+        # The "nothing has happened" copy must NOT show once a survey has gone out.
+        self.assertNotContains(response, 'Build a survey in Cue and send it')
+        # The Send modal explains the recipient count is a remainder.
+        self.assertContains(response, 'already received this survey')
+
+    def test_no_invitations_shows_default_empty_state(self):
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 0)
+        self.assertIsNone(response.context['survey_last_sent_display'])
+        # No send has happened -> original onboarding empty state, no confirmation.
+        self.assertNotContains(response, 'Survey sent to')
+        self.assertNotContains(response, 'already received this survey')
+        self.assertContains(response, 'Build a survey in Cue and send it')
+
+    def test_unsent_invitations_do_not_count_as_sent(self):
+        # A scheduled-but-not-yet-sent invitation must not trigger the confirmation.
+        self._add_attendee(0, sent_at=None)
+
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 0)
+        self.assertNotContains(response, 'Survey sent to')
+        self.assertContains(response, 'Build a survey in Cue and send it')
+
+
 class EventDetailAllocationChartTest(TestCase):
     """Tests for event detail per-ticket-type allocation charts."""
 
