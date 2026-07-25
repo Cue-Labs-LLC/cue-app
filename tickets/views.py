@@ -6153,6 +6153,16 @@ def event_detail(request, event_id):
             output_field=DecimalField(max_digits=10, decimal_places=2),
         ),
     ).order_by('-order_date')
+
+    orders_search = request.GET.get('orders_search', '').strip()
+    if orders_search:
+        orders_qs = orders_qs.filter(
+            Q(order_number__icontains=orders_search) |
+            Q(external_order_number__icontains=orders_search) |
+            Q(customer__name__icontains=orders_search) |
+            Q(customer__email__icontains=orders_search)
+        )
+
     paginator = Paginator(orders_qs, 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
@@ -6346,6 +6356,7 @@ def event_detail(request, event_id):
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
+        'orders_search': orders_search,
         'custom_field_values_display': custom_field_values_display,
         'org_custom_fields': org_custom_fields,
         'existing_values': existing_values,
