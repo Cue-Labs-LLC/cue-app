@@ -5752,6 +5752,104 @@ class EventDetailCacheTest(TestCase):
         self.assertContains(response, '$35.00')
 
 
+class SurveySentConfirmationTests(TestCase):
+    """The Surveys tab must confirm a completed send. When invitations have been
+    emailed but nobody has responded yet, the tab shows a "Survey sent to N
+    attendees" confirmation and a delivered-awaiting empty state — not the
+    "Build a survey and send it" copy that reads as "nothing has happened."
+    """
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Survey Sent Org', slug='survey-sent-org',
+        )
+        self.user = User.objects.create_user(
+            username='surveysent', email='surveysent@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Survey Venue', city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Survey Sent Event', venue=self.venue,
+            start_date=date.today() - timedelta(days=5),
+            ticketing_type=TICKETING_TYPE_DIRECT, status='ended',
+        )
+        self.assertTrue(
+            self.client.login(username='surveysent@example.com', password='testpass123')
+        )
+        self.client.get(reverse('tickets:home'))  # seed session _org_id
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _add_attendee(self, i, *, sent_at):
+        """Create an attendee with an order for the event and one survey invitation.
+        sent_at=None leaves the invitation unsent."""
+        customer = Customer.objects.create(
+            organization=self.org, email=f'attendee{i}@example.com', name=f'Attendee {i}',
+        )
+        TicketOrder.objects.create(
+            customer=customer, event=self.event, order_number=f'ORD-{i}',
+            order_date=timezone.now() - timedelta(days=6), total_amount=Decimal('25.00'),
+        )
+        return SurveyInvitation.objects.create(
+            event=self.event, customer=customer, organization=self.org,
+            email=customer.email, sent_at=sent_at,
+        )
+
+    def _get_surveys_tab(self):
+        url = reverse('tickets:event_detail', args=[self.event.id]) + '?tab=surveys'
+        return self.client.get(url)
+
+    def test_sent_no_responses_shows_confirmation(self):
+        now = timezone.now()
+        for i in range(3):
+            self._add_attendee(i, sent_at=now - timedelta(days=1, hours=i))
+
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 3)
+        self.assertIsNotNone(response.context['survey_last_sent_display'])
+        # Header confirmation + delivered-awaiting empty state.
+        self.assertContains(response, 'Survey sent to 3 attendees')
+        self.assertContains(response, 'Responses will appear here as they come in.')
+        # The "nothing has happened" copy must NOT show once a survey has gone out.
+        self.assertNotContains(response, 'Build a survey in Cue and send it')
+        # The Send modal explains the recipient count is a remainder.
+        self.assertContains(response, 'already received this survey')
+
+    def test_no_invitations_shows_default_empty_state(self):
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 0)
+        self.assertIsNone(response.context['survey_last_sent_display'])
+        # No send has happened -> original onboarding empty state, no confirmation.
+        self.assertNotContains(response, 'Survey sent to')
+        self.assertNotContains(response, 'already received this survey')
+        self.assertContains(response, 'Build a survey in Cue and send it')
+
+    def test_unsent_invitations_do_not_count_as_sent(self):
+        # A scheduled-but-not-yet-sent invitation must not trigger the confirmation.
+        self._add_attendee(0, sent_at=None)
+
+        response = self._get_surveys_tab()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['survey_sent_count'], 0)
+        self.assertNotContains(response, 'Survey sent to')
+        self.assertContains(response, 'Build a survey in Cue and send it')
+
+
 class EventDetailAllocationChartTest(TestCase):
     """Tests for event detail per-ticket-type allocation charts."""
 
@@ -9890,6 +9988,28 @@ class PerTicketQRCheckinTests(TestCase):
         html_body = next(b for b, mime in msg.alternatives if mime == 'text/html')
         for cid in ('qrcode-0', 'qrcode-1', 'qrcode-2'):
             self.assertIn(f'cid:{cid}', html_body)
+
+    @override_settings(SITE_URL='https://tickets.example.com')
+    def test_confirmation_email_includes_event_time_and_page_link(self):
+        from datetime import time as dt_time
+
+        from django.core import mail
+        from tickets.tasks import send_order_confirmation_email_task
+
+        self.event.start_time = dt_time(20, 0)
+        self.event.timezone = 'America/Los_Angeles'
+        self.event.save(update_fields=['start_time', 'timezone'])
+
+        send_order_confirmation_email_task.apply(args=[str(self.order.id)]).get()
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        html_body = next(b for b, mime in msg.alternatives if mime == 'text/html')
+        expected_url = f'https://tickets.example.com/e/{self.event.public_id}/'
+        for body in (msg.body, html_body):
+            self.assertIn('8:00 PM', body)
+            self.assertIn('PDT', body)
+            self.assertIn(expected_url, body)
 
     def test_ticket_from_other_event_returns_404(self):
         from .utils import ticket_qr_payload
@@ -21008,3 +21128,197 @@ class TapToPayEnabledPushConcurrencyTests(TestCase):
         self.org.refresh_from_db()
         self.assertFalse(self.org.tap_to_pay_enabled_push_sent)
         self.assertFalse(mock_fire.called)
+
+
+class EventDuplicateViewTests(TestCase):
+    """Tests for the event_duplicate view (modal-driven server-side copy)."""
+
+    def setUp(self):
+        from .models import PromoCode, TrackingLink, EventTalent
+        self.client = Client()
+        self.org = Organization.objects.create(name='Dup Org', slug='dup-org')
+        self.user = User.objects.create_user(
+            username='dupuser', email='dup@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='dup@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='The Spot', city='Las Vegas',
+        )
+        self.source = Event.objects.create(
+            organization=self.org, name='Familiar Faces', venue=self.venue,
+            ticketing_type='direct', status='live',
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+            end_date=date(2024, 1, 2), end_time=time(2, 0),
+            cached_ticket_count=50, computed_total_revenue=Decimal('1234.00'),
+        )
+        # Two ticket types, the second unlocking after the first; both with sales.
+        self.tt1 = SaleableTicketType.objects.create(
+            event=self.source, name='GA', price=Decimal('20.00'),
+            quantity_limit=100, quantity_sold=40, order=0,
+        )
+        self.tt2 = SaleableTicketType.objects.create(
+            event=self.source, name='VIP', price=Decimal('50.00'),
+            quantity_limit=20, quantity_sold=5, order=1, unlocks_after=self.tt1,
+        )
+        SaleableTicketTypeTier.objects.create(
+            ticket_type=self.tt1, name='Early Bird', price=Decimal('15.00'),
+            allotment=30, quantity_sold=30, order=0,
+        )
+        PromoCode.objects.create(
+            organization=self.org, event=self.source, code='SAVE10',
+            discount_type=PromoCode.PERCENTAGE, discount_value=Decimal('10.00'),
+            times_used=7,
+        )
+        TrackingLink.objects.create(
+            organization=self.org, event=self.source, name='IG', token='origtoken123',
+            click_count=99,
+        )
+        EventTalent.objects.create(event=self.source, name='DJ Shadow', order=0)
+
+    def _future(self, days_ahead, hour):
+        d = timezone.localdate() + timedelta(days=days_ahead)
+        return f"{d.isoformat()}T{hour:02d}:00"
+
+    def test_duplicate_creates_draft_copy_with_reset_config(self):
+        from .models import PromoCode, TrackingLink, EventTalent
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': self._future(30, 20), 'end': self._future(31, 2)},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+
+        copies = Event.objects.filter(organization=self.org, name='Familiar Faces').exclude(id=self.source.id)
+        self.assertEqual(copies.count(), 1)
+        new = copies.first()
+
+        # Draft, future dates, denormalized counters reset, fresh public_id.
+        self.assertEqual(new.status, 'draft')
+        self.assertEqual(new.start_date, timezone.localdate() + timedelta(days=30))
+        self.assertEqual(new.cached_ticket_count, 0)
+        self.assertEqual(new.computed_total_revenue, Decimal('0.00'))
+        self.assertNotEqual(new.public_id, self.source.public_id)
+        self.assertEqual(new.venue_id, self.venue.id)  # same venue reused
+
+        # Ticket types copied with sold counts reset and unlock relationship preserved.
+        new_tts = {t.name: t for t in new.saleable_ticket_types.all()}
+        self.assertEqual(set(new_tts), {'GA', 'VIP'})
+        self.assertEqual(new_tts['GA'].quantity_sold, 0)
+        self.assertEqual(new_tts['VIP'].unlocks_after_id, new_tts['GA'].id)
+        # Tier copied, sold reset.
+        tier = new_tts['GA'].tiers.first()
+        self.assertEqual(tier.name, 'Early Bird')
+        self.assertEqual(tier.quantity_sold, 0)
+
+        # Promo code copied with usage reset; tracking link gets a fresh token.
+        pc = PromoCode.objects.get(event=new)
+        self.assertEqual(pc.code, 'SAVE10')
+        self.assertEqual(pc.times_used, 0)
+        tl = TrackingLink.objects.get(event=new)
+        self.assertEqual(tl.click_count, 0)
+        self.assertNotEqual(tl.token, 'origtoken123')
+        self.assertTrue(EventTalent.objects.filter(event=new, name='DJ Shadow').exists())
+
+        # Source is untouched.
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.status, 'live')
+        self.assertEqual(self.source.cached_ticket_count, 50)
+
+    def test_custom_title_is_applied(self):
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': 'Familiar Faces: Reunion', 'start': self._future(30, 20)},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        new = Event.objects.get(organization=self.org, name='Familiar Faces: Reunion')
+        self.assertNotEqual(new.id, self.source.id)
+        # Blank/whitespace title falls back to the source name.
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'name': '   ', 'start': self._future(31, 20)},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='Familiar Faces')
+            .exclude(id=self.source.id).exists()
+        )
+
+    def test_past_start_is_rejected(self):
+        past = timezone.localdate() - timedelta(days=1)
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': f"{past.isoformat()}T20:00"},
+        )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        self.assertFalse(
+            Event.objects.filter(organization=self.org, name='Familiar Faces')
+            .exclude(id=self.source.id).exists()
+        )
+
+    def test_other_org_event_is_404(self):
+        other_org = Organization.objects.create(name='Other', slug='other-org')
+        other_venue = Venue.objects.create(organization=other_org, name='V', city='X')
+        other_event = Event.objects.create(
+            organization=other_org, name='Theirs', venue=other_venue,
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+        )
+        resp = self.client.post(
+            reverse('tickets:event_duplicate', args=[other_event.id]),
+            {'start': self._future(10, 20)},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_is_not_allowed(self):
+        resp = self.client.get(reverse('tickets:event_duplicate', args=[self.source.id]))
+        self.assertEqual(resp.status_code, 405)
+
+
+class EventDuplicateCsrfCookieTests(TestCase):
+    """The events list has no rendered {% csrf_token %} (its HTML is cached), so the
+    duplicate modal reads the token from the csrftoken cookie. event_list must therefore
+    set that cookie (@ensure_csrf_cookie) or the real browser POST fails CSRF with 403.
+    Uses a CSRF-enforcing client to reproduce the browser, unlike the default test client.
+    """
+
+    def setUp(self):
+        self.client = Client(enforce_csrf_checks=True)
+        self.org = Organization.objects.create(name='CsrfDupOrg', slug='csrf-dup-org')
+        self.user = User.objects.create_user(
+            username='csrfdup', email='csrfdup@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='csrfdup@test.com', password='pass12345')
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.source = Event.objects.create(
+            organization=self.org, name='CsrfSrc', venue=self.venue,
+            start_date=date(2024, 1, 1), start_time=time(20, 0),
+        )
+
+    def test_events_page_sets_csrf_cookie_and_post_succeeds(self):
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+        token = self.client.cookies.get('csrftoken')
+        self.assertIsNotNone(token, 'csrftoken cookie not set on /events/ — browser POST would 403')
+        self.assertTrue(token.value)
+
+        future = (timezone.localdate() + timedelta(days=10)).isoformat() + 'T20:00'
+        resp2 = self.client.post(
+            reverse('tickets:event_duplicate', args=[self.source.id]),
+            {'start': future, 'csrfmiddlewaretoken': token.value},
+        )
+        self.assertRedirects(resp2, reverse('tickets:event_list'))
+        self.assertEqual(
+            Event.objects.filter(organization=self.org, name='CsrfSrc').count(), 2,
+        )

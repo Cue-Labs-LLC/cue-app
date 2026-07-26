@@ -27,7 +27,7 @@ from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
@@ -328,7 +328,7 @@ def _invalidate_event_campaign_match_cache(event_id):
             pass
 
 
-EVENT_STATS_CACHE_VERSION = 5
+EVENT_STATS_CACHE_VERSION = 6
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -354,6 +354,8 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'page_views_over_time',
     'survey_invitations_count',
     'survey_responses_count',
+    'survey_sent_count',
+    'survey_last_sent_at',
     'external_survey_responses_count',
     'survey_total_response_count',
     'survey_results',
@@ -4681,7 +4683,7 @@ def customer_detail(request, customer_id):
     for order in orders:
         timeline_items.append({
             'kind': 'order', 'ts': order.order_date or order.created_at, 'obj': order,
-            'url': reverse('tickets:event_detail', args=[order.event_id]),
+            'url': reverse('tickets:order_detail', args=[order.id]),
         })
     if sms_marketing_enabled:
         for msg in sms_messages:
@@ -4840,11 +4842,17 @@ def customer_tag_remove(request, customer_id, tag_id):
 
 # Event Management Views
 
+@ensure_csrf_cookie
 @login_required
 @require_org
 @require_organizer
 def event_list(request):
-    """Display list of all events ordered by most recent start date."""
+    """Display list of all events ordered by most recent start date.
+
+    Decorated with @ensure_csrf_cookie so the csrftoken cookie is always set on this
+    page — its HTML is cached and re-served without a rendered {% csrf_token %}, so the
+    duplicate-event modal reads the token from the cookie (see event_list.html).
+    """
     org = get_organization(request)
 
     search_query = request.GET.get('search', '')
@@ -5204,6 +5212,15 @@ def _compute_event_stats(event):
     survey_scheduled_send_at = SurveyInvitation.objects.filter(
         event=event, sent_at__isnull=True, scheduled_send_at__isnull=False,
     ).aggregate(earliest=Min('scheduled_send_at'))['earliest']
+    # How many invitations have actually been emailed, and when the most recent
+    # one went out — powers the "Survey sent to N attendees" confirmation so a
+    # completed send doesn't read as "nothing has happened yet."
+    survey_sent_count = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=False,
+    ).count()
+    survey_last_sent_at = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=False,
+    ).aggregate(latest=Max('sent_at'))['latest']
 
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
@@ -5447,6 +5464,8 @@ def _compute_event_stats(event):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
+        'survey_sent_count': survey_sent_count,
+        'survey_last_sent_at': survey_last_sent_at,
         'external_survey_responses_count': ext_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -6100,6 +6119,12 @@ def event_detail(request, event_id):
         _format_survey_send_time(event, survey_scheduled_send_at)
         if survey_scheduled_send_at else None
     )
+    # Confirmation of what already went out (distinct from the schedule above).
+    survey_sent_count = stats['survey_sent_count']
+    survey_last_sent_display = (
+        _format_survey_send_time(event, stats['survey_last_sent_at'])
+        if stats['survey_last_sent_at'] else None
+    )
     # Resolved send schedule (event override → org default) shown read-only in the
     # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
     # itself is configured in the survey builder, not here.
@@ -6147,6 +6172,16 @@ def event_detail(request, event_id):
             output_field=DecimalField(max_digits=10, decimal_places=2),
         ),
     ).order_by('-order_date')
+
+    orders_search = request.GET.get('orders_search', '').strip()
+    if orders_search:
+        orders_qs = orders_qs.filter(
+            Q(order_number__icontains=orders_search) |
+            Q(external_order_number__icontains=orders_search) |
+            Q(customer__name__icontains=orders_search) |
+            Q(customer__email__icontains=orders_search)
+        )
+
     paginator = Paginator(orders_qs, 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
@@ -6340,6 +6375,7 @@ def event_detail(request, event_id):
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
+        'orders_search': orders_search,
         'custom_field_values_display': custom_field_values_display,
         'org_custom_fields': org_custom_fields,
         'existing_values': existing_values,
@@ -6348,6 +6384,8 @@ def event_detail(request, event_id):
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
         'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_sent_count': survey_sent_count,
+        'survey_last_sent_display': survey_last_sent_display,
         'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
@@ -6438,6 +6476,10 @@ def event_detail(request, event_id):
             )
         context['tracking_links'] = tracking_links
     context['today'] = date.today()
+    # Time-aware "has this event ended?" — gates the AI summary card. Uses the
+    # event's actual end datetime so an event that ended earlier today (e.g. a
+    # 2 AM close) counts as ended, rather than the day-granularity end_date < today.
+    context['has_ended'] = event.end_datetime() < django_tz.now()
 
     # Surveys tab — per-form cards. One card per active TypeformFormSubscription,
     # each showing its previously-linked responses + a Match-responses modal trigger.
@@ -6752,6 +6794,205 @@ def event_delete(request, event_id):
 
     context = {'event': event}
     return render(request, 'tickets/event_delete.html', context)
+
+
+def _duplicate_event(source, org, user, name, start_date, start_time, end_date, end_time, flyer_file):
+    """Deep-copy an event and its configuration into a new draft event.
+
+    Copies ticket types (+ pricing tiers), promo codes, tracking links, talent, and
+    custom-field values, resetting all sold/usage counters to zero. Sold orders/tickets,
+    waitlist entries, page views, campaigns and other historical data are never copied.
+    Must be called inside a transaction. Returns the new Event.
+    """
+    from .models import generate_event_public_id, EventTalent
+    from django.core.files.base import ContentFile
+
+    new_event = Event(
+        organization=org,
+        created_by=user,
+        venue=source.venue,
+        name=name,
+        summary=source.summary,
+        description=source.description,
+        capacity=source.capacity,
+        max_tickets_per_customer=source.max_tickets_per_customer,
+        ticket_link=source.ticket_link,
+        ticketing_type=source.ticketing_type,
+        timezone=source.timezone,
+        facebook_pixel_id=source.facebook_pixel_id,
+        show_social_proof=source.show_social_proof,
+        show_attendee_count=source.show_attendee_count,
+        status=EVENT_STATUS_DRAFT,
+        start_date=start_date,
+        start_time=start_time,
+        end_date=end_date,
+        end_time=end_time,
+        public_id=generate_event_public_id(),
+    )
+
+    # Flyer: prefer an uploaded replacement, otherwise copy the source's file to a fresh
+    # path so the two events don't share storage.
+    if flyer_file is not None:
+        new_event.flyer = flyer_file
+    elif source.flyer:
+        try:
+            source.flyer.open('rb')
+            new_event.flyer.save(
+                os.path.basename(source.flyer.name),
+                ContentFile(source.flyer.read()),
+                save=False,
+            )
+        finally:
+            source.flyer.close()
+
+    new_event.save()
+
+    # Ticket types (+ tiers); two passes so the self-referential unlocks_after FK can be
+    # remapped from old ticket types to their new copies.
+    old_to_new_tt = {}
+    for tt in source.saleable_ticket_types.all():
+        new_tt = SaleableTicketType.objects.create(
+            event=new_event,
+            name=tt.name,
+            price=tt.price,
+            quantity_limit=tt.quantity_limit,
+            max_per_customer=tt.max_per_customer,
+            quantity_sold=0,
+            quantity_held=0,
+            is_active=tt.is_active,
+            is_password_protected=tt.is_password_protected,
+            sale_start=tt.sale_start,
+            sale_end=tt.sale_end,
+            description=tt.description,
+            order=tt.order,
+            password=tt.password,
+            unlocks_after=None,
+            waitlist_enabled=tt.waitlist_enabled,
+            low_stock_threshold=tt.low_stock_threshold,
+        )
+        old_to_new_tt[tt.pk] = new_tt
+        for tier in tt.tiers.all():
+            SaleableTicketTypeTier.objects.create(
+                ticket_type=new_tt,
+                name=tier.name,
+                price=tier.price,
+                allotment=tier.allotment,
+                quantity_sold=0,
+                order=tier.order,
+            )
+    for tt in source.saleable_ticket_types.all():
+        if tt.unlocks_after_id:
+            new_tt = old_to_new_tt[tt.pk]
+            new_tt.unlocks_after = old_to_new_tt.get(tt.unlocks_after_id)
+            new_tt.save(update_fields=['unlocks_after'])
+
+    # Promo codes (reset usage)
+    for pc in source.promo_codes.all():
+        PromoCode.objects.create(
+            organization=org,
+            event=new_event,
+            code=pc.code,
+            discount_type=pc.discount_type,
+            discount_value=pc.discount_value,
+            max_uses=pc.max_uses,
+            times_used=0,
+            expires_at=pc.expires_at,
+            is_active=pc.is_active,
+        )
+
+    # Tracking links (fresh unique token, zero clicks)
+    for tl in source.tracking_links.all():
+        TrackingLink.objects.create(
+            organization=org,
+            event=new_event,
+            name=tl.name,
+            token=_generate_tracking_token(),
+            click_count=0,
+        )
+
+    # Talent lineup
+    for t in source.talent_lineup.all():
+        EventTalent.objects.create(
+            event=new_event,
+            name=t.name,
+            order=t.order,
+        )
+
+    # Custom-field values
+    for cfv in source.custom_field_values.all():
+        EventCustomFieldValue.objects.create(
+            event=new_event,
+            custom_field=cfv.custom_field,
+            custom_field_option=cfv.custom_field_option,
+        )
+
+    return new_event
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def event_duplicate(request, event_id):
+    """Duplicate an event from the events table: deep-copy its config with new dates and
+    an optional new flyer, save it as a draft, and return to the events list."""
+    org = get_organization(request)
+    source = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    name = ((request.POST.get('name') or '').strip() or source.name)[:200]
+    start_raw = (request.POST.get('start') or '').strip()
+    end_raw = (request.POST.get('end') or '').strip()
+
+    start_dt = parse_datetime(start_raw) if start_raw else None
+    if start_dt is None:
+        messages.error(request, 'Please provide a valid event start date and time.')
+        return redirect('tickets:event_list')
+
+    end_dt = parse_datetime(end_raw) if end_raw else None
+    if end_raw and end_dt is None:
+        messages.error(request, 'Please provide a valid event end date and time.')
+        return redirect('tickets:event_list')
+
+    # datetime-local inputs are naive local times; normalise everything to naive local
+    # for a clean comparison against "now".
+    def _to_naive_local(dt):
+        if dt is not None and django_tz.is_aware(dt):
+            return django_tz.localtime(dt).replace(tzinfo=None)
+        return dt
+
+    start_dt = _to_naive_local(start_dt)
+    end_dt = _to_naive_local(end_dt)
+    now_naive = django_tz.localtime().replace(tzinfo=None)
+
+    if start_dt <= now_naive:
+        messages.error(request, 'The new event start must be in the future.')
+        return redirect('tickets:event_list')
+    if end_dt is not None and end_dt < start_dt:
+        messages.error(request, 'The event end cannot be before the start.')
+        return redirect('tickets:event_list')
+
+    start_date = start_dt.date()
+    start_time = start_dt.time().replace(second=0, microsecond=0)
+    end_date = end_dt.date() if end_dt else None
+    end_time = end_dt.time().replace(second=0, microsecond=0) if end_dt else None
+
+    try:
+        with transaction.atomic():
+            _duplicate_event(
+                source, org, request.user, name,
+                start_date, start_time, end_date, end_time,
+                request.FILES.get('flyer'),
+            )
+        _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
+        messages.success(request, f"Duplicated '{source.name}'. The copy is saved as a draft.")
+    except Exception as e:
+        logger.exception("Event duplication failed")
+        messages.error(request, f"Could not duplicate event: {e}")
+    return redirect('tickets:event_list')
 
 
 @login_required

@@ -1,4 +1,4 @@
-{% load tickets_extras %}
+{% load tickets_extras %}{% load tz %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1035,11 +1035,11 @@
             {% if event.spans_extra_days %}
             <div class="event-hero__meta-row">
                 <i class="bi bi-calendar3"></i>
-                {{ event.start_date|date:"F j, Y" }}{% if event.start_time %}&nbsp;&mdash;&nbsp;{{ event.start_time|time:"g:i A" }}{% endif %}
+                {{ event.start_date|date:"F j, Y" }}{% if event.start_time %}&nbsp;&mdash;&nbsp;{{ event.start_time|time:"g:i A" }}&nbsp;{% timezone event.timezone %}{{ event.start_datetime|date:"T" }}{% endtimezone %}{% endif %}
             </div>
             <div class="event-hero__meta-row">
                 <i class="bi bi-arrow-right"></i>
-                {{ event.end_date|date:"F j, Y" }}{% if event.end_time %}&nbsp;&mdash;&nbsp;{{ event.end_time|time:"g:i A" }}{% endif %}
+                {{ event.end_date|date:"F j, Y" }}{% if event.end_time %}&nbsp;&mdash;&nbsp;{{ event.end_time|time:"g:i A" }}&nbsp;{% timezone event.timezone %}{{ event.end_datetime|date:"T" }}{% endtimezone %}{% endif %}
             </div>
             {% else %}
             <div class="event-hero__meta-row">
@@ -1049,7 +1049,7 @@
             {% if event.start_time or event.end_time %}
             <div class="event-hero__meta-row">
                 <i class="bi bi-clock"></i>
-                {% if event.start_time %}{{ event.start_time|time:"g:i A" }}{% endif %}{% if event.start_time and event.end_time %}&nbsp;&ndash;&nbsp;{% endif %}{% if event.end_time %}{{ event.end_time|time:"g:i A" }}{% endif %}
+                {% if event.start_time %}{{ event.start_time|time:"g:i A" }}{% endif %}{% if event.start_time and event.end_time %}&nbsp;&ndash;&nbsp;{% endif %}{% if event.end_time %}{{ event.end_time|time:"g:i A" }}{% endif %}&nbsp;{% timezone event.timezone %}{{ event.start_datetime|date:"T" }}{% endtimezone %}
             </div>
             {% endif %}
             {% endif %}
