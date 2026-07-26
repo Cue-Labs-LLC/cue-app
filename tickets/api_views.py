@@ -1213,7 +1213,7 @@ def organizer_checkin_stats(request, event_id):
         .values('ticket_type')
         .annotate(
             total=Count('id'),
-            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
         )
         .order_by('ticket_type')
     )
@@ -2168,7 +2168,7 @@ def scanner_checkin_stats(request):
         .values('ticket_type')
         .annotate(
             total=Count('id'),
-            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
         )
         .order_by('ticket_type')
     )
