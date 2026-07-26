@@ -2400,6 +2400,72 @@ class MobileAPITests(TestCase):
         response = self.client.get('/api/organizer/events/')
         self.assertEqual(response.status_code, 401)
 
+    # --- organizer_events: past-event listing --------------------------------
+    def _past_event(self, name='Past Event', ticketing_type=None):
+        kwargs = {
+            'organization': self.org, 'name': name, 'venue': self.venue,
+            'start_date': date.today() - timedelta(days=30),
+        }
+        if ticketing_type is not None:
+            kwargs['ticketing_type'] = ticketing_type
+        return Event.objects.create(**kwargs)
+
+    def _events_by_id(self, status=None):
+        url = '/api/organizer/events/'
+        if status is not None:
+            url += f'?status={status}'
+        response = self.client.get(url, **self.auth_header)
+        self.assertEqual(response.status_code, 200)
+        return {row['id']: row for row in response.json()}
+
+    def test_events_default_excludes_past(self):
+        past = self._past_event()
+        rows = self._events_by_id()  # no param -> upcoming only (backwards-compat)
+        self.assertNotIn(str(past.pk), rows)
+        # The class-level upcoming event is still present.
+        self.assertIn(str(self.event.pk), rows)
+
+    def test_events_status_past_includes_direct_and_external(self):
+        from tickets.models import TICKETING_TYPE_EXTERNAL
+        past_direct = self._past_event('Past Direct', TICKETING_TYPE_DIRECT)
+        past_external = self._past_event('Past External', TICKETING_TYPE_EXTERNAL)
+        rows = self._events_by_id(status='past')
+        self.assertIn(str(past_direct.pk), rows)
+        self.assertIn(str(past_external.pk), rows)
+        self.assertEqual(rows[str(past_direct.pk)]['status'], 'past')
+        self.assertEqual(rows[str(past_direct.pk)]['ticketing_type'], TICKETING_TYPE_DIRECT)
+        self.assertEqual(rows[str(past_external.pk)]['ticketing_type'], TICKETING_TYPE_EXTERNAL)
+        # Upcoming event excluded from the past list.
+        self.assertNotIn(str(self.event.pk), rows)
+
+    def test_events_status_all_includes_upcoming_and_past(self):
+        past = self._past_event()
+        rows = self._events_by_id(status='all')
+        self.assertIn(str(self.event.pk), rows)
+        self.assertIn(str(past.pk), rows)
+        self.assertEqual(rows[str(self.event.pk)]['status'], 'upcoming')
+        self.assertEqual(rows[str(past.pk)]['status'], 'past')
+
+    def test_events_checked_in_count_is_per_ticket(self):
+        # Partially-scanned 2-ticket order: one ticket scanned, order-level
+        # checked_in_at left NULL. Order-level counting would report 0.
+        past = self._past_event()
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=past, order_number='PAST-001',
+            order_date=timezone.now(), total_amount=Decimal('0.00'),
+        )
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='GA', price=Decimal('0.00'),
+            scanned_at=timezone.now(),
+        )
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='GA', price=Decimal('0.00'),
+        )
+        self.assertIsNone(order.checked_in_at)
+        rows = self._events_by_id(status='past')
+        self.assertEqual(rows[str(past.pk)]['total_tickets'], 2)
+        self.assertEqual(rows[str(past.pk)]['checked_in_count'], 1)
+
 
 class StripeWebhookTests(TestCase):
     """Tests for the Stripe webhook endpoint and payment fulfillment logic."""
