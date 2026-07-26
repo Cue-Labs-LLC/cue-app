@@ -31,38 +31,42 @@
     </div>
 </div>
 
-{# ── Collect ───────────────────────────────────────────────────────── #}
-<div class="stat-label mt-1 mb-2">Get responses</div>
+{# ── Import responses ──────────────────────────────────────────────── #}
+<div class="stat-label mt-1 mb-2">Import responses</div>
 <div class="row g-3 mb-4">
     <div class="col-md-6">
         <div class="card h-100">
-            <div class="card-body">
+            <div class="card-body d-flex flex-column">
                 <div class="d-flex align-items-center gap-2 mb-1">
-                    <i class="bi bi-clipboard-check"></i>
-                    <h5 class="mb-0">Cue surveys</h5>
-                    <span class="badge bg-success-subtle text-success-emphasis ms-auto">On</span>
+                    <i class="bi bi-filetype-csv"></i>
+                    <h5 class="mb-0">CSV upload</h5>
                 </div>
-                <p class="text-muted small mb-0">Emailed to attendees automatically after each event. Responses roll up into analytics and each event's Results.</p>
+                <p class="text-muted small mb-3">Upload a CSV export of responses you collected elsewhere. A one-time import.</p>
+                <div class="d-flex flex-wrap gap-2 mt-auto">
+                    <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-sm btn-primary"><i class="bi bi-upload me-1"></i> Import CSV</a>
+                    <a href="{% url 'tickets:survey_upload_list' %}" class="btn btn-sm btn-outline-secondary">View imports</a>
+                </div>
             </div>
         </div>
     </div>
     <div class="col-md-6">
         <div class="card h-100">
-            <div class="card-body">
+            <div class="card-body d-flex flex-column">
                 <div class="d-flex align-items-center gap-2 mb-1">
-                    <i class="bi bi-upload"></i>
-                    <h5 class="mb-0">Imported responses</h5>
-                </div>
-                <p class="text-muted small mb-2">Bring in surveys collected elsewhere — a Typeform export or any compatible CSV.</p>
-                <div class="d-flex flex-wrap gap-2 mb-2">
-                    <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-sm btn-primary"><i class="bi bi-upload me-1"></i> Import CSV</a>
-                    <a href="{% url 'tickets:survey_upload_list' %}" class="btn btn-sm btn-outline-secondary">View all</a>
-                </div>
-                <div class="small">
+                    <i class="bi bi-plug"></i>
+                    <h5 class="mb-0">Typeform</h5>
                     {% if org.typeform_access_token %}
-                    <span class="text-body-secondary"><i class="bi bi-check-circle-fill" style="color: var(--success);"></i> Typeform connected · <a href="{% url 'tickets:typeform_settings' %}">Manage in Integrations</a></span>
+                    <span class="badge bg-success-subtle text-success-emphasis ms-auto">Connected</span>
                     {% else %}
-                    <a href="{% url 'tickets:typeform_settings' %}"><i class="bi bi-plug"></i> Connect Typeform</a> to stream responses automatically.
+                    <span class="badge bg-secondary-subtle text-secondary-emphasis ms-auto">Not connected</span>
+                    {% endif %}
+                </div>
+                <p class="text-muted small mb-3">Sync responses automatically from a connected Typeform form — no manual export.</p>
+                <div class="d-flex flex-wrap gap-2 mt-auto">
+                    {% if org.typeform_access_token %}
+                    <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-sm btn-outline-secondary">Manage</a>
+                    {% else %}
+                    <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-sm btn-primary"><i class="bi bi-plug me-1"></i> Connect</a>
                     {% endif %}
                 </div>
             </div>
