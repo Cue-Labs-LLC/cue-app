@@ -14873,30 +14873,89 @@ def survey_analytics(request):
     event_from = _parse_event_date(event_from_str)
     event_to = _parse_event_date(event_to_str)
 
-    from .services.external_survey.analytics import ExternalSurveyAnalytics
+    from .services.survey.analytics import SurveyAnalytics
     from .services.external_survey.analytics import NO_MARKET_VALUE
-    stats = ExternalSurveyAnalytics(organization=org).calculate(
+    stats = SurveyAnalytics(organization=org).calculate(
         market=market_filter, city=city_filter, event_from=event_from, event_to=event_to,
     )
 
-    feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
-    if market_filter == NO_MARKET_VALUE:
-        feedback_qs = feedback_qs.filter(event__market__isnull=True)
-    elif market_filter:
-        try:
-            _uuid.UUID(str(market_filter))
-        except (TypeError, ValueError):
-            feedback_qs = feedback_qs.none()
-        else:
-            feedback_qs = feedback_qs.filter(event__market_id=market_filter)
-    elif city_filter:
-        feedback_qs = feedback_qs.filter(Q(event__market__name=city_filter) | Q(event__market__geography_value=city_filter))
-    if event_from:
-        feedback_qs = feedback_qs.filter(event__start_date__gte=event_from)
-    if event_to:
-        feedback_qs = feedback_qs.filter(event__start_date__lte=event_to)
-    feedback_qs = feedback_qs.select_related('event', 'event__venue', 'event__market').order_by('-responded_at')
-    paginator = Paginator(feedback_qs, 25)
+    # Unified individual-response feed — Cue-native + imported, one row shape,
+    # merged and paginated in Python (mirrors the per-source merge in
+    # _compute_event_stats; the aggregate side lives in SurveyAnalytics).
+    def _apply_market_date(qs, prefix):
+        m = f'{prefix}event__market'
+        d = f'{prefix}event__start_date'
+        if market_filter == NO_MARKET_VALUE:
+            qs = qs.filter(**{f'{m}__isnull': True})
+        elif market_filter:
+            try:
+                _uuid.UUID(str(market_filter))
+            except (TypeError, ValueError):
+                return qs.none()
+            qs = qs.filter(**{f'{m}_id': market_filter})
+        elif city_filter:
+            qs = qs.filter(Q(**{f'{m}__name': city_filter}) | Q(**{f'{m}__geography_value': city_filter}))
+        if event_from:
+            qs = qs.filter(**{f'{d}__gte': event_from})
+        if event_to:
+            qs = qs.filter(**{f'{d}__lte': event_to})
+        return qs
+
+    feed_rows = []
+
+    ext_feed = _apply_market_date(
+        ExternalSurveyResponse.objects.filter(organization=org), ''
+    ).select_related('event', 'event__venue', 'event__market')
+    for r in ext_feed:
+        city = r.city or ''
+        if r.event_id and r.event.market_id:
+            city = r.event.market.name or city
+        elif r.event_id and r.event.venue_id:
+            city = r.event.venue.city or city
+        feed_rows.append({
+            'date': r.responded_at,
+            'source': 'Imported',
+            'city': city,
+            'rating': r.overall_rating or '',
+            'nps_score': r.nps_score,
+            'event_name': r.event.name if r.event_id else '',
+            'event_date': r.event.start_date if r.event_id else None,
+            'feedback': r.text_feedback or '',
+        })
+
+    int_feed = _apply_market_date(
+        SurveyResponse.objects.filter(organization=org), ''
+    ).select_related('event', 'event__venue', 'event__market').prefetch_related('answers')
+    for r in int_feed:
+        nps = None
+        stars = []
+        texts = []
+        for a in r.answers.all():
+            if a.nps_score is not None:
+                nps = a.nps_score
+            if a.star_rating is not None:
+                stars.append(a.star_rating)
+            if a.text_answer:
+                texts.append(a.text_answer)
+        rating = f'{sum(stars) / len(stars):.1f}★' if stars else ''
+        city = ''
+        if r.event.market_id:
+            city = r.event.market.name or ''
+        elif r.event.venue_id:
+            city = r.event.venue.city or ''
+        feed_rows.append({
+            'date': r.submitted_at,
+            'source': 'Cue survey',
+            'city': city,
+            'rating': rating,
+            'nps_score': nps,
+            'event_name': r.event.name,
+            'event_date': r.event.start_date,
+            'feedback': ' / '.join(texts),
+        })
+
+    feed_rows.sort(key=lambda row: row['date'], reverse=True)
+    paginator = Paginator(feed_rows, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
 
     market_rows = (
@@ -14912,6 +14971,23 @@ def survey_analytics(request):
         }
         for row in market_rows
     ]
+    # Include markets that only have Cue-native responses so the filter lists
+    # every market with survey data, not just imported ones.
+    seen_market_values = {c['value'] for c in distinct_cities}
+    int_market_rows = (
+        SurveyResponse.objects.filter(organization=org, event__isnull=False)
+        .values('event__market_id', 'event__market__name')
+        .distinct()
+    )
+    for row in int_market_rows:
+        value = str(row['event__market_id']) if row['event__market_id'] else NO_MARKET_VALUE
+        if value not in seen_market_values:
+            seen_market_values.add(value)
+            distinct_cities.append({
+                'value': value,
+                'label': row['event__market__name'] or NO_MARKET_LABEL,
+            })
+    distinct_cities.sort(key=lambda c: c['label'])
     selected_market_label = ''
     for row in distinct_cities:
         if row['value'] == market_filter:
