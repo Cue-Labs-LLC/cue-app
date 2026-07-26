@@ -602,8 +602,7 @@ button.detail-meta-weather--severe:focus-visible {
 </div>
 
 {% if org.ai_event_summary_enabled %}
-{% with event_end=event.end_date|default:event.start_date %}
-{% if event.ticketing_type != 'direct' or event_end < today %}
+{% if event.ticketing_type != 'direct' or has_ended %}
 <div class="card mb-4" id="ai-summary-card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-stars"></i> AI Event Summary</h5>
@@ -613,7 +612,7 @@ button.detail-meta-weather--severe:focus-visible {
                 Generated {{ event.ai_summary_generated_at|timesince }} ago
             </span>
             {% endif %}
-            {% if event_end < today %}
+            {% if has_ended %}
             <button class="btn btn-sm btn-outline-primary" id="btn-generate-summary" type="button">
                 <i class="bi bi-arrow-repeat"></i>
                 {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
@@ -627,7 +626,7 @@ button.detail-meta-weather--severe:focus-visible {
         </div>
     </div>
     <div class="card-body" id="ai-summary-body">
-        {% if event_end >= today %}
+        {% if not has_ended %}
         <div class="text-muted" style="padding: 8px 0;">
             <i class="bi bi-clock me-1"></i> AI summaries are available once the event has ended.
         </div>
@@ -729,7 +728,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 {% endif %}
-{% endwith %}
 {% endif %}
 
 {% if total_orders or event.ticketing_type == 'direct' %}
