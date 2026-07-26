@@ -16399,6 +16399,56 @@ class POSHScanImportAndBuiltinFormatTests(TestCase):
         # Only 1 of 2 tickets scanned -> no order-level overcount.
         self.assertEqual(checked, 1)
 
+    def _partial_order(self):
+        """Create a 2-ticket order with 1 ticket scanned; order.checked_in_at NULL.
+
+        Mirrors a partial per-ticket scan / CSV import where the order-level flag
+        is never set (both tickets must be scanned to flip it).
+        """
+        cust = Customer.objects.create(
+            organization=self.org, email='partial@x.com', name='Partial',
+        )
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number='PART-1',
+            order_date=timezone.now(), total_amount=Decimal('0.00'),
+        )
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='free rsvp', price=Decimal('0.00'),
+            scanned_at=timezone.now(),
+        )
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='free rsvp', price=Decimal('0.00'),
+        )
+        self.assertIsNone(order.checked_in_at)
+        return order
+
+    def test_scanner_checkin_stats_counts_partial_order_by_ticket(self):
+        from .models import ScannerSession
+        self._partial_order()
+        session = ScannerSession.objects.create(event=self.event)
+        res = self.client.get(
+            '/api/scanner/checkin-stats/',
+            HTTP_AUTHORIZATION=f'Scanner {session.token}',
+        )
+        self.assertEqual(res.status_code, 200)
+        row = next(r for r in res.json() if r['ticket_type_name'] == 'free rsvp')
+        # Per-ticket count: 1 of 2 scanned (order-level flag would report 0).
+        self.assertEqual(row['total'], 2)
+        self.assertEqual(row['checked_in'], 1)
+
+    def test_organizer_checkin_stats_counts_partial_order_by_ticket(self):
+        self._partial_order()
+        token = Token.objects.create(user=self.user)
+        res = self.client.get(
+            f'/api/organizer/events/{self.event.id}/checkin-stats/',
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(res.status_code, 200)
+        row = next(r for r in res.json() if r['ticket_type_name'] == 'free rsvp')
+        # Per-ticket count: 1 of 2 scanned (order-level flag would report 0).
+        self.assertEqual(row['total'], 2)
+        self.assertEqual(row['checked_in'], 1)
+
     def test_external_event_without_scan_data_is_hidden(self):
         from tickets.views import _compute_event_checkin_stats
         # An order with no scan data.
