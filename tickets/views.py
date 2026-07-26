@@ -6476,6 +6476,10 @@ def event_detail(request, event_id):
             )
         context['tracking_links'] = tracking_links
     context['today'] = date.today()
+    # Time-aware "has this event ended?" — gates the AI summary card. Uses the
+    # event's actual end datetime so an event that ended earlier today (e.g. a
+    # 2 AM close) counts as ended, rather than the day-granularity end_date < today.
+    context['has_ended'] = event.end_datetime() < django_tz.now()
 
     # Surveys tab — per-form cards. One card per active TypeformFormSubscription,
     # each showing its previously-linked responses + a Match-responses modal trigger.
