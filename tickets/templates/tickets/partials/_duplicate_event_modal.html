@@ -1,0 +1,127 @@
+<!-- Duplicate Event modal (shared; populated per-row via JS from any .js-duplicate-event button) -->
+<div class="modal fade" id="duplicateEventModal" tabindex="-1" aria-hidden="true" aria-labelledby="duplicateEventModalLabel">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <form method="post" enctype="multipart/form-data" id="duplicate-event-form">
+                {# CSRF token is injected from the cookie in JS because this page's HTML is cached and re-served. #}
+                <input type="hidden" name="csrfmiddlewaretoken" value="">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="duplicateEventModalLabel">Duplicate Event</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted">Duplicating an event copies over all its settings, tickets, and other attributes. You can change them later in the event's settings.</p>
+                    <div class="mb-3">
+                        <label class="form-label" for="duplicate-name">Event Title</label>
+                        <input type="text" class="form-control" id="duplicate-name" name="name" maxlength="200" required>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-7">
+                            <div class="mb-3">
+                                <label class="form-label" for="duplicate-start">Event Start</label>
+                                <input type="datetime-local" class="form-control" id="duplicate-start" name="start" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="duplicate-end">Event End</label>
+                                <input type="datetime-local" class="form-control" id="duplicate-end" name="end">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="duplicate-venue">Venue Name</label>
+                                <input type="text" class="form-control" id="duplicate-venue" disabled>
+                            </div>
+                            <div class="mb-0">
+                                <label class="form-label" for="duplicate-location">Event Location</label>
+                                <input type="text" class="form-control" id="duplicate-location" disabled>
+                            </div>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label">Flyer</label>
+                            <div class="mb-2">
+                                <img id="duplicate-flyer-img" alt="Event flyer" class="img-fluid rounded w-100" style="display:none;aspect-ratio:1/1;object-fit:cover;">
+                                <div id="duplicate-flyer-placeholder" class="empty-state" style="padding:24px;">
+                                    <i class="bi bi-image d-block"></i>
+                                    <p class="mb-0 small text-muted">No flyer</p>
+                                </div>
+                            </div>
+                            <input type="file" class="form-control" id="duplicate-flyer-input" name="flyer" accept="image/*">
+                            <div class="form-text">Optional — upload to replace the flyer.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Duplicate Event</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var modalEl = document.getElementById('duplicateEventModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+
+    var form = document.getElementById('duplicate-event-form');
+    var csrfInput = form.querySelector('input[name="csrfmiddlewaretoken"]');
+    var nameEl = document.getElementById('duplicate-name');
+    var startEl = document.getElementById('duplicate-start');
+    var endEl = document.getElementById('duplicate-end');
+    var venueEl = document.getElementById('duplicate-venue');
+    var locationEl = document.getElementById('duplicate-location');
+    var flyerImg = document.getElementById('duplicate-flyer-img');
+    var flyerPlaceholder = document.getElementById('duplicate-flyer-placeholder');
+    var flyerInput = document.getElementById('duplicate-flyer-input');
+    var bsModal = new bootstrap.Modal(modalEl);
+
+    function getCookie(name) {
+        var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function localNowValue() {
+        var d = new Date();
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+            'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    function compose(date, time) {
+        if (!date) return '';
+        return date + 'T' + (time || '19:00');
+    }
+    function showFlyer(url) {
+        if (url) {
+            flyerImg.src = url;
+            flyerImg.style.display = '';
+            flyerPlaceholder.style.display = 'none';
+        } else {
+            flyerImg.removeAttribute('src');
+            flyerImg.style.display = 'none';
+            flyerPlaceholder.style.display = '';
+        }
+    }
+
+    document.querySelectorAll('.js-duplicate-event').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var d = btn.dataset;
+            form.action = '/events/' + d.eventId + '/duplicate/';
+            csrfInput.value = getCookie('csrftoken');
+            nameEl.value = d.eventName || '';
+            venueEl.value = d.venueName || '';
+            locationEl.value = d.location || '';
+            var minVal = localNowValue();
+            startEl.min = minVal;
+            endEl.min = minVal;
+            startEl.value = compose(d.startDate, d.startTime);
+            endEl.value = compose(d.endDate, d.endTime);
+            flyerInput.value = '';
+            showFlyer(d.flyer);
+            bsModal.show();
+        });
+    });
+
+    flyerInput.addEventListener('change', function () {
+        var file = flyerInput.files && flyerInput.files[0];
+        if (file) showFlyer(URL.createObjectURL(file));
+    });
+});
+</script>

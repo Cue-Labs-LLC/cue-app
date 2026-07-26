@@ -276,58 +276,22 @@
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.net_revenue|currency }}</span>{% endif %}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td class="event-actions-cell">
-                            <!-- Desktop: View button + dots dropdown for secondary actions -->
-                            <div class="d-none d-sm-flex align-items-center gap-2">
-                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
-                                <div class="dropdown">
-                                    <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Event actions">
-                                        <i class="bi bi-three-dots-vertical"></i>
-                                    </button>
-                                    <ul class="dropdown-menu dropdown-menu-end">
-                                        <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
-                                        {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
-                                        {% endif %}
-                                        {% if event.ticketing_type == 'direct' %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                                        {% elif event.ticket_link %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                                        {% endif %}
-                                    </ul>
-                                </div>
-                            </div>
-                            <!-- Mobile: View + overflow menu -->
-                            <div class="d-flex d-sm-none align-items-center" style="min-height: 44px;">
-                                <a href="{% url 'tickets:event_detail' event.id %}"
-                                   class="btn btn-sm btn-outline-secondary flex-fill"
-                                   style="min-height: 44px; display: flex; align-items: center; justify-content: center;">
-                                    View
-                                </a>
-                                <div class="dropdown ms-2">
-                                    <button class="event-row-dots-btn dropdown-toggle"
-                                            data-bs-toggle="dropdown" aria-expanded="false"
-                                            aria-label="More actions"
-                                            style="min-height: 44px; min-width: 44px;">
-                                        <i class="bi bi-three-dots-vertical"></i>
-                                    </button>
-                                    <ul class="dropdown-menu dropdown-menu-end">
-                                        <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
-                                        {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
-                                        {% endif %}
-                                        {% if event.ticketing_type == 'direct' %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                                        {% elif event.ticket_link %}
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                                        {% endif %}
-                                    </ul>
-                                </div>
+                            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                                {# View → public ticket page (disabled when a CSV-imported event has none) #}
+                                {% if event.ticketing_type == 'direct' %}
+                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-eye fs-6"></i></a>
+                                {% elif event.ticket_link %}
+                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-eye fs-6"></i></a>
+                                {% else %}
+                                <button type="button" class="btn btn-sm btn-secondary btn-icon disabled" disabled aria-disabled="true" title="No ticket page set"><i class="bi bi-eye fs-6"></i></button>
+                                {% endif %}
+                                <button type="button" class="btn btn-sm btn-secondary btn-icon js-duplicate-event" title="Duplicate event"
+                                    data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
+                                    data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
+                                    data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
+                                    data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
+                                    data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files fs-6"></i></button>
+                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-secondary btn-icon" title="Edit event"><i class="bi bi-pencil fs-6"></i></a>
                             </div>
                         </td>
                     </tr>
@@ -360,4 +324,5 @@
 
 {% include 'tickets/partials/_link_campaigns_modal.html' %}
 {% include 'tickets/partials/_unconfirmed_matches_modal.html' %}
+{% include 'tickets/partials/_duplicate_event_modal.html' %}
 {% endblock %}
