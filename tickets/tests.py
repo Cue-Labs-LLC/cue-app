@@ -17840,6 +17840,21 @@ class SurveyHubTests(TestCase):
         self.assertIn('?tab=surveys', html)
         self.assertNotIn('#tab-surveys', html)
 
+    def test_event_action_is_configure_before_send(self):
+        # No invitation exists -> the direct survey is still editable.
+        self._event('Not Sent')
+        html = self.client.get(reverse('tickets:survey_hub')).content.decode()
+        self.assertIn('>Configure</a>', html)
+        self.assertNotIn('>View</a>', html)
+
+    def test_event_action_is_view_after_send(self):
+        # An invitation exists -> the survey is locked, so the action is read-only.
+        event = self._event('Sent')
+        self._add_internal(event, 'sent@example.com')
+        html = self.client.get(reverse('tickets:survey_hub')).content.decode()
+        self.assertIn('>View</a>', html)
+        self.assertNotIn('>Configure</a>', html)
+
 
 class OnboardingChecklistTests(TestCase):
     """Dashboard 'Getting started' checklist (analytics-first) for new organizers."""
