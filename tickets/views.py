@@ -27,6 +27,7 @@ from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
@@ -10250,6 +10251,7 @@ def _preview_invitation(event):
 @login_required
 @require_org
 @require_host
+@xframe_options_sameorigin
 def survey_preview(request, event_id=None):
     """Render the exact public survey page for the builder's live preview.
 
