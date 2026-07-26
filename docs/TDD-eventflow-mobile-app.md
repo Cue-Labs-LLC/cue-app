@@ -181,7 +181,13 @@ Response `400`: `{ "error": "Invalid credentials" }`
 
 **Auth:** Token required (organizer)
 
-Returns upcoming events for the organizer's organization, ordered by `start_date`.
+Returns events for the organizer's organization. Both direct and external (CSV-imported) events are included.
+
+**Query params:**
+
+| Param | Values | Default | Behavior |
+|-------|--------|---------|----------|
+| `status` | `upcoming` \| `past` \| `all` | `upcoming` | `upcoming` = `start_date` today or later, soonest-first (unchanged historical behavior). `past` = ended events (`start_date` before today), newest-first — use this to review scan data of previous events. `all` = everything, newest-first. Any unrecognized value falls back to `upcoming`. |
 
 Response `200`:
 ```json
@@ -189,16 +195,25 @@ Response `200`:
   {
     "id": "uuid...",
     "name": "Summer Gala 2026",
-    "start_date": "2026-06-15T19:00:00Z",
-    "venue_name": "Rooftop Terrace",
+    "start_date": "2026-06-15",
+    "start_time": "19:00:00",
+    "status": "upcoming",
+    "ticketing_type": "direct",
+    "venue": "Rooftop Terrace",
+    "city": "Portland",
     "total_tickets": 250,
-    "checked_in_count": 47
+    "checked_in_count": 47,
+    "total_revenue": "6250.00"
   }
 ]
 ```
 
-`checked_in_count` = count of `TicketOrder` with `checked_in_at__isnull=False` for this event.
-`total_tickets` = count of `Ticket` records for this event (via order relationship).
+- `start_date` is a date-only ISO string; `start_time` is a separate time-only ISO string (or `null`).
+- `status` is per-event: `"upcoming"` if `start_date` is today or later, else `"past"`.
+- `ticketing_type` is `"direct"` (sold in-app) or `"external"` (CSV-imported). External events have no in-app sell/Tap-to-Pay path — the client should render them as review-only.
+- `checked_in_count` = count of `Ticket` records with `scanned_at__isnull=False` for this event (per-ticket, the single source of truth — matches the web dashboard and the check-in-stats endpoints; counts live scans and CSV-imported scans, including partially-scanned orders).
+- `total_tickets` = count of `Ticket` records for this event (via order relationship). Directly comparable to `checked_in_count`.
+- `total_revenue` = sum of non-refunded `TicketOrder.total_amount` (stringified decimal).
 
 ---
 

@@ -43,7 +43,6 @@ from .models import (
     TapToPayTermsAcceptance,
     Ticket,
     TicketOrder,
-    TICKETING_TYPE_DIRECT,
     UserProfile,
 )
 from .utils import (
@@ -1090,18 +1089,32 @@ def stripe_connect_onboarding_url(request):
 def organizer_events(request):
     """
     GET /api/organizer/events/
-    Returns upcoming events for the authenticated organizer's org.
+    Returns events for the authenticated organizer's org.
+
+    Query params:
+        status  str  upcoming|past|all (default: upcoming)
+
+    'upcoming' (the default, preserving the historical contract) returns events
+    whose start_date is today or later, soonest-first. 'past' returns ended
+    events (start_date before today) newest-first, so organizers can review the
+    scan data of previous events. 'all' returns everything, newest-first. Both
+    direct and external (CSV-imported) events are included.
     """
     org = _get_org_from_user(request.user)
     if org is None:
         return Response({'error': 'No organization found for this user'}, status=403)
 
     today = timezone.localdate()
+    status_filter = request.query_params.get('status', 'upcoming')
 
+    # Count check-ins at the individual-ticket level via Ticket.scanned_at — the
+    # single source of truth used by the web dashboard's _compute_event_checkin_stats.
+    # (Order-level checked_in_at drops partial/per-ticket/CSV scans and isn't
+    # comparable to the ticket-level total_tickets below.)
     checked_in_sq = (
-        TicketOrder.objects
-        .filter(event=OuterRef('pk'), checked_in_at__isnull=False)
-        .values('event')
+        Ticket.objects
+        .filter(ticket_order__event=OuterRef('pk'), scanned_at__isnull=False)
+        .values('ticket_order__event')
         .annotate(c=Count('id'))
         .values('c')
     )
@@ -1122,15 +1135,25 @@ def organizer_events(request):
         .values('r')
     )
 
+    qs = Event.objects.filter(organization=org, deleted_at__isnull=True)
+    if status_filter == 'past':
+        qs = qs.filter(start_date__lt=today)
+        order_by = ('-start_date', '-start_time')
+    elif status_filter == 'all':
+        order_by = ('-start_date', '-start_time')
+    else:  # 'upcoming' (default) and any unrecognized value
+        qs = qs.filter(start_date__gte=today)
+        order_by = ('start_date', 'start_time')
+
     events = (
-        Event.objects
-        .filter(organization=org, start_date__gte=today, ticketing_type=TICKETING_TYPE_DIRECT)
+        qs
+        .select_related('venue')
         .annotate(
             checked_in_count=Coalesce(Subquery(checked_in_sq, output_field=IntegerField()), 0),
             total_tickets=Coalesce(Subquery(total_tickets_sq, output_field=IntegerField()), 0),
             total_revenue=Coalesce(Subquery(revenue_sq, output_field=DecimalField()), Decimal('0.00')),
         )
-        .order_by('start_date')
+        .order_by(*order_by)
     )
 
     data = [
@@ -1139,6 +1162,8 @@ def organizer_events(request):
             'name': event.name,
             'start_date': event.start_date.isoformat() if event.start_date else None,
             'start_time': event.start_time.isoformat() if event.start_time else None,
+            'status': 'upcoming' if event.start_date and event.start_date >= today else 'past',
+            'ticketing_type': event.ticketing_type,
             'venue': event.venue.name if event.venue else None,
             'city': event.venue.city if event.venue else None,
             'checked_in_count': event.checked_in_count,
