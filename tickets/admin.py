@@ -408,6 +408,7 @@ class EventAdmin(admin.ModelAdmin):
     autocomplete_fields = ['venue']
     date_hierarchy = 'start_date'
     inlines = [EventTalentInline, EventExpenseInline]
+    actions = ['refire_event_created_webhook']
 
     fieldsets = (
         ('Event Information', {
@@ -448,6 +449,22 @@ class EventAdmin(admin.ModelAdmin):
             if profile and profile.organization_id:
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
+
+    @admin.action(description="Send 'event.created' webhook for selected events")
+    def refire_event_created_webhook(self, request, queryset):
+        """Manually re-fire the event.created webhook to subscribed endpoints."""
+        from tickets.services.webhooks import fire_event_created
+
+        fired = 0
+        for event in queryset:
+            fire_event_created(event)
+            fired += 1
+        self.message_user(
+            request,
+            f"Enqueued 'event.created' webhook for {fired} event(s). "
+            f"Delivery only occurs for orgs with an active endpoint subscribed to event.created.",
+            messages.SUCCESS,
+        )
 
 
 @admin.register(ScannerSession)
