@@ -1101,7 +1101,7 @@
     {% if event.description %}
     <hr class="page-divider">
     <div class="event-description-wrap collapsed" id="desc-wrap">
-        <div class="event-description event-desc">{{ event.description|safe }}</div>
+        <div class="event-description event-desc">{{ event.description|break_nbsp }}</div>
         <div class="event-description-fade"></div>
     </div>
     <button type="button" class="btn-view-more" id="desc-toggle" style="display:none;">View more</button>
