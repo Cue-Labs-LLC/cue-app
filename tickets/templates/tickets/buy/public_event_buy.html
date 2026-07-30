@@ -215,10 +215,18 @@
             color: var(--text);
             line-height: 1.7;
             font-weight: 300;
+            max-width: 100%;
+            overflow-wrap: break-word;
+            word-break: break-word;
         }
 
         .event-desc p { margin-bottom: 10px; }
         .event-desc ul, .event-desc ol { padding-left: 1.3rem; margin-bottom: 10px; }
+        /* Keep pasted rich-text HTML from breaking out of the 540px column */
+        .event-desc * { max-width: 100%; }
+        .event-desc img { height: auto; }
+        .event-desc pre { white-space: pre-wrap; word-break: break-word; }
+        .event-desc table { width: 100%; table-layout: fixed; }
 
         .event-description-wrap.collapsed .event-description { max-height: 520px; overflow: hidden; }
         .event-description-wrap.collapsed .event-description-fade { display: block; }
