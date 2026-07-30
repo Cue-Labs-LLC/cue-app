@@ -280,8 +280,16 @@ SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENT
 # included on the first message to a phone and again once a prior disclosure is older
 # than this window; in between it's omitted (fewer segments, lower cost) while Twilio's
 # Messaging Service still enforces STOP. Confirm against your registered 10DLC/toll-free
-# campaign terms before lowering.
+# campaign terms before lowering. Ignored entirely when SMS_ALWAYS_DISCLOSE_STOP is on.
 SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '30'))
+# Force the "Reply STOP" opt-out footer onto EVERY marketing message, overriding the
+# cadence above. On by default: the cadence's omission relied on Twilio Advanced Opt-Out
+# enforcing STOP even without visible text, but a July 2026 AT&T 30007 block (100% of
+# AT&T traffic filtered) showed that assumption is unsafe when Advanced Opt-Out is off or
+# a carrier demands a visible opt-out. Keeping the footer on every message is the
+# compliant default and a prerequisite for carrier reinstatement. Set to '0'/'false' to
+# restore the cost-saving cadence only once Advanced Opt-Out is confirmed enabled.
+SMS_ALWAYS_DISCLOSE_STOP = os.environ.get('SMS_ALWAYS_DISCLOSE_STOP', 'True').lower() not in ('0', 'false', 'no')
 # E.164 calling-code prefixes eligible for marketing SMS, comma-separated. Recipients
 # whose number doesn't start with one are dropped before a campaign is scheduled —
 # they'd be blocked by Twilio Geo Permissions (Error 21408) and can't be billed anyway.

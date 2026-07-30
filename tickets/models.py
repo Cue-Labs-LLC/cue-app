@@ -2504,8 +2504,11 @@ class SMSMessageRecipient(BaseModel):
         text the same phone number, and one org's disclosure must never suppress
         another's footer. Only SENT/DELIVERED count — an UNDELIVERED/FAILED message
         never reached the handset, so it disclosed nothing.
+
+        When SMS_ALWAYS_DISCLOSE_STOP is on (the compliant default), no phone counts as
+        recently disclosed, so every message carries the footer regardless of cadence.
         """
-        if not phones:
+        if not phones or getattr(settings, 'SMS_ALWAYS_DISCLOSE_STOP', True):
             return set()
         from datetime import timedelta
         cutoff = as_of - timedelta(
