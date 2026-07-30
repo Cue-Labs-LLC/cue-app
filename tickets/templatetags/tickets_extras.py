@@ -1,8 +1,25 @@
 from decimal import Decimal, InvalidOperation
 
 from django import template
+from django.utils.safestring import mark_safe
 
 register = template.Library()
+
+
+@register.filter
+def break_nbsp(value):
+    """Normalize non-breaking spaces in trusted rich-text HTML to regular spaces.
+
+    Descriptions pasted from rich-text editors (Notes, Docs, Word) often join
+    every word with a non-breaking space. That leaves no line-break opportunity,
+    so the browser treats a whole paragraph as one long token and breaks it
+    mid-word (e.g. "soun ds", "Af ro-house"). Swapping &nbsp;/U+00A0 for regular
+    spaces restores normal word wrapping. Returns safe HTML (the description is
+    already trusted, so this replaces the previous |safe usage)."""
+    if not value:
+        return value
+    text = str(value).replace(' ', ' ').replace('&nbsp;', ' ')
+    return mark_safe(text)
 
 
 @register.filter
