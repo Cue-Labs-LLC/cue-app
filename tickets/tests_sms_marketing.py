@@ -589,12 +589,16 @@ class SMSCampaignSendTests(TestCase):
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_FOOTER_DISCLOSURE_DAYS=30,
+                   SMS_ALWAYS_DISCLOSE_STOP=False,
                    SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
 class SMSConditionalFooterTests(TestCase):
     """Conditional STOP-footer disclosure: included on the first message to a phone
     and once every SMS_FOOTER_DISCLOSURE_DAYS, omitted in between. Decided + billed at
     schedule, honored at send. Covers apply_stop_footer, recently_disclosed_phones,
-    plan_campaign_footers, and the send-task honor + safeguard paths."""
+    plan_campaign_footers, and the send-task honor + safeguard paths.
+
+    Opts out of SMS_ALWAYS_DISCLOSE_STOP (the compliant default) to exercise the
+    cadence path this class is about; a dedicated test below covers the override."""
 
     def setUp(self):
         self.org = Organization.objects.create(name='Org', slug='org-footer', sms_marketing_enabled=True)
@@ -787,6 +791,19 @@ class SMSConditionalFooterTests(TestCase):
         cents, plan = plan_campaign_footers(self.org, 'Hello', ['+13105550011'], as_of=timezone.now())
         self.assertFalse(plan['+13105550011'][0])
 
+    @override_settings(SMS_ALWAYS_DISCLOSE_STOP=True)
+    def test_always_disclose_forces_footer_despite_recent_disclosure(self):
+        """The compliant default overrides the cadence: a phone disclosed 5 days ago
+        still gets the footer, so no message ever goes out without a visible opt-out."""
+        from .services.sms_credits import plan_campaign_footers
+        self._disclosed('+13105550016', days_ago=5)
+        self.assertEqual(
+            SMSMessageRecipient.recently_disclosed_phones(
+                self.org, ['+13105550016'], timezone.now()),
+            set())
+        cents, plan = plan_campaign_footers(self.org, 'Hello', ['+13105550016'], as_of=timezone.now())
+        self.assertTrue(plan['+13105550016'][0])
+
     def test_plan_aged_out_reincludes_footer(self):
         from .services.sms_credits import plan_campaign_footers
         self._disclosed('+13105550012', days_ago=31)
@@ -838,10 +855,13 @@ class SMSConditionalFooterTests(TestCase):
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_ALWAYS_DISCLOSE_STOP=False,
                    SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'), SMS_FOOTER_DISCLOSURE_DAYS=30)
 class SMSConditionalFooterFlowTests(TestCase):
     """End-to-end through the compose/confirm view: the footer decision is billed at
-    schedule, displayed == charged, and a repeat send to the same phones omits it."""
+    schedule, displayed == charged, and a repeat send to the same phones omits it.
+
+    Opts out of the SMS_ALWAYS_DISCLOSE_STOP default to exercise the cadence flow."""
 
     def setUp(self):
         self.client = Client()
