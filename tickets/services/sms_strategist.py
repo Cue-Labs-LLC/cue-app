@@ -65,9 +65,11 @@ SYSTEM_PROMPT = (
     "so no two messages feel repetitive.\n"
     "- One clear call-to-action per message. Always include the ticket link when one is "
     "provided.\n"
-    "- Keep each message short — ideally a single GSM-7 segment (~160 chars) INCLUDING "
-    "the 'Reply STOP' footer that is appended automatically, so leave room for it. Do "
-    "NOT write the STOP footer yourself.\n"
+    "- Keep each message to a SINGLE GSM-7 segment by default. A segment is 160 chars, "
+    "and the platform automatically appends a 'Reply STOP to opt out' footer that costs "
+    "~23 of those chars — so the body you write MUST be <= ~137 GSM-7 chars (aim for ~130 "
+    "to leave a safety margin). Do NOT write the STOP footer yourself. Only exceed one "
+    "segment if the message is genuinely impossible to convey shorter.\n"
     "- Write in plain GSM-7 characters to stay one segment. Use a straight hyphen '-' "
     "(never an em-dash '—' or en-dash '–'), straight quotes ' and \" (never curly "
     "quotes ' ' \" \"), and three dots '...' (never the '…' character). Fancy "
@@ -113,8 +115,10 @@ class PlanStep(BaseModel):
     )
     message: str = Field(
         description=(
-            "The SMS body to send (max ~300 chars). Do NOT include a 'Reply STOP' footer — "
-            "it is appended automatically."
+            "The SMS body to send. Keep it to a single GSM-7 segment by default: <= ~137 "
+            "chars (aim for ~130), because a 'Reply STOP' footer costing ~23 chars is "
+            "appended automatically to fill the 160-char segment. Do NOT include a "
+            "'Reply STOP' footer — it is appended automatically."
         )
     )
     rationale: str = Field(
