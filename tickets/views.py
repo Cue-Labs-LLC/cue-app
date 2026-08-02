@@ -14923,6 +14923,9 @@ def survey_analytics(request):
             'event_name': r.event.name if r.event_id else '',
             'event_date': r.event.start_date if r.event_id else None,
             'feedback': r.text_feedback or '',
+            # Powers the row-click detail modal (same endpoint as the event page).
+            'detail_kind': 'external',
+            'detail_id': r.id,
         })
 
     int_feed = _apply_market_date(
@@ -14954,6 +14957,8 @@ def survey_analytics(request):
             'event_name': r.event.name,
             'event_date': r.event.start_date,
             'feedback': ' / '.join(texts),
+            'detail_kind': 'internal',
+            'detail_id': r.id,
         })
 
     feed_rows.sort(key=lambda row: row['date'], reverse=True)
@@ -15294,26 +15299,23 @@ def event_survey_unlink(request, event_id):
     return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
-@login_required
-@require_org
-def event_survey_response_detail(request, event_id, kind, response_id):
-    """JSON: full question/answer breakdown for a single survey response.
+def _build_survey_response_detail(org, kind, response_id, event=None):
+    """Build the ``{meta, items}`` payload for a single survey response.
 
-    Powers the "Individual Responses" row-click modal on the event Surveys
-    tab. ``kind`` is 'internal' (a Cue SurveyResponse) or 'external' (a
-    Typeform/CSV ExternalSurveyResponse).
+    Scopes strictly to ``org``; when ``event`` is given the response must also
+    belong to that event. Returns ``None`` for an unknown ``kind``. ``kind`` is
+    'internal' (a Cue SurveyResponse) or 'external' (a Typeform/CSV
+    ExternalSurveyResponse).
     """
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-
     meta = {'source': '', 'date': '', 'respondent': ''}
     items = []
 
     if kind == 'internal':
+        qs = SurveyResponse.objects.filter(organization=org)
+        if event is not None:
+            qs = qs.filter(event=event)
         resp = get_object_or_404(
-            SurveyResponse.objects
-            .filter(event=event, organization=org)
-            .select_related('customer')
+            qs.select_related('customer')
             .prefetch_related('answers__question', 'answers__selected_options'),
             id=response_id,
         )
@@ -15339,10 +15341,10 @@ def event_survey_response_detail(request, event_id, kind, response_id):
                 'type': atype,
             })
     elif kind == 'external':
-        resp = get_object_or_404(
-            ExternalSurveyResponse.objects.filter(event=event, organization=org),
-            id=response_id,
-        )
+        qs = ExternalSurveyResponse.objects.filter(organization=org)
+        if event is not None:
+            qs = qs.filter(event=event)
+        resp = get_object_or_404(qs, id=response_id)
         meta['source'] = 'Typeform' if resp.typeform_response_id else 'External upload'
         if resp.responded_at:
             meta['date'] = resp.responded_at.strftime('%b %-d, %Y · %-I:%M %p')
@@ -15395,9 +15397,40 @@ def event_survey_response_detail(request, event_id, kind, response_id):
                     continue
                 items.append({'question': label, 'answer': str(val), 'type': ''})
     else:
-        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+        return None
 
-    return JsonResponse({'meta': meta, 'items': items})
+    return {'meta': meta, 'items': items}
+
+
+@login_required
+@require_org
+def event_survey_response_detail(request, event_id, kind, response_id):
+    """JSON: full question/answer breakdown for one event-linked response.
+
+    Powers the "Individual Responses" row-click modal on the event Surveys tab.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    payload = _build_survey_response_detail(org, kind, response_id, event=event)
+    if payload is None:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+    return JsonResponse(payload)
+
+
+@login_required
+@require_org
+def survey_response_detail(request, kind, response_id):
+    """JSON: full question/answer breakdown for one org-scoped response.
+
+    Powers the row-click modal on the cross-event Survey Analytics page, where
+    responses may not be linked to any event. Same ``{meta, items}`` shape as
+    ``event_survey_response_detail``.
+    """
+    org = get_organization(request)
+    payload = _build_survey_response_detail(org, kind, response_id)
+    if payload is None:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+    return JsonResponse(payload)
 
 
 # ── Error handlers ──────────────────────────────────────────────────────────

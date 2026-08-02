@@ -265,7 +265,8 @@
                 </thead>
                 <tbody>
                     {% for resp in page_obj %}
-                    <tr>
+                    <tr class="survey-response-row" style="cursor:pointer;"
+                        data-detail-url="{% url 'tickets:survey_response_detail' resp.detail_kind resp.detail_id %}">
                         <td class="text-nowrap">{{ resp.date|date:"M j, Y" }}</td>
                         <td>
                             {% if resp.source == 'Cue survey' %}
@@ -318,6 +319,28 @@
     {% endif %}
 </div>
 
+<!-- Individual Survey Response Detail Modal — must live outside any tab pane /
+     stacking context so the modal isn't trapped under the body-level backdrop. -->
+<div class="modal fade" id="surveyResponseModal" tabindex="-1" aria-labelledby="surveyResponseModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="surveyResponseModalLabel">Survey Response</h5>
+                    <small class="text-muted" id="surveyResponseMeta"></small>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="surveyResponseBody">
+                <div class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    <span class="ms-2">Loading…</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 {{ rating_labels|json_script:"ratingLabels" }}
 {{ rating_counts|json_script:"ratingCounts" }}
 {{ stats.nps_over_time|json_script:"npsOverTimeData" }}
@@ -330,6 +353,68 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
         new bootstrap.Tooltip(el);
     });
+
+    // Individual survey response → detail modal. Clicking a row fetches the full
+    // question/answer breakdown for that submission and renders it in a modal —
+    // same modal + endpoint shape as the event Surveys tab.
+    (function initSurveyResponseModal() {
+        var rows = document.querySelectorAll('.survey-response-row');
+        if (!rows.length) return;
+        var modalEl = document.getElementById('surveyResponseModal');
+        if (!modalEl || typeof bootstrap === 'undefined') return;
+        var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        var bodyEl = document.getElementById('surveyResponseBody');
+        var metaEl = document.getElementById('surveyResponseMeta');
+
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s === null || s === undefined) ? '' : String(s);
+            return d.innerHTML;
+        }
+
+        function render(data) {
+            var m = data.meta || {};
+            var bits = [];
+            if (m.source) bits.push(esc(m.source));
+            if (m.date) bits.push(esc(m.date));
+            if (m.respondent) bits.push(esc(m.respondent));
+            metaEl.innerHTML = bits.join(' &middot; ');
+
+            var items = data.items || [];
+            if (!items.length) {
+                bodyEl.innerHTML = '<p class="text-muted text-center py-3 mb-0">No answers recorded for this response.</p>';
+                return;
+            }
+            var html = '<dl class="mb-0">';
+            items.forEach(function(it) {
+                html += '<dt class="text-muted fw-normal small">' + esc(it.question) + '</dt>';
+                html += '<dd class="mb-3 fw-medium">' + (it.answer ? esc(it.answer) : '<span class="text-muted">&mdash;</span>') + '</dd>';
+            });
+            html += '</dl>';
+            bodyEl.innerHTML = html;
+        }
+
+        rows.forEach(function(row) {
+            row.addEventListener('click', function() {
+                var url = row.getAttribute('data-detail-url');
+                if (!url) return;
+                metaEl.innerHTML = '';
+                bodyEl.innerHTML = '<div class="text-center text-muted py-4">' +
+                    '<div class="spinner-border spinner-border-sm" role="status"></div>' +
+                    '<span class="ms-2">Loading&hellip;</span></div>';
+                modal.show();
+                fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                    .then(function(r) {
+                        if (!r.ok) throw new Error('Request failed');
+                        return r.json();
+                    })
+                    .then(render)
+                    .catch(function() {
+                        bodyEl.innerHTML = '<p class="text-danger text-center py-3 mb-0">Could not load this response. Please try again.</p>';
+                    });
+            });
+        });
+    })();
 
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     const textColor = isDark ? '#e2e8f0' : '#1e293b';
