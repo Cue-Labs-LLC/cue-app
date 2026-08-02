@@ -81,6 +81,35 @@ class OrgProfileForm(forms.ModelForm):
         )
 
 
+class BrandVoiceForm(forms.ModelForm):
+    """Form for the org-level brand voice guidelines used by AI marketing tasks."""
+
+    class Meta:
+        model = Organization
+        fields = ['brand_voice_guidelines']
+        widgets = {
+            'brand_voice_guidelines': forms.Textarea(
+                attrs={
+                    'class': 'form-control',
+                    'rows': 6,
+                    'placeholder': (
+                        "Describe how your messages should sound. For example: "
+                        "\"Warm and casual, like a friend inviting you out. Short "
+                        "sentences, lots of energy. Say 'y'all' and 'the crew'. Never "
+                        "sound corporate or use hashtags.\""
+                    ),
+                }
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.fields['brand_voice_guidelines'].required = False
+        self.fields['brand_voice_guidelines'].label = 'Brand voice guidelines'
+
+
 class OrgDisplayPreferencesForm(forms.ModelForm):
     """Form for org-level display preferences (which optional cards appear)."""
 
