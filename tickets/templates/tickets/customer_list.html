@@ -602,7 +602,13 @@
                         {% if not apply_column_prefs or 'orders' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
-                                Total Orders
+                                {% with asc='order_count' desc='-order_count' %}
+                                <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&{{ filter_params_qs }}">Total Orders
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
                                 <div class="dropdown">
                                     <button class="col-filter-btn{% if min_orders or max_orders %} active{% endif %}"
                                             type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
