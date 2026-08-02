@@ -3020,6 +3020,7 @@ class AITokenUsage(BaseModel):
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
     FEATURE_EVENT_SUMMARY = 'event_summary'
     FEATURE_SMS_PLAN = 'sms_plan'
+    FEATURE_BRAND_VOICE_EXAMPLE = 'brand_voice_example'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -3030,6 +3031,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
         (FEATURE_EVENT_SUMMARY, 'Event summary'),
         (FEATURE_SMS_PLAN, 'SMS campaign plan'),
+        (FEATURE_BRAND_VOICE_EXAMPLE, 'Brand voice example'),
     ]
 
     organization = models.ForeignKey(

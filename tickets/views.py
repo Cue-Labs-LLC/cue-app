@@ -8147,6 +8147,55 @@ def settings_brand_voice(request):
     })
 
 
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def settings_brand_voice_example(request):
+    """Generate a one-off example SMS in the org's current brand voice (JSON).
+
+    Powers the "Generate example" button on the Brand Voice page. Uses the guidelines
+    posted from the textarea when present, so the preview reflects unsaved edits.
+    """
+    from django.core.cache import cache as django_cache
+
+    org = get_organization(request)
+
+    # Rate limit: 30 examples per org per hour (ceiling check only).
+    rate_key = f"brand_voice_example_ratelimit:{org.id}"
+    try:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
+            return JsonResponse(
+                {'error': 'Too many examples generated in the last hour. Please try again later.'},
+                status=429,
+            )
+    except Exception:
+        pass
+
+    # Optional: preview the guidelines currently typed in the box (may be unsaved).
+    guidelines = request.POST.get('guidelines')
+    if guidelines is not None:
+        guidelines = guidelines.strip()[:2000]
+
+    from .services.sms_strategist import generate_voice_example, SMSStrategistError
+    try:
+        result = generate_voice_example(org, guidelines=guidelines, user=request.user)
+    except SMSStrategistError as exc:
+        return JsonResponse({'error': str(exc)}, status=503)
+
+    try:
+        current = django_cache.get(rate_key, 0) or 0
+        django_cache.set(rate_key, current + 1, timeout=3600)
+    except Exception:
+        pass
+
+    return JsonResponse({
+        'message': result['message'],
+        'segments': result['segments'],
+        'encoding': result['encoding'],
+    })
+
+
 def _candidate_bands_from_form(form):
     """Build (kwargs, monetary_tuple) for classify_segment_absolute from a valid form."""
     cd = form.cleaned_data

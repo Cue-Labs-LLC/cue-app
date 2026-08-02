@@ -21555,4 +21555,59 @@ class BrandVoiceSettingsTests(TestCase):
         self.assertIn('Talk like a friendly pirate, matey.', user_content)
         self.assertIn('brand_voice_guidelines', user_content)
 
+    def _fake_example_llm(self, message='Doors open this Friday - grab tickets now.'):
+        """Build a mock ChatOpenAI whose structured invoke returns a VoiceExample."""
+        from tickets.services.sms_strategist import VoiceExample
+
+        example = VoiceExample(message=message)
+        captured = {}
+
+        def fake_invoke(messages):
+            captured['messages'] = messages
+            return {'raw': MagicMock(), 'parsed': example, 'parsing_error': None}
+
+        mock_structured = MagicMock()
+        mock_structured.invoke.side_effect = fake_invoke
+        mock_instance = MagicMock()
+        mock_instance.with_structured_output.return_value = mock_structured
+        return mock_instance, captured
+
+    def test_example_requires_post(self):
+        self._login_admin()
+        response = self.client.get(reverse('tickets:settings_brand_voice_example'))
+        self.assertEqual(response.status_code, 405)
+
+    def test_example_non_admin_forbidden(self):
+        self.client.login(username='voicehost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        response = self.client.post(reverse('tickets:settings_brand_voice_example'))
+        self.assertEqual(response.status_code, 403)
+
+    @patch('tickets.services.sms_strategist.record_ai_token_usage')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_example_returns_message_json(self, mock_llm_cls, _mock_meter):
+        self._login_admin()
+        mock_instance, captured = self._fake_example_llm()
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(
+            reverse('tickets:settings_brand_voice_example'),
+            {'guidelines': 'Loud and hyped, all caps energy.'},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['message'], 'Doors open this Friday - grab tickets now.')
+        self.assertIn('segments', data)
+        self.assertIn('encoding', data)
+        # The typed (unsaved) guidelines are what reached the LLM.
+        self.assertIn('Loud and hyped, all caps energy.', captured['messages'][1]['content'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_example_reports_llm_failure(self, mock_llm_cls):
+        self._login_admin()
+        mock_llm_cls.side_effect = RuntimeError('no api key')
+        response = self.client.post(reverse('tickets:settings_brand_voice_example'))
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('error', response.json())
+
 

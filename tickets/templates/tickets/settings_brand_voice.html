@@ -45,6 +45,31 @@
 </div>
 
 <div class="card mt-4" style="max-width: 720px;">
+    <div class="card-header d-flex align-items-center justify-content-between">
+        <h5 class="mb-0">Example in your voice</h5>
+        <button type="button" id="voice-example-btn" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-stars me-1"></i>Generate example
+        </button>
+    </div>
+    <div class="card-body">
+        <p class="text-muted" style="font-size: 0.85rem;">
+            See a sample text the AI would write in your current brand voice. Reflects the
+            guidelines you've typed above (save to keep them).
+        </p>
+        <div id="voice-example-empty" class="text-muted" style="font-size: 0.9rem;">
+            Click <strong>Generate example</strong> to preview a message.
+        </div>
+        <div id="voice-example-result" class="d-none">
+            <blockquote class="mb-1" style="border-left: 3px solid var(--bs-primary); padding-left: 0.75rem;">
+                <span id="voice-example-text"></span>
+            </blockquote>
+            <p id="voice-example-meta" class="text-muted mb-0" style="font-size: 0.8rem;"></p>
+        </div>
+        <div id="voice-example-error" class="text-danger d-none" style="font-size: 0.9rem;"></div>
+    </div>
+</div>
+
+<div class="card mt-4" style="max-width: 720px;">
     <div class="card-header">
         <h5 class="mb-0">Auto-detected from your recent messages</h5>
     </div>
@@ -70,4 +95,61 @@
         {% endif %}
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var btn = document.getElementById('voice-example-btn');
+    if (!btn) return;
+
+    var emptyEl = document.getElementById('voice-example-empty');
+    var resultEl = document.getElementById('voice-example-result');
+    var textEl = document.getElementById('voice-example-text');
+    var metaEl = document.getElementById('voice-example-meta');
+    var errorEl = document.getElementById('voice-example-error');
+    var guidelinesEl = document.getElementById('id_brand_voice_guidelines');
+    var csrf = '{{ csrf_token }}';
+
+    btn.addEventListener('click', function () {
+        btn.disabled = true;
+        var original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Generating...';
+        if (emptyEl) emptyEl.classList.add('d-none');
+        errorEl.classList.add('d-none');
+
+        var body = new URLSearchParams();
+        if (guidelinesEl) body.append('guidelines', guidelinesEl.value);
+
+        fetch('{% url "tickets:settings_brand_voice_example" %}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRFToken': csrf,
+            },
+            body: body.toString(),
+        }).then(function (response) {
+            return response.json().then(function (data) {
+                return { ok: response.ok, data: data };
+            });
+        }).then(function (res) {
+            if (!res.ok) {
+                errorEl.textContent = res.data.error || 'Could not generate an example. Please try again.';
+                errorEl.classList.remove('d-none');
+                return;
+            }
+            textEl.textContent = res.data.message;
+            var seg = res.data.segments;
+            metaEl.textContent = seg + ' SMS segment' + (seg === 1 ? '' : 's') + ' · ' + res.data.encoding;
+            resultEl.classList.remove('d-none');
+        }).catch(function () {
+            errorEl.textContent = 'Could not generate an example. Please try again.';
+            errorEl.classList.remove('d-none');
+        }).finally(function () {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        });
+    });
+});
+</script>
 {% endblock %}
