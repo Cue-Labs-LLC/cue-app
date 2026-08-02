@@ -153,6 +153,7 @@ urlpatterns = [
     path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
     path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
     path('analytics/surveys/analytics/', views.survey_analytics, name='survey_analytics'),
+    path('analytics/surveys/response/<str:kind>/<uuid:response_id>/', views.survey_response_detail, name='survey_response_detail'),
     path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
     path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
     path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
