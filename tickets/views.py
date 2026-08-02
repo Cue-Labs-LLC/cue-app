@@ -2970,6 +2970,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'email', '-email',
         'lifetime_value', '-lifetime_value',
         'last_order_date', '-last_order_date',
+        'order_count', '-order_count',
         'rfm_segment', '-rfm_segment',
         'acquisition_source', '-acquisition_source',
         'first_tag_name', '-first_tag_name',
