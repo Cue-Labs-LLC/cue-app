@@ -21452,3 +21452,107 @@ class EventDuplicateCsrfCookieTests(TestCase):
         self.assertEqual(
             Event.objects.filter(organization=self.org, name='CsrfSrc').count(), 2,
         )
+
+
+class BrandVoiceSettingsTests(TestCase):
+    """The Brand Voice settings page and its wiring into the AI SMS strategist."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Voice Org', slug='voice-org')
+
+        self.admin_user = User.objects.create_user(
+            username='voiceadmin', email='voiceadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.host_user = User.objects.create_user(
+            username='voicehost', email='voicehost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _login_admin(self):
+        self.client.login(username='voiceadmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_get_renders_form(self):
+        self._login_admin()
+        response = self.client.get(reverse('tickets:settings_brand_voice'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('form', response.context)
+        self.assertIn('brand_voice_guidelines', response.context['form'].fields)
+
+    def test_post_saves_guidelines(self):
+        self._login_admin()
+        response = self.client.post(
+            reverse('tickets:settings_brand_voice'),
+            {'brand_voice_guidelines': 'Warm and casual, like a friend. Never corporate.'},
+        )
+        self.assertRedirects(response, reverse('tickets:settings_brand_voice'))
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.brand_voice_guidelines,
+            'Warm and casual, like a friend. Never corporate.',
+        )
+
+    def test_non_admin_forbidden(self):
+        self.client.login(username='voicehost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        response = self.client.get(reverse('tickets:settings_brand_voice'))
+        self.assertEqual(response.status_code, 403)
+
+    @patch('tickets.services.sms_strategist.record_ai_token_usage')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_guidelines_passed_into_llm_context(self, mock_llm_cls, _mock_meter):
+        """Saved brand voice guidelines reach the prompt sent to the LLM."""
+        from tickets.services.sms_strategist import (
+            generate_campaign_plan, CampaignPlan, PlanStep,
+        )
+
+        self.org.brand_voice_guidelines = 'Talk like a friendly pirate, matey.'
+        self.org.save(update_fields=['brand_voice_guidelines'])
+
+        venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        event = Event.objects.create(
+            organization=self.org, name='Voice Event', venue=venue,
+            start_date=timezone.localdate() + timedelta(days=14),
+        )
+
+        plan = CampaignPlan(
+            title='Pirate push',
+            strategy_summary='Three touches.',
+            steps=[PlanStep(
+                purpose='announcement', audience='All subscribers', offset_days=10,
+                send_time='18:00', message='Ahoy, tickets are live.', rationale='Kickoff.',
+            )],
+        )
+
+        captured = {}
+
+        def fake_invoke(messages):
+            captured['messages'] = messages
+            return {'raw': MagicMock(), 'parsed': plan, 'parsing_error': None}
+
+        mock_structured = MagicMock()
+        mock_structured.invoke.side_effect = fake_invoke
+        mock_instance = MagicMock()
+        mock_instance.with_structured_output.return_value = mock_structured
+        mock_llm_cls.return_value = mock_instance
+
+        generate_campaign_plan(self.org, event=event)
+
+        user_content = captured['messages'][1]['content']
+        self.assertIn('Talk like a friendly pirate, matey.', user_content)
+        self.assertIn('brand_voice_guidelines', user_content)
+
+

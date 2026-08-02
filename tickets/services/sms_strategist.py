@@ -45,15 +45,19 @@ SYSTEM_PROMPT = (
     "Given an event or a customer segment, design a concise multi-touch SMS campaign "
     "SEQUENCE that maximizes ticket sales (or re-engagement) without annoying "
     "subscribers, and write each message.\n\n"
-    "MATCH THE BRAND VOICE. The context includes 'brand_voice_samples' — real messages "
-    "this organizer has sent before. Study them closely and write every new message so it "
-    "sounds like it came from the same brand: mirror their sentence length and rhythm, "
+    "MATCH THE BRAND VOICE. The context may include 'brand_voice_guidelines' — an explicit "
+    "description the organizer wrote of how their messages should sound. When it is set (not "
+    "'(none set...)'), it is your PRIMARY instruction for tone and wording: follow it "
+    "faithfully. The context also includes 'brand_voice_samples' — real messages this "
+    "organizer has sent before. When guidelines are set, treat the samples as SECONDARY, "
+    "confirming examples of their style; when no guidelines are set, mirror the samples "
+    "directly. Either way, study the samples closely: match their sentence length and rhythm, "
     "capitalization habits, punctuation, level of formality, energy, slang/abbreviations, "
     "how they address the reader, how they refer to their events/venue, and any recurring "
     "phrases or sign-offs. The goal is that the organizer reads your drafts and thinks "
     "'that sounds exactly like us.' Do not impose a generic marketing voice over theirs. "
-    "If there are no voice samples, default to a warm, plainspoken tone and keep it "
-    "brand-neutral.\n\n"
+    "If there are neither guidelines nor voice samples, default to a warm, plainspoken tone "
+    "and keep it brand-neutral.\n\n"
     "Best practices you MUST follow:\n"
     "- Match cadence to the runway using each step's 'offset_days' (see its schema): "
     "space touches out when the event is far off, and tighten them as it nears. For event "
@@ -353,6 +357,9 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         'target': target,
         'objective': objective or '(none stated)',
         'ticket_link': ticket_url or '(none — invite them to your ticket page)',
+        # Explicit organizer-set brand voice — the primary instruction when present.
+        'brand_voice_guidelines': (organization.brand_voice_guidelines or '').strip()
+            or '(none set — infer the voice from brand_voice_samples)',
         # Recent messages verbatim — the organizer's brand voice to mirror.
         'brand_voice_samples': _recent_campaign_bodies(organization) or '(no prior messages — use a warm, brand-neutral tone)',
         # Top performers with metrics — what has driven results for this org.

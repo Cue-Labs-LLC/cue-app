@@ -332,6 +332,7 @@ urlpatterns = [
     # Settings
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
+    path('settings/brand-voice/', views.settings_brand_voice, name='settings_brand_voice'),
     path('settings/segment-tuning/', views.settings_segment_tuning, name='settings_segment_tuning'),
 
     # === Integrations ===

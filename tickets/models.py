@@ -290,6 +290,15 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
     )
+    brand_voice_guidelines = models.TextField(
+        blank=True,
+        default='',
+        help_text=(
+            'How AI-written marketing messages should sound (tone, formality, '
+            'phrases to use or avoid). Takes precedence over the voice auto-detected '
+            'from your past messages.'
+        ),
+    )
     timezone = models.CharField(
         max_length=64,
         blank=True,

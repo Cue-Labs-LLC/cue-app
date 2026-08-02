@@ -62,7 +62,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
-    OrgDisplayPreferencesForm, SegmentTuningForm,
+    OrgDisplayPreferencesForm, SegmentTuningForm, BrandVoiceForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -8117,6 +8117,34 @@ def settings_display_preferences(request):
     else:
         form = OrgDisplayPreferencesForm(instance=org)
     return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
+@login_required
+@require_org
+@require_admin
+def settings_brand_voice(request):
+    """View and edit the brand voice guidelines the AI SMS strategist writes in."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = BrandVoiceForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Brand voice updated.')
+            return redirect('tickets:settings_brand_voice')
+    else:
+        form = BrandVoiceForm(instance=org)
+
+    # Show the organizer the voice we currently infer from their recent sends, so
+    # they can see what the AI mirrors today before (optionally) overriding it.
+    # Returns a list of recent message bodies (most recent first), or [] when none.
+    from .services.sms_strategist import _recent_campaign_bodies
+    detected_samples = _recent_campaign_bodies(org)
+
+    return render(request, 'tickets/settings_brand_voice.html', {
+        'form': form,
+        'org': org,
+        'detected_samples': detected_samples,
+    })
 
 
 def _candidate_bands_from_form(form):
