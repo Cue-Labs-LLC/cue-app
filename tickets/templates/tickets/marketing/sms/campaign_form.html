@@ -446,6 +446,7 @@
     <form method="post" novalidate id="sms-campaign-form">
         {% csrf_token %}
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+        <input type="hidden" name="idempotency_key_2" value="{{ idempotency_key_2 }}">
         {% if manual_include_ids_csv %}
         <input type="hidden" name="manual_include_ids" value="{{ manual_include_ids_csv }}">
         {% endif %}
@@ -630,6 +631,9 @@
                     {% elif daily_cap_block %}
                     <div class="sms-confirm" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
                         <span class="sms-confirm-text">{{ daily_cap_block }}</span>
+                        {% if daily_cap_next_fits %}
+                        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#splitBatchModal"><i class="bi bi-calendar2-week"></i> Schedule in two batches</button>
+                        {% endif %}
                     </div>
                     {% else %}
                     <div class="sms-confirm">
@@ -680,6 +684,41 @@
                 </p>
             </div>
         </div>
+
+        {# Split a cap-exceeding blast into two batches. Lives inside the form so its
+           submit carries the composed audience/message fields; Bootstrap 5 does not
+           reparent the modal to <body>. Only rendered when an overflow batch would fit
+           the next day. #}
+        {% if daily_cap_next_fits %}
+        <div class="modal fade" id="splitBatchModal" tabindex="-1" aria-labelledby="splitBatchModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="splitBatchModalLabel">Send in two batches</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>This blast is larger than today's remaining daily send limit. We'll send as many as fit today and schedule the rest for the next day.</p>
+                        <ul class="mb-3">
+                            <li><b>{{ daily_cap_allowed }}</b> recipient{{ daily_cap_allowed|pluralize }} today</li>
+                            <li><b>{{ daily_cap_next_fits }}</b> recipient{{ daily_cap_next_fits|pluralize }} in a second batch, on the day you pick below</li>
+                        </ul>
+                        {% if daily_cap_next_leftover %}
+                        <div class="sms-confirm mb-3" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
+                            <span class="sms-confirm-text"><b>{{ daily_cap_next_leftover }}</b> recipient{{ daily_cap_next_leftover|pluralize }} still won't fit within the next day's limit and won't be scheduled. Pick a later day or trim the audience to reach everyone.</span>
+                        </div>
+                        {% endif %}
+                        <label class="sms-label" for="split-scheduled-at">Second batch send time</label>
+                        <input type="datetime-local" id="split-scheduled-at" name="split_scheduled_at" class="form-control" value="{{ split_default_dt }}">
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" name="split" value="1" class="btn btn-primary"><i class="bi bi-calendar2-check"></i> Schedule both batches</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </form>
 </div>
 {% endblock %}

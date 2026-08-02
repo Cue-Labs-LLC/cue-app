@@ -1,5 +1,33 @@
 # TODOS
 
+## SMS Split: Stale open "Schedule both batches" modal after edits
+
+**What:** In the SMS composer, after the split modal (`#splitBatchModal`) is opened, editing the audience or message body removes the trigger panel (via `invalidateConfirm()`) but leaves an already-open modal showing stale today/next-day counts.
+
+**Why:** The server recomputes the split fresh on submit, so committed behavior is always correct — but the popup can display one split and commit a different one, which is confusing.
+
+**Pros:** Small JS change; removes a "the numbers changed" surprise.
+
+**Cons:** Pure cosmetic; server-side correctness already holds.
+
+**Context:** Surfaced in /plan-eng-review of the SMS split feature (branch obarton/sms-cap-split-schedule). `invalidateConfirm()` is in `tickets/templates/tickets/marketing/sms/campaign_form.html:803` and only removes the first `.sms-confirm`. Fix: also call `bootstrap.Modal.getInstance('#splitBatchModal')?.hide()` from `invalidateConfirm()`.
+
+**Depends on:** Nothing.
+
+## SMS Split: Second batch not linked to originating AI-plan step
+
+**What:** When a split is launched from an AI-plan step, `_mark_plan_step_launched` links only batch 1 to the step; the "(part 2)" campaign is unlinked.
+
+**Why:** The plan step's campaign history is incomplete — the overflow batch doesn't show up against the step it came from.
+
+**Pros:** Complete attribution of both campaigns to the plan step.
+
+**Cons:** Edge case (only when splitting from a plan step); the model may only support one campaign per step link, so it may need a schema look.
+
+**Context:** Surfaced in /plan-eng-review of the SMS split feature. Link logic is in `tickets/sms_views.py` split branch (`launched = split.batch1 or split.batch2`). Decide whether a plan step can reference multiple campaigns before implementing.
+
+**Depends on:** Nothing.
+
 ## Mobile: Event Detail Meta Strip Wrapping
 
 **What:** The `detail-meta` strip below the event name (venue · date · capacity) can wrap to 2+ lines on mobile at 390px when event names are long or all three items are present.
