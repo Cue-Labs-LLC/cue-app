@@ -153,6 +153,7 @@ urlpatterns = [
     path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
     path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
     path('analytics/surveys/analytics/', views.survey_analytics, name='survey_analytics'),
+    path('analytics/surveys/response/<str:kind>/<uuid:response_id>/', views.survey_response_detail, name='survey_response_detail'),
     path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
     path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
     path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
@@ -331,6 +332,8 @@ urlpatterns = [
     # Settings
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
+    path('settings/brand-voice/', views.settings_brand_voice, name='settings_brand_voice'),
+    path('settings/brand-voice/example/', views.settings_brand_voice_example, name='settings_brand_voice_example'),
     path('settings/segment-tuning/', views.settings_segment_tuning, name='settings_segment_tuning'),
 
     # === Integrations ===

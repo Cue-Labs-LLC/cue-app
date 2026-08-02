@@ -45,15 +45,19 @@ SYSTEM_PROMPT = (
     "Given an event or a customer segment, design a concise multi-touch SMS campaign "
     "SEQUENCE that maximizes ticket sales (or re-engagement) without annoying "
     "subscribers, and write each message.\n\n"
-    "MATCH THE BRAND VOICE. The context includes 'brand_voice_samples' — real messages "
-    "this organizer has sent before. Study them closely and write every new message so it "
-    "sounds like it came from the same brand: mirror their sentence length and rhythm, "
+    "MATCH THE BRAND VOICE. The context may include 'brand_voice_guidelines' — an explicit "
+    "description the organizer wrote of how their messages should sound. When it is set (not "
+    "'(none set...)'), it is your PRIMARY instruction for tone and wording: follow it "
+    "faithfully. The context also includes 'brand_voice_samples' — real messages this "
+    "organizer has sent before. When guidelines are set, treat the samples as SECONDARY, "
+    "confirming examples of their style; when no guidelines are set, mirror the samples "
+    "directly. Either way, study the samples closely: match their sentence length and rhythm, "
     "capitalization habits, punctuation, level of formality, energy, slang/abbreviations, "
     "how they address the reader, how they refer to their events/venue, and any recurring "
     "phrases or sign-offs. The goal is that the organizer reads your drafts and thinks "
     "'that sounds exactly like us.' Do not impose a generic marketing voice over theirs. "
-    "If there are no voice samples, default to a warm, plainspoken tone and keep it "
-    "brand-neutral.\n\n"
+    "If there are neither guidelines nor voice samples, default to a warm, plainspoken tone "
+    "and keep it brand-neutral.\n\n"
     "Best practices you MUST follow:\n"
     "- Match cadence to the runway using each step's 'offset_days' (see its schema): "
     "space touches out when the event is far off, and tighten them as it nears. For event "
@@ -65,9 +69,11 @@ SYSTEM_PROMPT = (
     "so no two messages feel repetitive.\n"
     "- One clear call-to-action per message. Always include the ticket link when one is "
     "provided.\n"
-    "- Keep each message short — ideally a single GSM-7 segment (~160 chars) INCLUDING "
-    "the 'Reply STOP' footer that is appended automatically, so leave room for it. Do "
-    "NOT write the STOP footer yourself.\n"
+    "- Keep each message to a SINGLE GSM-7 segment by default. A segment is 160 chars, "
+    "and the platform automatically appends a 'Reply STOP to opt out' footer that costs "
+    "~23 of those chars — so the body you write MUST be <= ~137 GSM-7 chars (aim for ~130 "
+    "to leave a safety margin). Do NOT write the STOP footer yourself. Only exceed one "
+    "segment if the message is genuinely impossible to convey shorter.\n"
     "- Write in plain GSM-7 characters to stay one segment. Use a straight hyphen '-' "
     "(never an em-dash '—' or en-dash '–'), straight quotes ' and \" (never curly "
     "quotes ' ' \" \"), and three dots '...' (never the '…' character). Fancy "
@@ -113,8 +119,10 @@ class PlanStep(BaseModel):
     )
     message: str = Field(
         description=(
-            "The SMS body to send (max ~300 chars). Do NOT include a 'Reply STOP' footer — "
-            "it is appended automatically."
+            "The SMS body to send. Keep it to a single GSM-7 segment by default: <= ~137 "
+            "chars (aim for ~130), because a 'Reply STOP' footer costing ~23 chars is "
+            "appended automatically to fill the 160-char segment. Do NOT include a "
+            "'Reply STOP' footer — it is appended automatically."
         )
     )
     rationale: str = Field(
@@ -353,6 +361,9 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         'target': target,
         'objective': objective or '(none stated)',
         'ticket_link': ticket_url or '(none — invite them to your ticket page)',
+        # Explicit organizer-set brand voice — the primary instruction when present.
+        'brand_voice_guidelines': (organization.brand_voice_guidelines or '').strip()
+            or '(none set — infer the voice from brand_voice_samples)',
         # Recent messages verbatim — the organizer's brand voice to mirror.
         'brand_voice_samples': _recent_campaign_bodies(organization) or '(no prior messages — use a warm, brand-neutral tone)',
         # Top performers with metrics — what has driven results for this org.
@@ -449,6 +460,129 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         'title': result.title,
         'strategy_summary': result.strategy_summary,
         'steps': steps,
+        'model_name': model_name,
+    }
+
+
+class VoiceExample(BaseModel):
+    message: str = Field(
+        description=(
+            "A single example promotional SMS (max ~300 chars) that demonstrates this "
+            "brand's voice. Do NOT include a 'Reply STOP' footer — it is appended "
+            "automatically."
+        )
+    )
+
+
+VOICE_EXAMPLE_SYSTEM_PROMPT = (
+    "You are an expert SMS copywriter for an event-ticketing platform. Write ONE short "
+    "example promotional text so the organizer can preview how AI drafts will sound in "
+    "their brand voice.\n\n"
+    "MATCH THE BRAND VOICE. The context may include 'brand_voice_guidelines' — an explicit "
+    "description the organizer wrote of how their messages should sound. When it is set "
+    "(not '(none set...)'), it is your PRIMARY instruction. The context also includes "
+    "'brand_voice_samples' — real messages this organizer has sent before. When guidelines "
+    "are set, treat the samples as SECONDARY, confirming examples; when no guidelines are "
+    "set, mirror the samples directly. Either way, match their sentence length and rhythm, "
+    "capitalization, punctuation, formality, energy, slang, how they address the reader, and "
+    "any recurring phrases or sign-offs. If there are neither guidelines nor samples, use a "
+    "warm, plainspoken, brand-neutral tone.\n\n"
+    "Rules:\n"
+    "- Write for a hypothetical upcoming event: invite the reader to grab tickets, using a "
+    "placeholder like 'this Friday' for timing. Never invent a specific event name, date, "
+    "price, or link.\n"
+    "- One clear call-to-action. Keep it to a single GSM-7 segment (~160 chars) INCLUDING "
+    "room for the 'Reply STOP' footer that is appended automatically — do NOT write the "
+    "footer yourself.\n"
+    "- Use plain GSM-7 characters: a straight hyphen '-' (never '—'/'–'), straight quotes "
+    "(never curly), and '...' (never '…'). Do NOT use emojis unless the organizer's own "
+    "brand_voice_samples visibly contain them.\n"
+)
+
+
+def generate_voice_example(organization, *, guidelines=None, user=None):
+    """Write ONE short example SMS in the org's current brand voice, for previewing.
+
+    ``guidelines`` overrides the stored ``brand_voice_guidelines`` when provided (so the
+    page can preview unsaved edits). Returns a dict::
+
+        {'message': str, 'segments': int, 'encoding': str, 'model_name': str}
+
+    Raises SMSStrategistError when the LLM can't be initialized/called. Mirrors the
+    structured-output + token-metering flow of ``generate_campaign_plan``.
+    """
+    from langchain_openai import ChatOpenAI
+
+    model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+
+    resolved_guidelines = (
+        guidelines if guidelines is not None else (organization.brand_voice_guidelines or '')
+    ).strip()
+    samples = _recent_campaign_bodies(organization)
+    context = {
+        'organization': organization.name,
+        'brand_voice_guidelines': resolved_guidelines
+            or '(none set — infer the voice from brand_voice_samples)',
+        'brand_voice_samples': samples
+            or '(no prior messages — use a warm, brand-neutral tone)',
+    }
+    user_content = (
+        "Write a single example promotional SMS for a hypothetical upcoming event, in "
+        "this organizer's brand voice, using only the guidance below.\n\n"
+        f"{json.dumps(context, default=_json_default)}"
+    )
+
+    try:
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=getattr(settings, 'OPENAI_API_KEY', ''),
+            temperature=0.7,
+            stream_usage=True,
+        )
+        structured_llm = llm.with_structured_output(VoiceExample, include_raw=True)
+        raw_result = structured_llm.invoke([
+            {'role': 'system', 'content': VOICE_EXAMPLE_SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_content},
+        ])
+    except Exception as exc:
+        logger.error("Brand voice example LLM call failed: %s", exc)
+        raise SMSStrategistError(
+            "The AI is not available right now. Check that the OpenAI API key is "
+            "configured and try again."
+        ) from exc
+
+    if isinstance(raw_result, dict) and {'raw', 'parsed', 'parsing_error'} <= set(raw_result):
+        record_ai_token_usage(
+            organization=organization,
+            feature=AITokenUsage.FEATURE_BRAND_VOICE_EXAMPLE,
+            model_name=model_name,
+            user=user,
+            usage=raw_result.get('raw'),
+        )
+        if raw_result.get('parsing_error'):
+            raise SMSStrategistError("The AI returned an unreadable example. Please try again.")
+        result = raw_result.get('parsed')
+    else:
+        result = raw_result
+
+    if not isinstance(result, VoiceExample):
+        if hasattr(VoiceExample, 'model_validate'):
+            result = VoiceExample.model_validate(result)
+        else:
+            result = VoiceExample.parse_obj(result)
+
+    # Clean like the strategist does: drop any self-authored STOP footer and, unless the
+    # org's own messages use emoji, strip it so the preview stays one cheap GSM-7 segment.
+    voice_uses_emoji = isinstance(samples, list) and any(contains_emoji(s) for s in samples)
+    body = strip_authored_stop_footer(result.message)
+    if not voice_uses_emoji:
+        body = strip_emoji(body)
+    encoding, segments = sms_segment_info(with_stop_footer(body))
+
+    return {
+        'message': body,
+        'segments': segments,
+        'encoding': encoding,
         'model_name': model_name,
     }
 

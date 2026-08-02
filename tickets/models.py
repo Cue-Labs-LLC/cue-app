@@ -290,6 +290,15 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
     )
+    brand_voice_guidelines = models.TextField(
+        blank=True,
+        default='',
+        help_text=(
+            'How AI-written marketing messages should sound (tone, formality, '
+            'phrases to use or avoid). Takes precedence over the voice auto-detected '
+            'from your past messages.'
+        ),
+    )
     timezone = models.CharField(
         max_length=64,
         blank=True,
@@ -3014,6 +3023,7 @@ class AITokenUsage(BaseModel):
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
     FEATURE_EVENT_SUMMARY = 'event_summary'
     FEATURE_SMS_PLAN = 'sms_plan'
+    FEATURE_BRAND_VOICE_EXAMPLE = 'brand_voice_example'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -3024,6 +3034,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
         (FEATURE_EVENT_SUMMARY, 'Event summary'),
         (FEATURE_SMS_PLAN, 'SMS campaign plan'),
+        (FEATURE_BRAND_VOICE_EXAMPLE, 'Brand voice example'),
     ]
 
     organization = models.ForeignKey(

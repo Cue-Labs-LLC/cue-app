@@ -62,7 +62,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
-    OrgDisplayPreferencesForm, SegmentTuningForm,
+    OrgDisplayPreferencesForm, SegmentTuningForm, BrandVoiceForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -2970,6 +2970,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'email', '-email',
         'lifetime_value', '-lifetime_value',
         'last_order_date', '-last_order_date',
+        'order_count', '-order_count',
         'rfm_segment', '-rfm_segment',
         'acquisition_source', '-acquisition_source',
         'first_tag_name', '-first_tag_name',
@@ -8116,6 +8117,83 @@ def settings_display_preferences(request):
     else:
         form = OrgDisplayPreferencesForm(instance=org)
     return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
+@login_required
+@require_org
+@require_admin
+def settings_brand_voice(request):
+    """View and edit the brand voice guidelines the AI SMS strategist writes in."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = BrandVoiceForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Brand voice updated.')
+            return redirect('tickets:settings_brand_voice')
+    else:
+        form = BrandVoiceForm(instance=org)
+
+    # Show the organizer the voice we currently infer from their recent sends, so
+    # they can see what the AI mirrors today before (optionally) overriding it.
+    # Returns a list of recent message bodies (most recent first), or [] when none.
+    from .services.sms_strategist import _recent_campaign_bodies
+    detected_samples = _recent_campaign_bodies(org)
+
+    return render(request, 'tickets/settings_brand_voice.html', {
+        'form': form,
+        'org': org,
+        'detected_samples': detected_samples,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def settings_brand_voice_example(request):
+    """Generate a one-off example SMS in the org's current brand voice (JSON).
+
+    Powers the "Generate example" button on the Brand Voice page. Uses the guidelines
+    posted from the textarea when present, so the preview reflects unsaved edits.
+    """
+    from django.core.cache import cache as django_cache
+
+    org = get_organization(request)
+
+    # Rate limit: 30 examples per org per hour (ceiling check only).
+    rate_key = f"brand_voice_example_ratelimit:{org.id}"
+    try:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
+            return JsonResponse(
+                {'error': 'Too many examples generated in the last hour. Please try again later.'},
+                status=429,
+            )
+    except Exception:
+        pass
+
+    # Optional: preview the guidelines currently typed in the box (may be unsaved).
+    guidelines = request.POST.get('guidelines')
+    if guidelines is not None:
+        guidelines = guidelines.strip()[:2000]
+
+    from .services.sms_strategist import generate_voice_example, SMSStrategistError
+    try:
+        result = generate_voice_example(org, guidelines=guidelines, user=request.user)
+    except SMSStrategistError as exc:
+        return JsonResponse({'error': str(exc)}, status=503)
+
+    try:
+        current = django_cache.get(rate_key, 0) or 0
+        django_cache.set(rate_key, current + 1, timeout=3600)
+    except Exception:
+        pass
+
+    return JsonResponse({
+        'message': result['message'],
+        'segments': result['segments'],
+        'encoding': result['encoding'],
+    })
 
 
 def _candidate_bands_from_form(form):
@@ -14923,6 +15001,9 @@ def survey_analytics(request):
             'event_name': r.event.name if r.event_id else '',
             'event_date': r.event.start_date if r.event_id else None,
             'feedback': r.text_feedback or '',
+            # Powers the row-click detail modal (same endpoint as the event page).
+            'detail_kind': 'external',
+            'detail_id': r.id,
         })
 
     int_feed = _apply_market_date(
@@ -14954,6 +15035,8 @@ def survey_analytics(request):
             'event_name': r.event.name,
             'event_date': r.event.start_date,
             'feedback': ' / '.join(texts),
+            'detail_kind': 'internal',
+            'detail_id': r.id,
         })
 
     feed_rows.sort(key=lambda row: row['date'], reverse=True)
@@ -15294,26 +15377,23 @@ def event_survey_unlink(request, event_id):
     return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
-@login_required
-@require_org
-def event_survey_response_detail(request, event_id, kind, response_id):
-    """JSON: full question/answer breakdown for a single survey response.
+def _build_survey_response_detail(org, kind, response_id, event=None):
+    """Build the ``{meta, items}`` payload for a single survey response.
 
-    Powers the "Individual Responses" row-click modal on the event Surveys
-    tab. ``kind`` is 'internal' (a Cue SurveyResponse) or 'external' (a
-    Typeform/CSV ExternalSurveyResponse).
+    Scopes strictly to ``org``; when ``event`` is given the response must also
+    belong to that event. Returns ``None`` for an unknown ``kind``. ``kind`` is
+    'internal' (a Cue SurveyResponse) or 'external' (a Typeform/CSV
+    ExternalSurveyResponse).
     """
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-
     meta = {'source': '', 'date': '', 'respondent': ''}
     items = []
 
     if kind == 'internal':
+        qs = SurveyResponse.objects.filter(organization=org)
+        if event is not None:
+            qs = qs.filter(event=event)
         resp = get_object_or_404(
-            SurveyResponse.objects
-            .filter(event=event, organization=org)
-            .select_related('customer')
+            qs.select_related('customer')
             .prefetch_related('answers__question', 'answers__selected_options'),
             id=response_id,
         )
@@ -15339,10 +15419,10 @@ def event_survey_response_detail(request, event_id, kind, response_id):
                 'type': atype,
             })
     elif kind == 'external':
-        resp = get_object_or_404(
-            ExternalSurveyResponse.objects.filter(event=event, organization=org),
-            id=response_id,
-        )
+        qs = ExternalSurveyResponse.objects.filter(organization=org)
+        if event is not None:
+            qs = qs.filter(event=event)
+        resp = get_object_or_404(qs, id=response_id)
         meta['source'] = 'Typeform' if resp.typeform_response_id else 'External upload'
         if resp.responded_at:
             meta['date'] = resp.responded_at.strftime('%b %-d, %Y · %-I:%M %p')
@@ -15395,9 +15475,40 @@ def event_survey_response_detail(request, event_id, kind, response_id):
                     continue
                 items.append({'question': label, 'answer': str(val), 'type': ''})
     else:
-        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+        return None
 
-    return JsonResponse({'meta': meta, 'items': items})
+    return {'meta': meta, 'items': items}
+
+
+@login_required
+@require_org
+def event_survey_response_detail(request, event_id, kind, response_id):
+    """JSON: full question/answer breakdown for one event-linked response.
+
+    Powers the "Individual Responses" row-click modal on the event Surveys tab.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    payload = _build_survey_response_detail(org, kind, response_id, event=event)
+    if payload is None:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+    return JsonResponse(payload)
+
+
+@login_required
+@require_org
+def survey_response_detail(request, kind, response_id):
+    """JSON: full question/answer breakdown for one org-scoped response.
+
+    Powers the row-click modal on the cross-event Survey Analytics page, where
+    responses may not be linked to any event. Same ``{meta, items}`` shape as
+    ``event_survey_response_detail``.
+    """
+    org = get_organization(request)
+    payload = _build_survey_response_detail(org, kind, response_id)
+    if payload is None:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+    return JsonResponse(payload)
 
 
 # ── Error handlers ──────────────────────────────────────────────────────────
