@@ -192,10 +192,10 @@ def grade_plan(plan, *, event, ticket_url, tz, now):
         raw_enc, raw_seg = sms_segment_info(body + _PLAIN_FOOTER)
         norm_enc, norm_seg = sms_segment_info(with_stop_footer(body))
         lean_enc, lean_seg = sms_segment_info(with_stop_footer(strip_emoji(body)))
-        if lean_seg > 2:
-            g.fail(f'{label}: {lean_seg} segments even as plain GSM-7 (genuinely long)', body)
-        elif lean_seg == 2:
-            g.warn(f'{label}: 2 segments as plain GSM-7 (long)', body)
+        if lean_seg >= 2:
+            # Single-segment is the strategist's default bar — any multi-segment body as
+            # plain GSM-7 is over budget and needs shortening.
+            g.fail(f'{label}: {lean_seg} segments as plain GSM-7 (exceeds single-segment default)', body)
         elif norm_enc == 'UCS-2':
             # The words fit in one GSM-7 segment; emoji (or other non-GSM-7 content) is
             # what forces UCS-2 and the extra cost — a brand-voice + cost miss.
