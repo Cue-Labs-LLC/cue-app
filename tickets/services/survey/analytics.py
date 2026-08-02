@@ -109,7 +109,10 @@ class SurveyAnalytics:
         raw.update(nps_total=agg['nps_total'], promoters=agg['promoters'],
                    passives=agg['passives'], detractors=agg['detractors'])
 
-        raw['monthly'] = self._monthly(nps_qs, 'responded_at')
+        # Bucket the time series by event date (not response date) so the trend
+        # reflects when events happened. Responses with no linked event have no
+        # event date and drop out of the series (handled in _monthly).
+        raw['monthly'] = self._monthly(nps_qs, 'event__start_date')
         # Market breakdown ignores the market/city filter (date window only) so
         # it stays a comparison across every market.
         market_qs = self._apply_filters(
@@ -153,7 +156,9 @@ class SurveyAnalytics:
         raw['avg_star_rating'] = ans_qs.filter(star_rating__isnull=False).aggregate(
             avg=Avg('star_rating'))['avg']
 
-        raw['monthly'] = self._monthly(nps_qs, 'response__submitted_at')
+        # Bucket the time series by event date (not submission date) — see the
+        # external half for rationale. Reaches the event via .response.
+        raw['monthly'] = self._monthly(nps_qs, 'response__event__start_date')
         # Market breakdown ignores the market/city filter (date window only).
         # Per-market response totals come from responses; NPS buckets from answers.
         resp_market_qs = self._apply_filters(

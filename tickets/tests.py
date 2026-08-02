@@ -20933,6 +20933,20 @@ class SurveyAnalyticsServiceTests(TestCase):
         # Rating breakdown stays external-only (free-text scale).
         self.assertEqual(stats['rating_breakdown'], [{'overall_rating': 'Meh', 'count': 1}])
 
+    def test_nps_over_time_buckets_by_event_date_not_response_date(self):
+        """The time series groups responses by the month of the event date, not
+        the month the survey was submitted/imported. Both setUp responses belong
+        to the May 1 event, so despite the imported response being captured May 3,
+        the entire series lands in a single May 2025 bucket."""
+        from tickets.services.survey.analytics import SurveyAnalytics
+
+        stats = SurveyAnalytics(organization=self.org).calculate()
+
+        self.assertEqual([r['month'] for r in stats['nps_over_time']], ['2025-05'])
+        may = stats['nps_over_time'][0]
+        self.assertEqual(may['n'], 2)               # both NPS responses
+        self.assertEqual(may['nps_score'], 0)       # 1 promoter, 1 detractor
+
 
 class DeviceTokenRegistrationTests(TestCase):
     """POST /api/notification/device-token/ — organizer-authed token upsert."""
