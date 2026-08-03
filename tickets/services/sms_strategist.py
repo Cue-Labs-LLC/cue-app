@@ -335,6 +335,54 @@ def plan_audience_label(organization, criteria):
     return label if label and label != 'No audience' else 'All SMS subscribers'
 
 
+def _build_plan_context(organization, *, event=None, criteria=None, objective='', ticket_url=''):
+    """Assemble the grounding context shared by full-plan generation and single-message
+    regeneration: org, date, event/segment target, objective, ticket link, and the org's
+    brand voice (explicit guidelines + recent-message samples) plus top prior campaigns."""
+    from django.utils import timezone
+
+    if event is not None:
+        target = {'type': 'event', 'event': _event_context(event)}
+    else:
+        target = {'type': 'segment', 'segment': _segment_context(organization, criteria)}
+
+    return {
+        'organization': organization.name,
+        'today': str(timezone.localdate()),
+        'target': target,
+        'objective': objective or '(none stated)',
+        'ticket_link': ticket_url or '(none — invite them to your ticket page)',
+        # Explicit organizer-set brand voice — the primary instruction when present.
+        'brand_voice_guidelines': (organization.brand_voice_guidelines or '').strip()
+            or '(none set — infer the voice from brand_voice_samples)',
+        # Recent messages verbatim — the organizer's brand voice to mirror.
+        'brand_voice_samples': _recent_campaign_bodies(organization) or '(no prior messages — use a warm, brand-neutral tone)',
+        # Top performers with metrics — what has driven results for this org.
+        'prior_campaigns': _top_prior_campaigns(organization) or '(no send history yet)',
+    }
+
+
+def _voice_uses_emoji(context):
+    """True only if the org's OWN recent messages use emoji — the gate for allowing emoji in
+    drafts. The samples degrade to a placeholder string when there's no history (no emoji)."""
+    samples = context.get('brand_voice_samples')
+    return isinstance(samples, list) and any(contains_emoji(s) for s in samples)
+
+
+def _clean_and_measure(message, *, voice_uses_emoji):
+    """Clean a drafted message and return ``(body, segments, encoding)``.
+
+    Drops any self-authored 'Reply STOP…' footer (the real one is appended at send time) and,
+    unless the brand voice uses emoji, removes emoji so the message stays cheap GSM-7. Segments
+    are counted footer-inclusive, matching the composer's meter. Shared by
+    ``generate_campaign_plan`` and ``regenerate_step_message``."""
+    body = strip_authored_stop_footer(message)
+    if not voice_uses_emoji:
+        body = strip_emoji(body)
+    encoding, segments = sms_segment_info(with_stop_footer(body))
+    return body, segments, encoding
+
+
 def generate_campaign_plan(organization, *, event=None, criteria=None, objective='',
                            ticket_url='', user=None):
     """Generate a structured multi-touch SMS plan. Returns a dict:
@@ -349,26 +397,9 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
 
     model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
 
-    from django.utils import timezone
-    if event is not None:
-        target = {'type': 'event', 'event': _event_context(event)}
-    else:
-        target = {'type': 'segment', 'segment': _segment_context(organization, criteria)}
-
-    context = {
-        'organization': organization.name,
-        'today': str(timezone.localdate()),
-        'target': target,
-        'objective': objective or '(none stated)',
-        'ticket_link': ticket_url or '(none — invite them to your ticket page)',
-        # Explicit organizer-set brand voice — the primary instruction when present.
-        'brand_voice_guidelines': (organization.brand_voice_guidelines or '').strip()
-            or '(none set — infer the voice from brand_voice_samples)',
-        # Recent messages verbatim — the organizer's brand voice to mirror.
-        'brand_voice_samples': _recent_campaign_bodies(organization) or '(no prior messages — use a warm, brand-neutral tone)',
-        # Top performers with metrics — what has driven results for this org.
-        'prior_campaigns': _top_prior_campaigns(organization) or '(no send history yet)',
-    }
+    context = _build_plan_context(
+        organization, event=event, criteria=criteria, objective=objective, ticket_url=ticket_url,
+    )
     user_content = (
         "Design the SMS campaign sequence for the following context. Write the messages "
         "in this organizer's own brand voice (see brand_voice_samples). Use only the data "
@@ -424,21 +455,12 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
     org_tz = organization.get_timezone()
 
     # Only allow emoji in the drafts if the org's OWN recent messages use them; otherwise
-    # strip them, enforcing the org's voice and keeping messages in cheap GSM-7. The
-    # samples degrade to a placeholder string when there's no history — treat that as
-    # no-emoji.
-    samples = context['brand_voice_samples']
-    voice_uses_emoji = isinstance(samples, list) and any(contains_emoji(s) for s in samples)
+    # strip them, enforcing the org's voice and keeping messages in cheap GSM-7.
+    voice_uses_emoji = _voice_uses_emoji(context)
 
     steps = []
     for i, step in enumerate(result.steps):
-        # Clean the drafted copy before storing/counting: drop any self-authored
-        # 'Reply STOP…' footer (the real one is appended at send time) and, unless the
-        # brand voice uses emoji, remove emoji so the message stays one GSM-7 segment.
-        body = strip_authored_stop_footer(step.message)
-        if not voice_uses_emoji:
-            body = strip_emoji(body)
-        encoding, segments = sms_segment_info(with_stop_footer(body))
+        body, segments, encoding = _clean_and_measure(step.message, voice_uses_emoji=voice_uses_emoji)
         send_at, timing_label = _compute_step_schedule(step, event, org_tz)
         steps.append({
             'order': i,
@@ -460,6 +482,114 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         'title': result.title,
         'strategy_summary': result.strategy_summary,
         'steps': steps,
+        'model_name': model_name,
+    }
+
+
+class RegeneratedMessage(BaseModel):
+    """Structured output for regenerating a SINGLE plan message (body + its one-line why)."""
+    message: str = Field(
+        description=(
+            "The rewritten SMS body for this one touch. Keep it to a single GSM-7 segment by "
+            "default: <= ~137 chars (aim for ~130), because a 'Reply STOP' footer costing ~23 "
+            "chars is appended automatically. Do NOT include a 'Reply STOP' footer. Keep the "
+            "same purpose, audience, and timing as the existing message — only the wording "
+            "changes — and make it clearly DIFFERENT from the other messages in the sequence."
+        )
+    )
+    rationale: str = Field(
+        description="One sentence: why this touch, to this audience, at this time helps."
+    )
+
+
+def regenerate_step_message(organization, *, event=None, criteria=None, objective='',
+                            ticket_url='', step, sibling_steps=None, user=None):
+    """Re-draft a SINGLE plan message with the AI, preserving its purpose/audience/timing.
+
+    ``step`` is the stored step dict (for its ``purpose``/``audience_label``/``timing_label``);
+    ``sibling_steps`` are the plan's other step dicts, passed so the rewrite stays distinct from
+    them. Returns ``{'body', 'rationale', 'segments', 'encoding', 'model_name'}``. Raises
+    ``SMSStrategistError`` when the LLM can't be initialized/called."""
+    from langchain_openai import ChatOpenAI
+
+    model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+
+    context = _build_plan_context(
+        organization, event=event, criteria=criteria, objective=objective, ticket_url=ticket_url,
+    )
+    # The specific touch to rewrite, plus the sibling messages to differentiate against.
+    others = [
+        {'purpose': s.get('purpose'), 'timing_label': s.get('timing_label'), 'body': s.get('body')}
+        for s in (sibling_steps or [])
+    ]
+    focus = {
+        'purpose': step.get('purpose'),
+        'audience': step.get('audience_label'),
+        'timing_label': step.get('timing_label'),
+        'current_message': step.get('body'),
+        'other_messages_in_sequence': others or '(this is the only message)',
+    }
+    user_content = (
+        "Rewrite ONE message in an existing SMS campaign sequence, in this organizer's own "
+        "brand voice (see brand_voice_samples). Keep the same purpose, audience, and send "
+        "timing shown in 'regenerate_step'; produce a fresh take on the wording that is clearly "
+        "different from 'current_message' and does not repeat the 'other_messages_in_sequence'. "
+        "Use only the data provided — do not invent dates, prices, or links.\n\n"
+        f"{json.dumps({'context': context, 'regenerate_step': focus}, default=_json_default)}"
+    )
+
+    try:
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=getattr(settings, 'OPENAI_API_KEY', ''),
+            temperature=0.7,
+            stream_usage=True,
+        )
+        structured_llm = llm.with_structured_output(RegeneratedMessage, include_raw=True)
+        raw_result = structured_llm.invoke([
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_content},
+        ])
+    except Exception as exc:
+        logger.error("SMS strategist single-message regen failed: %s", exc)
+        raise SMSStrategistError(
+            "The AI strategist is not available right now. Check that the OpenAI API "
+            "key is configured and try again."
+        ) from exc
+
+    if isinstance(raw_result, dict) and {'raw', 'parsed', 'parsing_error'} <= set(raw_result):
+        record_ai_token_usage(
+            organization=organization,
+            feature=AITokenUsage.FEATURE_SMS_PLAN,
+            model_name=model_name,
+            user=user,
+            usage=raw_result.get('raw'),
+            metadata={
+                'event_id': str(event.id) if event is not None else None,
+                'plan_step': step.get('purpose'),
+                'regenerate': True,
+            },
+        )
+        if raw_result.get('parsing_error'):
+            raise SMSStrategistError("The AI returned an unreadable message. Please try again.")
+        result = raw_result.get('parsed')
+    else:
+        result = raw_result
+
+    if not isinstance(result, RegeneratedMessage):
+        if hasattr(RegeneratedMessage, 'model_validate'):
+            result = RegeneratedMessage.model_validate(result)
+        else:
+            result = RegeneratedMessage.parse_obj(result)
+
+    body, segments, encoding = _clean_and_measure(
+        result.message, voice_uses_emoji=_voice_uses_emoji(context),
+    )
+    return {
+        'body': body,
+        'rationale': result.rationale,
+        'segments': segments,
+        'encoding': encoding,
         'model_name': model_name,
     }
 

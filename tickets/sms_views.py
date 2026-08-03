@@ -1822,6 +1822,27 @@ def _event_ticket_url(request, org, event):
     return _tracking_link_absolute_url(request, link)
 
 
+def _check_plan_rate_limit(org):
+    """True if the org is under the hourly AI-plan generation ceiling (20/hr). Fails open on
+    cache errors. Shared by plan create + regenerate; count a success with
+    ``_bump_plan_rate_limit``."""
+    from django.core.cache import cache as django_cache
+    try:
+        return (django_cache.get(f"sms_plan_ratelimit:{org.id}", 0) or 0) < 20
+    except Exception:
+        return True
+
+
+def _bump_plan_rate_limit(org):
+    """Count one successful AI-plan generation against the org's hourly budget. Fails open."""
+    from django.core.cache import cache as django_cache
+    try:
+        key = f"sms_plan_ratelimit:{org.id}"
+        django_cache.set(key, (django_cache.get(key, 0) or 0) + 1, timeout=3600)
+    except Exception:
+        pass
+
+
 @login_required
 @require_org
 @require_host
@@ -1833,8 +1854,6 @@ def sms_plan_create(request):
     GET renders the generate form; POST calls the strategist, persists an
     SMSCampaignPlan, and redirects to its detail page.
     """
-    from django.core.cache import cache as django_cache
-
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
@@ -1858,14 +1877,10 @@ def sms_plan_create(request):
                           _plan_form_context(org, event, criteria))
 
         # Rate limit: 20 successful generations per org per hour (ceiling check only).
-        rate_key = f"sms_plan_ratelimit:{org.id}"
-        try:
-            if (django_cache.get(rate_key, 0) or 0) >= 20:
-                messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
-                return render(request, 'tickets/marketing/sms/plan_form.html',
-                              _plan_form_context(org, event, criteria))
-        except Exception:
-            pass
+        if not _check_plan_rate_limit(org):
+            messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
+            return render(request, 'tickets/marketing/sms/plan_form.html',
+                          _plan_form_context(org, event, criteria))
 
         from .services.sms_strategist import generate_campaign_plan, SMSStrategistError
         ticket_url = _event_ticket_url(request, org, event) if event is not None else ''
@@ -1897,11 +1912,7 @@ def sms_plan_create(request):
         )
 
         # Count only successful generations against the hourly budget.
-        try:
-            current = django_cache.get(rate_key, 0) or 0
-            django_cache.set(rate_key, current + 1, timeout=3600)
-        except Exception:
-            pass
+        _bump_plan_rate_limit(org)
 
         return redirect('tickets:sms_plan_detail', pk=plan.id)
 
@@ -2154,6 +2165,112 @@ def sms_plan_update_step(request, pk, step):
         'segments': steps[step]['segments'],
         'encoding': steps[step]['encoding'],
     })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_regenerate_step(request, pk, step):
+    """Re-draft one plan step's message with the AI, preserving its purpose/audience/schedule.
+
+    JSON endpoint for the plan detail page's per-message "Regenerate" button. Refuses a step
+    that has already been launched (its campaign is a separate, possibly-sent row).
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+    if steps[step].get('launched_campaign_id'):
+        return JsonResponse(
+            {'ok': False, 'error': "This message was already sent and can't be regenerated."},
+            status=409,
+        )
+
+    from .services.sms_strategist import regenerate_step_message, SMSStrategistError
+    ticket_url = _event_ticket_url(request, org, plan.event) if plan.event else ''
+    siblings = [s for i, s in enumerate(steps) if i != step]
+    try:
+        result = regenerate_step_message(
+            org, event=plan.event, criteria=plan.filter_criteria or None,
+            objective=plan.objective, ticket_url=ticket_url,
+            step=steps[step], sibling_steps=siblings, user=request.user,
+        )
+    except SMSStrategistError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=503)
+
+    steps[step] = {
+        **steps[step],
+        'body': result['body'],
+        'rationale': result['rationale'],
+        'segments': result['segments'],
+        'encoding': result['encoding'],
+    }
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({
+        'ok': True,
+        'body': result['body'],
+        'rationale': result['rationale'],
+        'segments': result['segments'],
+        'encoding': result['encoding'],
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_regenerate(request, pk):
+    """Re-run the strategist from the plan's saved inputs and replace the whole sequence.
+
+    Draft-only: refuses once any step has been launched (those are real campaign rows). Keeps
+    the plan's name; refreshes the strategy summary + steps and resets status to draft.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    if any((s or {}).get('launched_campaign_id') for s in (plan.steps or [])):
+        messages.error(request, "This plan has already-launched messages, so it can't be fully "
+                                "regenerated. Delete it and start a new plan instead.")
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    if not _check_plan_rate_limit(org):
+        messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    from .services.sms_strategist import generate_campaign_plan, SMSStrategistError
+    ticket_url = _event_ticket_url(request, org, plan.event) if plan.event else ''
+    try:
+        result = generate_campaign_plan(
+            org, event=plan.event, criteria=plan.filter_criteria or None,
+            objective=plan.objective, ticket_url=ticket_url, user=request.user,
+        )
+    except SMSStrategistError as exc:
+        messages.error(request, str(exc))
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    # Keep the (possibly hand-renamed) plan name; refresh only the strategy + steps.
+    plan.strategy_summary = result['strategy_summary']
+    plan.model_name = result['model_name']
+    plan.steps = result['steps']
+    plan.status = SMSCampaignPlan.Status.DRAFT
+    plan.save(update_fields=['strategy_summary', 'model_name', 'steps', 'status', 'updated_at'])
+    _bump_plan_rate_limit(org)
+    messages.success(request, 'Regenerated the campaign plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
 
 
 @login_required

@@ -5,9 +5,11 @@ Calculates historical sales curves from event ticket order data.
 The sales curve shows the cumulative percentage of tickets sold
 at each point in time relative to the event date.
 """
+import math
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, time
 from typing import Union
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db.models import Count
 from django.utils import timezone
@@ -224,6 +226,65 @@ class SalesCurveCalculator:
             'series': series,
             'total_tickets': sum(tickets_by_day.values()),
             'total_revenue': round(sum(revenue_by_day.values()), 2),
+        }
+
+    def get_checkin_series(self, event: Event) -> dict:
+        """Check-ins bucketed by minutes relative to the event's scheduled start.
+
+        Powers the "Check-in Time" arrival curve on the Analytics tab, letting two
+        events be compared on a shared "minutes from start" axis (negative = arrived
+        before the scheduled start, positive = after). Timestamps come from
+        ``Ticket.scanned_at`` — the per-ticket source of truth for attendance,
+        populated by live door check-ins, in-person sales, and CSV scan imports.
+
+        Buckets are 15 minutes wide and localized to the event's timezone (matching
+        ``_compute_event_checkin_stats``). Absolute (non-cumulative) counts are
+        returned so the caller builds the cumulative and percentage views client-side.
+
+        Returns:
+            {
+                'series': [{'m': bucket_minutes, 'checkins': int}, ...]
+                          sorted by 'm' ascending,
+                'total_checkins': int,
+                'bucket_minutes': int,
+            }
+        """
+        from tickets.models import Ticket
+
+        bucket_minutes = 15
+
+        tz_name = event.timezone or 'America/Los_Angeles'
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo('America/Los_Angeles')
+
+        start_local = datetime.combine(
+            event.start_date, event.start_time or time(0, 0)
+        ).replace(tzinfo=tz)
+
+        scans = (
+            Ticket.objects
+            .filter(ticket_order__event=event, scanned_at__isnull=False)
+            .values_list('scanned_at', flat=True)
+        )
+
+        checkins_by_bucket = defaultdict(int)
+        for scanned_at in scans:
+            scanned_local = timezone.localtime(scanned_at, tz)
+            delta_minutes = (scanned_local - start_local).total_seconds() / 60
+            bucket = math.floor(delta_minutes / bucket_minutes) * bucket_minutes
+            checkins_by_bucket[bucket] += 1
+
+        series = [
+            {'m': minutes, 'checkins': checkins_by_bucket[minutes]}
+            for minutes in sorted(checkins_by_bucket)
+        ]
+
+        return {
+            'series': series,
+            'total_checkins': sum(checkins_by_bucket.values()),
+            'bucket_minutes': bucket_minutes,
         }
 
     def get_detailed_sales_data(self, event: Event) -> list:
