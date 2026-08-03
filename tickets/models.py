@@ -290,6 +290,17 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
     )
+    disabled_action_kinds = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'List of AIRecommendation.Kind values this org has turned off in the '
+            'Action Center. Disabled kinds are hidden at read time everywhere (the '
+            'Action Center page, per-event badges on the events list, and the sidebar '
+            'count); they keep being generated, so re-enabling a kind restores its '
+            'suggestions immediately. Empty list = all kinds enabled.'
+        ),
+    )
     brand_voice_guidelines = models.TextField(
         blank=True,
         default='',
@@ -2991,6 +3002,23 @@ class AIRecommendation(BaseModel):
 
     def __str__(self):
         return f"{self.get_kind_display()} - {self.title}"
+
+    @classmethod
+    def outstanding_for_org(cls, org):
+        """Unresolved (NEW/REVIEWED) recommendations for an org, excluding the kinds
+        the org has turned off in the Action Center settings.
+
+        Single source of truth for the Action Center count/badges so the sidebar,
+        the events-list badges, and the Action Center page stay in sync.
+        """
+        qs = cls.objects.filter(
+            organization=org,
+            status__in=[cls.Status.NEW, cls.Status.REVIEWED],
+        )
+        disabled = getattr(org, 'disabled_action_kinds', None) or []
+        if disabled:
+            qs = qs.exclude(kind__in=disabled)
+        return qs
 
     @property
     def is_unresolved(self):

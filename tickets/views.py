@@ -62,7 +62,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
-    OrgDisplayPreferencesForm, SegmentTuningForm, BrandVoiceForm,
+    OrgDisplayPreferencesForm, OrgActionKindsForm, SegmentTuningForm, BrandVoiceForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -2086,11 +2086,7 @@ def home(request):
     total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00')) - direct_fees
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     ai_recommendations = (
-        AIRecommendation.objects
-        .filter(
-            organization=org,
-            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-        )
+        AIRecommendation.outstanding_for_org(org)
         .select_related('event', 'customer')
         .order_by(
             Case(
@@ -2139,11 +2135,16 @@ def action_center(request):
     kind_filter = request.GET.get('kind', '')
     event_filter = request.GET.get('event', '')
 
+    # Kinds the org has turned off in Action Center settings are hidden across all
+    # statuses (a disabled type shouldn't surface even under a "Dismissed" view).
+    disabled_kinds = org.disabled_action_kinds or []
     recommendations = (
         AIRecommendation.objects
         .filter(organization=org)
         .select_related('event', 'customer')
     )
+    if disabled_kinds:
+        recommendations = recommendations.exclude(kind__in=disabled_kinds)
     filter_event = None
     if event_filter:
         filter_event = Event.objects.filter(organization=org, id=event_filter).first()
@@ -2188,7 +2189,13 @@ def action_center(request):
         'filter_event': filter_event,
         'status_choices': AIRecommendation.Status.choices,
         'priority_choices': AIRecommendation.Priority.choices,
-        'kind_choices': AIRecommendation.Kind.choices,
+        # Only offer enabled kinds in the filter dropdown so an organizer can't
+        # filter down to a type they've turned off.
+        'kind_choices': [
+            (value, label)
+            for value, label in AIRecommendation.Kind.choices
+            if value not in disabled_kinds
+        ],
     }
     return render(request, 'tickets/action_center.html', context)
 
@@ -3710,25 +3717,30 @@ def marketing_overview(request):
 
     metrics = get_cached_marketing_metrics(org, window_days, window_key)
 
-    recommendations = (
-        AIRecommendation.objects
-        .filter(
-            organization=org,
-            kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
-            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+    # Respect the org's Action Center toggle: if marketing-attribution actions are
+    # turned off, don't surface them inline on the marketing page either.
+    if AIRecommendation.Kind.MARKETING_ATTRIBUTION in (org.disabled_action_kinds or []):
+        recommendations = AIRecommendation.objects.none()
+    else:
+        recommendations = (
+            AIRecommendation.objects
+            .filter(
+                organization=org,
+                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+                status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+            )
+            .select_related('event')
+            .order_by(
+                Case(
+                    When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
+                    When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
+                    default=Value(2),
+                    output_field=models.IntegerField(),
+                ),
+                '-confidence',
+                '-created_at',
+            )[:20]
         )
-        .select_related('event')
-        .order_by(
-            Case(
-                When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
-                When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
-                default=Value(2),
-                output_field=models.IntegerField(),
-            ),
-            '-confidence',
-            '-created_at',
-        )[:20]
-    )
 
     trend_chart = {
         'labels': [row['month'] for row in metrics['trends']],
@@ -4873,10 +4885,7 @@ def event_list(request):
     # Include outstanding actions count in the cache key so the sidebar badge
     # stays in sync (the rendered HTML embeds the count via the context processor).
     try:
-        actions_count = AIRecommendation.objects.filter(
-            organization=org,
-            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-        ).count()
+        actions_count = AIRecommendation.outstanding_for_org(org).count()
     except Exception:
         actions_count = 0
 
@@ -4935,12 +4944,8 @@ def event_list(request):
     # Count unresolved (NEW/REVIEWED) event-linked AI recommendations per event so
     # each row can show an "actions" badge that links to the filtered Action Center.
     action_counts = dict(
-        AIRecommendation.objects
-        .filter(
-            organization=org,
-            event_id__in=page_pks,
-            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-        )
+        AIRecommendation.outstanding_for_org(org)
+        .filter(event_id__in=page_pks)
         .values('event_id')
         .annotate(count=Count('id'))
         .values_list('event_id', 'count')
@@ -8214,6 +8219,25 @@ def settings_display_preferences(request):
     else:
         form = OrgDisplayPreferencesForm(instance=org)
     return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
+@login_required
+@require_org
+@require_admin
+def settings_action_center(request):
+    """Choose which AIRecommendation kinds appear in the org's Action Center."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgActionKindsForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            # Badges/count on the cached events list depend on the enabled kinds.
+            _invalidate_event_list_cache(org)
+            messages.success(request, 'Action Center preferences updated.')
+            return redirect('tickets:settings_action_center')
+    else:
+        form = OrgActionKindsForm(instance=org)
+    return render(request, 'tickets/settings_action_center.html', {'form': form, 'org': org})
 
 
 @login_required
