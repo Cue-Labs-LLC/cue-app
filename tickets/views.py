@@ -5638,6 +5638,30 @@ def _get_pacing_comparison_candidates(org, event, limit=100):
     return same_venue + other
 
 
+def _get_checkin_comparison_candidates(org, event, limit=100):
+    """Past events available to compare against for the check-in arrival curve.
+
+    Mirrors ``_get_pacing_comparison_candidates`` (most recent first, same-venue
+    events first) but limited to events that actually have imported/live scan data
+    (``Ticket.scanned_at``) — an event with no check-ins has no arrival curve to
+    overlay, so it would never be a useful comparison.
+    """
+    past = list(
+        Event.objects.filter(
+            organization=org,
+            start_date__lt=event.start_date,
+            ticket_orders__tickets__scanned_at__isnull=False,
+        )
+        .exclude(id=event.id)
+        .distinct()
+        .only('id', 'name', 'start_date', 'venue_id')
+        .order_by('-start_date')[:limit]
+    )
+    same_venue = [e for e in past if e.venue_id == event.venue_id]
+    other = [e for e in past if e.venue_id != event.venue_id]
+    return same_venue + other
+
+
 def _recompute_utm_attribution_for_event(org, event):
     """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
 
@@ -6307,6 +6331,31 @@ def event_detail(request, event_id):
         # event stands on the shared pacing axis (positive = event still upcoming).
         pacing_today_days_before = (event.start_date - django_tz.localdate()).days
 
+    # Check-in Time — attendee arrival curve for this event vs. a comparable past
+    # event, aligned on a "minutes from scheduled start" axis. Only shown once this
+    # event has scan data (checkin_count); the comparison combobox lists past events
+    # that also have check-ins.
+    show_checkin_curve_card = bool(checkin_count)
+    checkin_curve_current_json = 'null'
+    checkin_curve_compare_json = 'null'
+    checkin_curve_candidate_list = []
+    checkin_curve_default_compare_id = None
+    if show_checkin_curve_card:
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        checkin_calc = SalesCurveCalculator()
+        checkin_curve_current_json = json.dumps(checkin_calc.get_checkin_series(event))
+        checkin_curve_candidates = _get_checkin_comparison_candidates(org, event)
+        if checkin_curve_candidates:
+            default_checkin_compare = checkin_curve_candidates[0]
+            checkin_curve_default_compare_id = str(default_checkin_compare.id)
+            checkin_curve_compare_json = json.dumps(
+                checkin_calc.get_checkin_series(default_checkin_compare)
+            )
+            checkin_curve_candidate_list = [
+                {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
+                for e in checkin_curve_candidates
+            ]
+
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
     from tickets.sms_views import _annotate_counts
@@ -6425,6 +6474,11 @@ def event_detail(request, event_id):
         'pacing_candidates': pacing_candidate_list,
         'pacing_default_compare_id': pacing_default_compare_id,
         'pacing_today_days_before': pacing_today_days_before,
+        'show_checkin_curve_card': show_checkin_curve_card,
+        'checkin_curve_current_json': checkin_curve_current_json,
+        'checkin_curve_compare_json': checkin_curve_compare_json,
+        'checkin_curve_candidates': checkin_curve_candidate_list,
+        'checkin_curve_default_compare_id': checkin_curve_default_compare_id,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6586,6 +6640,26 @@ def event_pacing_api(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     from tickets.services.forecasting.sales_curve import SalesCurveCalculator
     data = SalesCurveCalculator().get_pacing_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
+
+
+@login_required
+@require_org
+def event_checkin_curve_api(request, event_id):
+    """Return the check-in arrival series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so the curve can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_checkin_series(event)
     data.update({
         'id': str(event.id),
         'name': event.name,

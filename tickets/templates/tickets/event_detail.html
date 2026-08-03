@@ -962,7 +962,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div><!-- /tab-overview -->
 
 <!-- ===== TAB: Analytics ===== -->
-{% if show_pacing_card %}
+{% if show_pacing_card or show_checkin_curve_card %}
 <div class="tab-pane fade" id="tab-analytics" role="tabpanel">
 <style>
 .pacing-combo { position: relative; }
@@ -997,6 +997,7 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--text-tertiary);
 }
 </style>
+{% if show_pacing_card %}
 <div class="card mb-4" id="pacingCard"
      data-pacing-url="{% url 'tickets:event_pacing_api' '00000000-0000-0000-0000-000000000000' %}"
      data-current-name="{{ event.name }}"
@@ -1041,6 +1042,51 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 <script type="application/json" id="pacing-current-data">{{ pacing_current_json|safe }}</script>
 <script type="application/json" id="pacing-compare-data">{{ pacing_compare_json|safe }}</script>
+{% endif %}
+
+{% if show_checkin_curve_card %}
+<div class="card mb-4" id="checkinCurveCard"
+     data-checkin-url="{% url 'tickets:event_checkin_curve_api' '00000000-0000-0000-0000-000000000000' %}"
+     data-current-name="{{ event.name }}">
+    <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="d-flex flex-column">
+            <h5 class="mb-0">Check-in Time</h5>
+            <small class="text-muted">Cumulative check-ins vs. a past event, by time relative to the scheduled start</small>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Check-in scale">
+                <button type="button" class="chart-control-btn active" id="btnCheckinAbs">Absolute</button>
+                <button type="button" class="chart-control-btn" id="btnCheckinPct">% Checked in</button>
+            </div>
+            {% if checkin_curve_candidates %}
+            <label class="d-flex align-items-center gap-2 mb-0">
+                <span class="pacing-compare-label">vs</span>
+                <div class="pacing-combo" id="checkinCompare">
+                    <input type="text" class="pacing-compare-input" id="checkinCompareInput"
+                           role="combobox" aria-expanded="false" aria-controls="checkinCompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search events&hellip;" aria-label="Comparison event">
+                    <ul class="pacing-combo-list" id="checkinCompareList" role="listbox" aria-label="Comparison event" hidden>
+                        {% for c in checkin_curve_candidates %}
+                        <li class="pacing-combo-option{% if c.id == checkin_curve_default_compare_id %} is-selected{% endif %}"
+                            role="option" id="checkinOpt-{{ forloop.counter }}"
+                            data-id="{{ c.id }}"
+                            data-label="{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}"
+                            {% if c.id == checkin_curve_default_compare_id %}aria-selected="true"{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </label>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body" style="position: relative; height: 260px;">
+        <canvas id="checkinCurveChart"></canvas>
+    </div>
+</div>
+<script type="application/json" id="checkin-current-data">{{ checkin_curve_current_json|safe }}</script>
+<script type="application/json" id="checkin-compare-data">{{ checkin_curve_compare_json|safe }}</script>
+{% endif %}
 </div><!-- /tab-analytics -->
 {% endif %}
 
@@ -6056,6 +6102,339 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // The chart is created inside the (initially hidden) Analytics tab, so its
     // canvas has no size until the tab is shown. Re-measure on first reveal.
+    var tabsEl = document.getElementById('eventDetailTabs');
+    if (tabsEl) {
+        tabsEl.addEventListener('shown.bs.tab', function (e) {
+            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
+                chart.resize();
+            }
+        });
+    }
+
+    render();
+});
+</script>
+
+<script>
+// Check-in Time — cumulative attendee arrivals for this event vs. a comparison
+// event, aligned on a "minutes from scheduled start" axis (negative = arrived
+// before start, positive = after). Scale (absolute count / % checked in) is a
+// client-side transform over one embedded payload; changing the comparison event
+// fetches its series from the check-in-curve API. Mirrors the Sales Pacing block.
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('checkinCurveChart');
+    if (!canvas) return;
+    var card = document.getElementById('checkinCurveCard');
+
+    var currentData = JSON.parse(document.getElementById('checkin-current-data').textContent);
+    var compareData = JSON.parse(document.getElementById('checkin-compare-data').textContent);
+    var currentName = card.getAttribute('data-current-name') || 'This event';
+    var checkinUrlTemplate = card.getAttribute('data-checkin-url');
+
+    var rootStyle = getComputedStyle(document.documentElement);
+    function token(name, fallback) {
+        var v = (rootStyle.getPropertyValue(name) || '').trim();
+        return v || fallback;
+    }
+    var gridColor = token('--border-light', 'rgba(255,255,255,0.05)');
+    var labelColor = token('--text-tertiary', '#7A7672');
+    var currentColor = token('--accent', '#00FF87');
+    var compareColor = token('--info', '#7B8FBF');
+    var startColor = token('--text-secondary', '#9A9691');
+
+    var scale = 'abs';        // 'abs' | 'pct'
+    var currentAxis = [];     // minute-bucket values behind the x labels, for the marker
+
+    // Cumulative check-ins at each axis bucket: sum of all buckets <= the label
+    // (axis is sorted ascending, so cumulative grows left-to-right through the night).
+    function cumulativeFor(series, axis) {
+        var sorted = series.slice().sort(function (a, b) { return a.m - b.m; });
+        var out = [], running = 0, idx = 0;
+        axis.forEach(function (label) {
+            while (idx < sorted.length && sorted[idx].m <= label) {
+                running += sorted[idx].checkins;
+                idx++;
+            }
+            out.push(running);
+        });
+        return out;
+    }
+
+    function labelFor(m) {
+        if (m === 0) return 'Start';
+        var abs = Math.abs(m);
+        var text = abs >= 60
+            ? (Math.floor(abs / 60) + 'h' + (abs % 60 ? (abs % 60) + 'm' : ''))
+            : (abs + 'm');
+        return (m < 0 ? '-' : '+') + text;
+    }
+
+    function buildConfig() {
+        var series = [currentData.series || []];
+        if (compareData) series.push(compareData.series || []);
+        var bucket = currentData.bucket_minutes || 15;
+        // Continuous axis: every bucket from the earliest arrival to the latest
+        // across both events, so quiet stretches aren't collapsed. Always include 0
+        // (the scheduled start) so the Start marker has a home even if no one
+        // checked in exactly at start.
+        var maxM = null, minM = null;
+        series.forEach(function (s) {
+            s.forEach(function (p) {
+                if (maxM === null || p.m > maxM) maxM = p.m;
+                if (minM === null || p.m < minM) minM = p.m;
+            });
+        });
+        var axis = [];
+        if (maxM === null) { axis = [0]; }
+        else {
+            minM = Math.min(minM, 0);
+            maxM = Math.max(maxM, 0);
+            for (var m = minM; m <= maxM; m += bucket) axis.push(m);
+        }
+        currentAxis = axis;
+
+        function dataset(data, name, color, dashed) {
+            var values = cumulativeFor(data.series || [], axis);
+            if (scale === 'pct') {
+                var total = data.total_checkins;
+                values = values.map(function (v) { return total > 0 ? (v / total * 100) : 0; });
+            }
+            return {
+                label: name,
+                data: values,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                borderDash: dashed ? [5, 4] : [],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                fill: false,
+                tension: 0.35,
+            };
+        }
+
+        var datasets = [dataset(currentData, currentName, currentColor, false)];
+        if (compareData) {
+            datasets.push(dataset(compareData, compareData.name || 'Comparison', compareColor, true));
+        }
+
+        var suffix = scale === 'pct' ? '%' : '';
+        function fmt(v) {
+            var n = scale === 'pct' ? Math.round(v * 10) / 10 : Math.round(v);
+            return n.toLocaleString() + suffix;
+        }
+
+        return { labels: axis.map(labelFor), datasets: datasets, fmt: fmt };
+    }
+
+    // Interpolate the x-pixel for an arbitrary minute value across the category
+    // axis (labels only exist on drawn buckets). Returns null if outside the range.
+    function pixelForMinute(chart, minute) {
+        var axis = currentAxis, labels = chart.data.labels;
+        if (!axis.length) return null;
+        var xScale = chart.scales.x;
+        if (minute < axis[0] || minute > axis[axis.length - 1]) return null;   // off-scale
+        for (var i = 0; i < axis.length - 1; i++) {
+            var a = axis[i], b = axis[i + 1];   // ascending: a < b
+            if (minute >= a && minute <= b) {
+                var t = a === b ? 0 : (minute - a) / (b - a);
+                var xa = xScale.getPixelForValue(labels[i]);
+                var xb = xScale.getPixelForValue(labels[i + 1]);
+                return xa + (xb - xa) * t;
+            }
+        }
+        return xScale.getPixelForValue(labels[axis.length - 1]);
+    }
+
+    var startMarkerPlugin = {
+        id: 'checkinStartMarker',
+        afterDatasetsDraw: function (chart) {
+            var x = pixelForMinute(chart, 0);
+            if (x === null) return;
+            var area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([4, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = startColor;
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // "Start" pill anchored to the top of the line.
+            var label = 'Start';
+            ctx.font = '600 10px Sora, sans-serif';
+            var padX = 5, w = ctx.measureText(label).width + padX * 2, h = 15;
+            var lx = Math.min(Math.max(x - w / 2, area.left), area.right - w);
+            ctx.fillStyle = startColor;
+            if (ctx.roundRect) {
+                ctx.beginPath(); ctx.roundRect(lx, area.top - h - 2, w, h, 3); ctx.fill();
+            } else {
+                ctx.fillRect(lx, area.top - h - 2, w, h);
+            }
+            ctx.fillStyle = token('--text-inverse', '#0E0E0E');
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, lx + w / 2, area.top - h / 2 - 2);
+            ctx.restore();
+        }
+    };
+
+    var chart = null;
+    function render() {
+        var cfg = buildConfig();
+        if (chart) {
+            chart.data.labels = cfg.labels;
+            chart.data.datasets = cfg.datasets;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y);
+            };
+            chart.options.scales.y.ticks.callback = function (v) { return cfg.fmt(v); };
+            chart.update();
+            return;
+        }
+        chart = new Chart(canvas, {
+            type: 'line',
+            plugins: [startMarkerPlugin],
+            data: { labels: cfg.labels, datasets: cfg.datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                layout: { padding: { top: 18 } },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: labelColor, usePointStyle: true, boxWidth: 8, boxHeight: 8 }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: { label: function (ctx) { return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y); } }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return cfg.fmt(v); } }
+                    }
+                }
+            }
+        });
+    }
+
+    // Scale toggle
+    function bindToggle(id, group, apply) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            group.forEach(function (o) { document.getElementById(o).classList.remove('active'); });
+            btn.classList.add('active');
+            apply();
+            render();
+        });
+    }
+    bindToggle('btnCheckinAbs', ['btnCheckinAbs', 'btnCheckinPct'], function () { scale = 'abs'; });
+    bindToggle('btnCheckinPct', ['btnCheckinAbs', 'btnCheckinPct'], function () { scale = 'pct'; });
+
+    // Comparison-event combobox: type to filter the past-event list.
+    (function () {
+        var combo = document.getElementById('checkinCompare');
+        if (!combo) return;
+        var input = document.getElementById('checkinCompareInput');
+        var list = document.getElementById('checkinCompareList');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label; input.value = selectedLabel; }
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function showEmpty() {
+            if (emptyEl) return;
+            emptyEl = document.createElement('li');
+            emptyEl.className = 'pacing-combo-empty';
+            emptyEl.textContent = 'No matching events';
+            list.appendChild(emptyEl);
+        }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) showEmpty();
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label;
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            loadComparison(selectedId);
+        }
+
+        function loadComparison(id) {
+            if (!id) return;
+            input.disabled = true;
+            fetch(checkinUrlTemplate.replace('00000000-0000-0000-0000-000000000000', id), {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function (r) { if (!r.ok) throw new Error('checkin fetch failed'); return r.json(); })
+                .then(function (json) { compareData = json; render(); })
+                .catch(function (err) { console.error(err); })
+                .finally(function () { input.disabled = false; });
+        }
+
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
+        });
+        // mousedown (not click) so we act before the input's blur fires.
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    })();
+
+    // The chart lives in the (initially hidden) Analytics tab, so its canvas has no
+    // size until the tab is shown. Re-measure on first reveal.
     var tabsEl = document.getElementById('eventDetailTabs');
     if (tabsEl) {
         tabsEl.addEventListener('shown.bs.tab', function (e) {
