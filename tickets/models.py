@@ -2254,6 +2254,14 @@ class SMSCampaign(AuditBaseModel):
     # reached at send time). Surfaced on the campaign detail page so the organizer knows
     # to shrink + reschedule. Blank for non-failed campaigns.
     failure_reason = models.CharField(max_length=255, blank=True, default='')
+    # Post-send conversion attribution, computed by NativeSMSAttributionCalculator:
+    # recipients who bought this campaign's linked event within SMS_ATTRIBUTION_WINDOW_DAYS
+    # of their send (last-touch across overlapping sends; refunds excluded). NULL = not yet
+    # computed (renders "—" in the list); a concrete value (including 0) once recomputed.
+    attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    attributed_revenue = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+    )
 
     class Meta:
         ordering = ['-created_at']
