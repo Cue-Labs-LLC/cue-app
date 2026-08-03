@@ -6,11 +6,19 @@
 <div class="page-header">
     <div>
         <h1>Action Center</h1>
+        {% if filter_event %}
+        <p class="page-header-subtitle">
+            Actions for <strong>{{ filter_event.name }}</strong>
+            <a href="{% url 'tickets:action_center' %}" class="ms-2 small">Clear filter</a>
+        </p>
+        {% else %}
         <p class="page-header-subtitle">Reviewed opportunities found from your event, customer, and marketing data</p>
+        {% endif %}
     </div>
 </div>
 
 <form method="get" class="card mb-4">
+    {% if filter_event %}<input type="hidden" name="event" value="{{ filter_event.id }}">{% endif %}
     <div class="card-body">
         <div class="row g-3 align-items-end">
             <div class="col-md-3">

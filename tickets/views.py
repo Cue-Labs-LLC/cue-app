@@ -2137,12 +2137,18 @@ def action_center(request):
     status_filter = request.GET.get('status', '')
     priority_filter = request.GET.get('priority', '')
     kind_filter = request.GET.get('kind', '')
+    event_filter = request.GET.get('event', '')
 
     recommendations = (
         AIRecommendation.objects
         .filter(organization=org)
         .select_related('event', 'customer')
     )
+    filter_event = None
+    if event_filter:
+        filter_event = Event.objects.filter(organization=org, id=event_filter).first()
+        if filter_event is not None:
+            recommendations = recommendations.filter(event=filter_event)
     if status_filter:
         recommendations = recommendations.filter(status=status_filter)
     else:
@@ -2179,6 +2185,7 @@ def action_center(request):
         'status_filter': status_filter,
         'priority_filter': priority_filter,
         'kind_filter': kind_filter,
+        'filter_event': filter_event,
         'status_choices': AIRecommendation.Status.choices,
         'priority_choices': AIRecommendation.Priority.choices,
         'kind_choices': AIRecommendation.Kind.choices,
@@ -4924,6 +4931,22 @@ def event_list(request):
         ).select_related('venue')
     }
     page_obj.object_list = [annotated_map[pk] for pk in page_pks]
+
+    # Count unresolved (NEW/REVIEWED) event-linked AI recommendations per event so
+    # each row can show an "actions" badge that links to the filtered Action Center.
+    action_counts = dict(
+        AIRecommendation.objects
+        .filter(
+            organization=org,
+            event_id__in=page_pks,
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        )
+        .values('event_id')
+        .annotate(count=Count('id'))
+        .values_list('event_id', 'count')
+    )
+    for ev in page_obj.object_list:
+        ev.action_count = action_counts.get(ev.pk, 0)
 
     # Compute net_revenue for each event on this page.
     # Fees apply to direct ticketing events only; external/CSV events are shown at gross.
