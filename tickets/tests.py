@@ -21611,3 +21611,91 @@ class BrandVoiceSettingsTests(TestCase):
         self.assertIn('error', response.json())
 
 
+
+
+class CheckinCurveTests(TestCase):
+    """Check-in arrival curve: series bucketing + the comparison API endpoint."""
+
+    def setUp(self):
+        from zoneinfo import ZoneInfo
+        self.la = ZoneInfo('America/Los_Angeles')
+        self.client = Client()
+        self.org = Organization.objects.create(name='Checkin Org', slug='checkin-org')
+        self.user = User.objects.create_user(
+            username='ciuser', email='ci@test.com', password='pass12345'
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        self.client.login(username='ci@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Main Show', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0), timezone='America/Los_Angeles',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='c@example.com', name='C', lifetime_value=Decimal('0.00')
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='CI-1',
+            order_date='2024-06-01 10:00:00', total_amount=Decimal('40.00'),
+        )
+
+    def _ticket(self, hh, mm):
+        return Ticket.objects.create(
+            ticket_order=self.order, ticket_type='GA', price=Decimal('10.00'),
+            scanned_at=datetime(2024, 6, 15, hh, mm, tzinfo=self.la),
+        )
+
+    def test_get_checkin_series_buckets_relative_to_start(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        self._ticket(18, 50)          # -10 min -> bucket -15
+        self._ticket(19, 7)           # +7 min  -> bucket 0
+        self._ticket(19, 10)          # +10 min -> bucket 0
+        self._ticket(19, 20)          # +20 min -> bucket 15
+        Ticket.objects.create(        # never scanned -> excluded
+            ticket_order=self.order, ticket_type='GA', price=Decimal('10.00'), scanned_at=None,
+        )
+
+        data = SalesCurveCalculator().get_checkin_series(self.event)
+        self.assertEqual(data['bucket_minutes'], 15)
+        self.assertEqual(data['total_checkins'], 4)
+        self.assertEqual(
+            data['series'],
+            [{'m': -15, 'checkins': 1}, {'m': 0, 'checkins': 2}, {'m': 15, 'checkins': 1}],
+        )
+
+    def test_get_checkin_series_empty_when_no_scans(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        Ticket.objects.create(
+            ticket_order=self.order, ticket_type='GA', price=Decimal('10.00'), scanned_at=None,
+        )
+        data = SalesCurveCalculator().get_checkin_series(self.event)
+        self.assertEqual(data['series'], [])
+        self.assertEqual(data['total_checkins'], 0)
+
+    def test_checkin_curve_api_returns_series(self):
+        self._ticket(19, 5)
+        resp = self.client.get(
+            reverse('tickets:event_checkin_curve_api', args=[self.event.id])
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body['id'], str(self.event.id))
+        self.assertEqual(body['name'], 'Main Show')
+        self.assertEqual(body['total_checkins'], 1)
+        self.assertIn('series', body)
+
+    def test_checkin_curve_api_is_org_scoped(self):
+        other_org = Organization.objects.create(name='Other', slug='other-ci-org')
+        other_venue = Venue.objects.create(organization=other_org, name='Away', city='NYC')
+        other_event = Event.objects.create(
+            organization=other_org, name='Foreign', venue=other_venue,
+            start_date=date(2024, 7, 1),
+        )
+        resp = self.client.get(
+            reverse('tickets:event_checkin_curve_api', args=[other_event.id])
+        )
+        self.assertEqual(resp.status_code, 404)
