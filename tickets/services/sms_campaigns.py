@@ -71,6 +71,19 @@ class CampaignSendResult:
     created: bool
 
 
+@dataclass
+class SplitResult:
+    """Outcome of a two-batch split: as many recipients as fit the send day go out in
+    ``batch1``; the overflow is scheduled for ``batch2`` the next day. Either campaign
+    may be ``None`` (e.g. the send day is already fully booked → no ``batch1``).
+    ``leftover_count`` is recipients that fit neither day and were NOT scheduled."""
+    batch1: object
+    batch2: object
+    batch1_count: int
+    batch2_count: int
+    leftover_count: int
+
+
 def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, event,
                            scheduled, send_at, user, idempotency_key, cap):
     """Materialize → cost → atomically create+charge → dispatch. Returns a
@@ -189,4 +202,158 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
         campaign=campaign, recipient_count=count,
         cost_cents=cost_cents, cost_tokens=cost_tokens,
         scheduled=scheduled, created=True,
+    )
+
+
+#: SMSCampaign.name is CharField(max_length=200); the overflow batch appends this suffix.
+_PART2_SUFFIX = ' (part 2)'
+_CAMPAIGN_NAME_MAX = 200
+
+
+def _part2_name(name):
+    """Name for the overflow batch: ``"<name> (part 2)"``, with the base truncated so the
+    result never exceeds ``SMSCampaign.name``'s max_length (a long name would otherwise
+    pass the composer form but fail the batch-2 DB write on Postgres, after batch 1 has
+    already committed and charged)."""
+    base = name[:_CAMPAIGN_NAME_MAX - len(_PART2_SUFFIX)]
+    return f'{base}{_PART2_SUFFIX}'
+
+
+def finalize_campaign_split(org, *, name, body, criteria, manual_include_ids, event,
+                            scheduled, send_at, batch2_send_at, user, cap,
+                            idempotency_key_1, idempotency_key_2):
+    """Split a send that would exceed the shared daily carrier cap into two batches:
+    as many recipients as fit ``send_at``'s day go out in batch 1, the overflow is
+    scheduled for ``batch2_send_at`` (the next day). Any recipients that fit neither
+    day are reported as ``leftover_count`` and NOT scheduled.
+
+    Each batch is created through ``finalize_campaign_send`` with an explicit
+    ``manual_include_ids`` subset (criteria cleared), so "charged == sent",
+    per-campaign idempotency, and the authoritative daily-cap check all still run in
+    one place. Raises ``InsufficientCreditsError`` (before any write) when the wallet
+    can't cover both batches, and the usual audience errors. Returns a ``SplitResult``.
+
+    Replay safety (the two campaigns are NOT one atomic unit — batch 1 can commit while
+    batch 2 fails on a race, and the organizer then retries): each batch is anchored to
+    its idempotency key. If a key already produced a campaign, that campaign's frozen
+    recipients ARE that batch — they are taken verbatim and EXCLUDED from the pool the
+    other batch is drawn from. Without this, a retry would recompute membership from live
+    capacity, and batch 1's own booking (now consuming today's budget) would collapse
+    ``allowed_today`` to 0 and shove batch-1 recipients back into batch 2 — double-charging
+    and double-sending them. Membership is also deterministic because
+    ``candidate_customers`` orders by ``(created_at, id)``.
+    """
+    from tickets.models import Organization, SMSCampaign
+    from tickets.services.sms_credits import plan_campaign_footers, InsufficientCreditsError
+    from tickets.services.sms_limits import daily_capacity_for, fit_within_budget
+
+    # Idempotency anchors: any campaign already created under each key on a prior
+    # (possibly partial) run. Their frozen membership overrides live-capacity sizing.
+    existing1 = SMSCampaign.objects.filter(
+        organization=org, idempotency_key=idempotency_key_1).first()
+    existing2 = SMSCampaign.objects.filter(
+        organization=org, idempotency_key=idempotency_key_2).first()
+
+    def _committed_ids(campaign):
+        return {
+            str(cid) for cid in
+            campaign.recipients.values_list('customer_id', flat=True)
+            if cid is not None
+        }
+
+    # Resolve the full audience once, deterministically (candidate_customers is ordered),
+    # so "first N fit today" resolves the same set on every call, including replays.
+    recipients = SMSCampaign(
+        organization=org, filter_criteria=criteria,
+        manual_include_ids=manual_include_ids,
+    ).materialize(org, cap=cap + 1)
+    count = len(recipients)
+    if count > cap:
+        raise AudienceTooLargeError(count, cap)
+    if count == 0:
+        raise AudienceEmptyError()
+
+    # Batch 1: if it already exists, its frozen recipients ARE batch 1; the pool batch 2
+    # draws from excludes them. Otherwise size it against the send day's remaining budget.
+    if existing1:
+        b1_ids = _committed_ids(existing1)
+        batch1 = [r for r in recipients if r['customer_id'] in b1_ids]
+        pool = [r for r in recipients if r['customer_id'] not in b1_ids]
+    else:
+        phones_today = [r['phone'] for r in recipients]
+        _, plan_today = plan_campaign_footers(org, body, phones_today, as_of=send_at)
+        segs_today = [plan_today[p][1] for p in phones_today]
+        cap1 = daily_capacity_for(send_at)
+        allowed_today = fit_within_budget(segs_today, cap1) if cap1 is not None else count
+        batch1 = recipients[:allowed_today]
+        pool = recipients[allowed_today:]
+
+    # Batch 2 (drawn from the batch-1-excluded pool): frozen membership on replay,
+    # otherwise what fits the next day's budget (footer/segments re-anchored on that day,
+    # since a phone's STOP-footer disclosure can age out between the two days).
+    if existing2:
+        b2_ids = _committed_ids(existing2)
+        batch2 = [r for r in pool if r['customer_id'] in b2_ids]
+        leftover = 0  # a committed run; leftover isn't meaningful to recompute on replay
+    else:
+        phones_next = [r['phone'] for r in pool]
+        _, plan_next = plan_campaign_footers(org, body, phones_next, as_of=batch2_send_at)
+        segs_next = [plan_next[p][1] for p in phones_next]
+        cap2 = daily_capacity_for(batch2_send_at)
+        fits_next = fit_within_budget(segs_next, cap2) if cap2 is not None else len(pool)
+        batch2 = pool[:fits_next]
+        leftover = len(pool) - len(batch2)
+
+    # Pre-check the combined wallet cost so we never charge batch 1 and then fail on
+    # batch 2. Only counts batches being newly created — an existing (already-charged)
+    # batch must not count against the balance on a replay.
+    #
+    # NOTE: cost is rounded up to whole cents per batch (plan_campaign_footers), so
+    # splitting can charge up to 1¢ more than an unsplit send — but only under sub-cent
+    # SMS_PRICE_PER_SEGMENT_CENTS; at the whole-cent default it's exact. Accepted (see
+    # /plan-eng-review D4): reconciling would couple the two per-campaign charges.
+    precheck_cost = 0
+    if batch1 and not existing1:
+        cost1, _ = plan_campaign_footers(
+            org, body, [r['phone'] for r in batch1], as_of=send_at)
+        precheck_cost += cost1
+    if batch2 and not existing2:
+        cost2, _ = plan_campaign_footers(
+            org, body, [r['phone'] for r in batch2], as_of=batch2_send_at)
+        precheck_cost += cost2
+    # Read the balance fresh — the passed org may be stale, and charge() is the
+    # authoritative in-transaction check regardless.
+    balance = Organization.objects.filter(id=org.id).values_list(
+        'sms_credit_balance_cents', flat=True).first() or 0
+    if precheck_cost > balance:
+        raise InsufficientCreditsError(precheck_cost, balance)
+
+    # Create batch 1 (today), then batch 2 (next day). Each batch is pinned to its
+    # explicit customer-id set; finalize's own cap check passes because each batch was
+    # sized to fit its day (or is a frozen replay). Batch 2 is always a scheduled send.
+    # A pre-existing batch is reused as-is (finalize is key-idempotent anyway).
+    batch1_campaign = existing1
+    if batch1 and not existing1:
+        r1 = finalize_campaign_send(
+            org, name=name, body=body, criteria={},
+            manual_include_ids=[str(r['customer_id']) for r in batch1], event=event,
+            scheduled=scheduled, send_at=send_at, user=user,
+            idempotency_key=idempotency_key_1, cap=cap,
+        )
+        batch1_campaign = r1.campaign
+
+    batch2_campaign = existing2
+    if batch2 and not existing2:
+        r2 = finalize_campaign_send(
+            org, name=_part2_name(name), body=body, criteria={},
+            manual_include_ids=[str(r['customer_id']) for r in batch2], event=event,
+            scheduled=True, send_at=batch2_send_at, user=user,
+            idempotency_key=idempotency_key_2, cap=cap,
+        )
+        batch2_campaign = r2.campaign
+
+    return SplitResult(
+        batch1=batch1_campaign, batch2=batch2_campaign,
+        batch1_count=len(batch1), batch2_count=len(batch2),
+        leftover_count=leftover,
     )

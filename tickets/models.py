@@ -2286,7 +2286,10 @@ class SMSCampaign(AuditBaseModel):
         qs = qs.filter(organization=org, sms_opt_in=True).exclude(phone='')
         if exclude_ids:
             qs = qs.exclude(id__in=exclude_ids)
-        return qs.distinct()
+        # Deterministic order so materialize() slicing is stable — the two-batch split
+        # (finalize_campaign_split) relies on "first N fit today" resolving the same set
+        # on every call, including idempotent replays.
+        return qs.distinct().order_by('created_at', 'id')
 
     def materialize(self, organization=None, cap=None):
         """Return deduped, non-suppressed recipients as a list of

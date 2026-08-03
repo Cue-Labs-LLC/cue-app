@@ -581,6 +581,14 @@ def sms_campaign_create(request):
     confirm_cost_tokens = None
     insufficient_credits = False
     daily_cap_block = None  # message when the send would exceed the daily carrier cap
+    # Split-into-two-batches preview: how many fit the send day, the overflow, and how
+    # much of that overflow fits the next day (populated alongside daily_cap_block).
+    daily_cap_allowed = None
+    daily_cap_overflow = None
+    daily_cap_next_fits = None
+    daily_cap_next_leftover = None
+    split_default_dt_str = None
+    split_batch1_now = None  # True when batch 1 sends immediately (send-now), not scheduled
     prefill = None
     strategist_prefill = None
     manual_include_ids = []
@@ -618,6 +626,9 @@ def sms_campaign_create(request):
     # echoed back on confirm, so a double-click / browser retry can't create a
     # second campaign or double-charge. Preserved across the review→confirm POSTs.
     idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
+    # Second key for the overflow (next-day) batch when the organizer splits a
+    # cap-exceeding send; kept stable across the review→split resubmit.
+    idem_key_2 = request.POST.get('idempotency_key_2') or uuid.uuid4().hex
 
     # Event-mode audience scope. Read outside form handling (and normalized) so the
     # re-rendered confirm page can keep the chosen chip checked — otherwise the
@@ -697,8 +708,137 @@ def sms_campaign_create(request):
                             confirm_count, _allowed, daily_segment_cap(),
                             timezone.localdate(send_at),
                         ).user_message()
+                        # Split preview: batch 1 is what fits today; the overflow goes to
+                        # the next day (default same clock time), capped to that day's budget.
+                        daily_cap_allowed = _allowed
+                        daily_cap_overflow = confirm_count - _allowed
+                        next_send_at = send_at + timedelta(days=1)
+                        split_default_dt_str = timezone.localtime(
+                            next_send_at).strftime('%Y-%m-%dT%H:%M')
+                        _rest = recipients[_allowed:]
+                        _rest_phones = [r['phone'] for r in _rest]
+                        _, _next_plan = plan_campaign_footers(
+                            org, form.cleaned_data['body'], _rest_phones, as_of=next_send_at,
+                        )
+                        _next_cap = daily_capacity_for(next_send_at)
+                        _next_fits = (
+                            fit_within_budget(
+                                [_next_plan[p][1] for p in _rest_phones], _next_cap)
+                            if _next_cap is not None else len(_rest)
+                        )
+                        daily_cap_next_fits = _next_fits
+                        daily_cap_next_leftover = len(_rest) - _next_fits
+                        # Batch 1 inherits the composer's send mode: on "Send now" it
+                        # dispatches immediately (only batch 2 is scheduled), so the modal
+                        # copy must not claim both batches are scheduled.
+                        split_batch1_now = not scheduled
 
-                if request.POST.get('confirm') and insufficient_credits:
+                if request.POST.get('split'):
+                    # Organizer chose to split a cap-exceeding send: fill today, schedule
+                    # the overflow next day. Batch 2's time comes from the popup (default
+                    # next day); force it onto a later day than batch 1 regardless.
+                    from .services.sms_campaigns import (
+                        finalize_campaign_split, AudienceEmptyError, AudienceTooLargeError,
+                    )
+                    _raw2 = request.POST.get('split_scheduled_at') or ''
+                    _parsed2 = parse_datetime(_raw2)
+                    if _parsed2:
+                        batch2_send_at = (
+                            timezone.make_aware(_parsed2)
+                            if timezone.is_naive(_parsed2) else _parsed2
+                        )
+                    else:
+                        batch2_send_at = send_at + timedelta(days=1)
+                    if timezone.localdate(batch2_send_at) <= timezone.localdate(send_at):
+                        batch2_send_at = send_at + timedelta(days=1)
+                    try:
+                        split = finalize_campaign_split(
+                            org, name=form.cleaned_data['name'],
+                            body=form.cleaned_data['body'], criteria=criteria,
+                            manual_include_ids=manual_include_ids, event=event,
+                            scheduled=scheduled, send_at=send_at,
+                            batch2_send_at=batch2_send_at, user=request.user, cap=cap,
+                            idempotency_key_1=idem_key, idempotency_key_2=idem_key_2,
+                        )
+                    except (InsufficientCreditsError, AudienceEmptyError,
+                            AudienceTooLargeError, DailyCapExceededError) as exc:
+                        if isinstance(exc, InsufficientCreditsError):
+                            insufficient_credits = True
+                            base_msg = ('Not enough SMS tokens to send this campaign. '
+                                        'Top up to continue.')
+                        elif isinstance(exc, AudienceEmptyError):
+                            base_msg = 'This audience has no contactable recipients.'
+                        elif isinstance(exc, AudienceTooLargeError):
+                            base_msg = (f'This audience resolves to more than {cap} '
+                                        f'recipients. Narrow the audience before sending.')
+                        else:
+                            base_msg = exc.user_message()
+                        # The split isn't atomic: batch 1 may already be scheduled + charged
+                        # when batch 2 fails. Report the partial state (never as a clean
+                        # failure) and send the organizer to batch 1 — a retry is safe
+                        # because finalize_campaign_split anchors on the idempotency keys.
+                        committed = SMSCampaign.objects.filter(
+                            organization=org, idempotency_key=idem_key).first()
+                        if committed:
+                            n = committed.audience_size
+                            plural = '' if n == 1 else 's'
+                            # Batch 1 already committed with the composer's send mode, so
+                            # describe it accurately: send-now dispatched immediately, a
+                            # scheduled send is booked for later.
+                            batch1_state = 'is sending now' if not scheduled else 'is scheduled'
+                            messages.warning(
+                                request,
+                                f'Batch 1 ({n} recipient{plural}) {batch1_state}, but the '
+                                f'second batch could not be scheduled: {base_msg} Reopen the '
+                                f'composer and choose "Split into two batches" again to '
+                                f'schedule the rest.',
+                            )
+                            return redirect(
+                                'tickets:sms_campaign_detail', pk=committed.id)
+                        form.add_error(None, base_msg)
+                    else:
+                        # A split originating from an AI plan step links the step to the
+                        # first campaign created (mirrors the single-send path).
+                        launched = split.batch1 or split.batch2
+                        if launched:
+                            plan_id = request.POST.get('prefill_plan_id')
+                            step_raw = request.POST.get('prefill_step')
+                            if plan_id and step_raw not in (None, ''):
+                                try:
+                                    _mark_plan_step_launched(
+                                        org, plan_id, int(step_raw), launched.id,
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
+                        parts = []
+                        if split.batch1:
+                            if scheduled:
+                                parts.append(
+                                    f'{split.batch1_count} on '
+                                    f'{split.batch1.scheduled_at:%b %d}'
+                                )
+                            else:
+                                parts.append(f'{split.batch1_count} now')
+                        if split.batch2:
+                            parts.append(
+                                f'{split.batch2_count} on '
+                                f'{split.batch2.scheduled_at:%b %d}'
+                            )
+                        messages.success(
+                            request,
+                            f'Split into batches: {" and ".join(parts)}.',
+                        )
+                        if split.leftover_count:
+                            n = split.leftover_count
+                            messages.warning(
+                                request,
+                                f'{n} recipient{"s" if n != 1 else ""} still exceed the '
+                                f'daily limit and were not scheduled — pick a later day '
+                                f'or trim the audience.',
+                            )
+                        target = split.batch1 or split.batch2
+                        return redirect('tickets:sms_campaign_detail', pk=target.id)
+                elif request.POST.get('confirm') and insufficient_credits:
                     form.add_error(
                         None,
                         'Not enough SMS tokens to send this campaign. Top up to continue.',
@@ -839,7 +979,14 @@ def sms_campaign_create(request):
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
         'daily_cap_block': daily_cap_block,
+        'daily_cap_allowed': daily_cap_allowed,
+        'daily_cap_overflow': daily_cap_overflow,
+        'daily_cap_next_fits': daily_cap_next_fits,
+        'daily_cap_next_leftover': daily_cap_next_leftover,
+        'split_default_dt': split_default_dt_str,
+        'split_batch1_now': split_batch1_now,
         'idempotency_key': idem_key,
+        'idempotency_key_2': idem_key_2,
         'prefill': prefill,
         'prefill_plan_id': prefill_plan_id,
         'prefill_step': prefill_step,

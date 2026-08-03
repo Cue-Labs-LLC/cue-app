@@ -856,7 +856,8 @@ class SMSConditionalFooterTests(TestCase):
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
                    SMS_ALWAYS_DISCLOSE_STOP=False,
-                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'), SMS_FOOTER_DISCLOSURE_DAYS=30)
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'), SMS_FOOTER_DISCLOSURE_DAYS=30,
+                   SMS_DAILY_SEGMENT_CAP=2000)
 class SMSConditionalFooterFlowTests(TestCase):
     """End-to-end through the compose/confirm view: the footer decision is billed at
     schedule, displayed == charged, and a repeat send to the same phones omits it.

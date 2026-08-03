@@ -5118,6 +5118,386 @@ class SMSThroughputGuardTests(TestCase):
         self.assertTrue(result.created)
         self.assertEqual(result.recipient_count, 5)
 
+    # --- Split a cap-exceeding blast into two batches ---
+
+    def _split(self, custs, *, scheduled, send_at, batch2_send_at, key1='s1', key2='s2'):
+        from .services.sms_campaigns import finalize_campaign_split
+        return finalize_campaign_split(
+            self.org, name='Blast', body='Tickets!', criteria={},
+            manual_include_ids=[str(c.id) for c in custs], event=None,
+            scheduled=scheduled, send_at=send_at, batch2_send_at=batch2_send_at,
+            user=None, cap=5000, idempotency_key_1=key1, idempotency_key_2=key2,
+        )
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_fills_today_and_schedules_overflow_next_day(self):
+        from .models import SMSCampaign
+        from .services.sms_credits import credit, plan_campaign_footers
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+        # Total cost of reaching all 5 (footer identical either day: all are first-ever
+        # phones) — the two batches together should charge exactly this.
+        cost_all, _ = plan_campaign_footers(
+            self.org, 'Tickets!', [c.phone for c in custs], as_of=now)
+
+        result = self._split(custs, scheduled=False, send_at=now, batch2_send_at=tomorrow)
+
+        self.assertEqual(result.batch1_count, 3)
+        self.assertEqual(result.batch2_count, 2)
+        self.assertEqual(result.leftover_count, 0)
+        self.assertEqual(result.batch1.audience_size, 3)
+        self.assertEqual(result.batch2.audience_size, 2)
+        self.assertTrue(result.batch2.name.endswith('(part 2)'))
+        self.assertEqual(result.batch1.status, SMSCampaign.Status.SCHEDULED)
+        self.assertEqual(
+            timezone.localdate(result.batch2.scheduled_at), timezone.localdate(tomorrow))
+        # No recipient dropped; charged once for all five across the two batches.
+        self.assertEqual(result.batch1_count + result.batch2_count, 5)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100_000 - cost_all)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=5)
+    def test_split_when_today_full_puts_everything_next_day(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        # Consume all of today's 5-segment budget with an already-sent recipient.
+        pre = SMSCampaign.objects.create(organization=self.org, name='pre', body='hi')
+        SMSMessageRecipient.objects.create(
+            campaign=pre, phone='+15559990000', segments=5, twilio_sid='SMx',
+            status=SMSMessageRecipient.Status.SENT, sent_at=timezone.now(),
+        )
+        custs = self._opted_in(4)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+
+        result = self._split(custs, scheduled=False, send_at=now, batch2_send_at=tomorrow)
+
+        self.assertIsNone(result.batch1)          # nothing fit today
+        self.assertEqual(result.batch1_count, 0)
+        self.assertEqual(result.batch2_count, 4)  # all deferred to the next day
+        self.assertEqual(result.leftover_count, 0)
+        self.assertEqual(
+            SMSCampaign.objects.filter(
+                organization=self.org, name__endswith='(part 2)').count(), 1)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_reports_leftover_when_next_day_also_limited(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+        # Pre-book 2 of tomorrow's 3-segment budget so the overflow can't all fit.
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=booked, phone=f'+1558{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(2)
+        ])
+        custs = self._opted_in(5)
+
+        result = self._split(custs, scheduled=False, send_at=now, batch2_send_at=tomorrow)
+
+        self.assertEqual(result.batch1_count, 3)   # today's cap
+        self.assertEqual(result.batch2_count, 1)   # tomorrow: 3 cap - 2 booked
+        self.assertEqual(result.leftover_count, 1)  # 5 - 3 - 1
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_idempotent_replay(self):
+        from .models import SMSCampaign
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+
+        self._split(custs, scheduled=False, send_at=now,
+                    batch2_send_at=tomorrow, key1='r1', key2='r2')
+        count_after_first = SMSCampaign.objects.filter(organization=self.org).count()
+        self.org.refresh_from_db()
+        bal_after_first = self.org.sms_credit_balance_cents
+
+        # Replay with the same keys: no second campaign, no double charge.
+        self._split(custs, scheduled=False, send_at=now,
+                    batch2_send_at=tomorrow, key1='r1', key2='r2')
+        self.assertEqual(
+            SMSCampaign.objects.filter(organization=self.org).count(), count_after_first)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, bal_after_first)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_composer_split_action_creates_two_batches(self):
+        from .models import SMSCampaign
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        user = User.objects.create_user(
+            username='splt', email='splt@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        c = Client()
+        c.login(username='splt@example.com', password='pw')
+        c.get(reverse('tickets:home'))  # warm org cache
+        tomorrow_str = (
+            timezone.localtime(timezone.now()) + timedelta(days=1)
+        ).strftime('%Y-%m-%dT%H:%M')
+
+        resp = c.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Blast', 'body': 'Tickets!', 'send_mode': 'now',
+            'audience_scope': 'all', 'event': str(ev.id),
+            'idempotency_key': 'v1', 'idempotency_key_2': 'v2',
+            'split': '1', 'split_scheduled_at': tomorrow_str,
+        })
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            SMSCampaign.objects.filter(organization=self.org).count(), 2)
+        self.assertTrue(
+            SMSCampaign.objects.filter(
+                organization=self.org, name__endswith='(part 2)').exists())
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_split_modal_copy_reflects_send_mode(self):
+        """The split modal must not claim both batches are 'scheduled' when batch 1
+        actually dispatches immediately (send-now). Copy is driven by split_batch1_now."""
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)  # over the cap of 2 → split modal renders
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        c = self._preview_client()
+        base = {'name': 'B', 'body': 'test', 'audience_scope': 'all', 'event': str(ev.id)}
+
+        # Send-now: batch 1 goes out immediately → copy says "now", never "scheduled".
+        now_html = c.post(
+            reverse('tickets:sms_campaign_create'),
+            dict(base, send_mode='now'),
+        ).content.decode()
+        self.assertIn('sent now', now_html)
+        self.assertIn('Send now', now_html)
+        self.assertNotIn('Schedule both batches', now_html)
+        # Reparented-to-body controls stay tied to the composer form.
+        self.assertIn(
+            'name="split_scheduled_at" form="sms-campaign-form"', now_html)
+        self.assertIn('name="split" value="1" form="sms-campaign-form"', now_html)
+
+        # Scheduled: both batches are scheduled → the "Schedule both batches" wording.
+        when = (timezone.now() + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M')
+        sch_html = c.post(
+            reverse('tickets:sms_campaign_create'),
+            dict(base, send_mode='schedule', scheduled_at=when),
+        ).content.decode()
+        self.assertIn('at your scheduled time', sch_html)
+        self.assertIn('Schedule both batches', sch_html)
+        self.assertNotIn('sent now', sch_html)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_split_partial_failure_warning_is_mode_aware(self):
+        """When batch 1 commits (send-now) but batch 2 fails, the warning must say batch 1
+        'is sending now' (not 'scheduled') and point at the real 'Split into two batches'
+        CTA — a partial commit is never reported as a clean failure."""
+        from django.contrib.messages import get_messages
+        from .services import sms_campaigns as svc
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        c = self._preview_client()
+        real_finalize = svc.finalize_campaign_send
+        calls = {'n': 0}
+
+        def flaky(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return real_finalize(*args, **kwargs)  # batch 1 commits (send-now)
+            raise svc.DailyCapExceededError(2, 0, 2, timezone.localdate())
+
+        with patch.object(svc, 'finalize_campaign_send', side_effect=flaky):
+            resp = c.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'B', 'body': 'test', 'send_mode': 'now',
+                'audience_scope': 'all', 'event': str(ev.id),
+                'idempotency_key': 'pf1', 'idempotency_key_2': 'pf2', 'split': '1',
+            })
+
+        self.assertEqual(resp.status_code, 302)  # redirected to batch 1, not a bare error
+        msgs = ' '.join(m.message for m in get_messages(resp.wsgi_request))
+        self.assertIn('is sending now', msgs)         # mode-aware (send-now)
+        self.assertNotIn('is scheduled', msgs)
+        self.assertIn('Split into two batches', msgs)  # the real CTA label
+        self.assertNotIn('Schedule in two batches', msgs)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_partial_failure_replay_does_not_double_charge(self):
+        """REGRESSION (eng-review D2 / Codex #1): batch 1 commits, batch 2 fails, the
+        organizer retries with the same keys → batch-1 recipients must NOT be re-charged
+        or re-sent. Before the fix, the retry rebuilt batch 2 from the full audience
+        (batch 1's booking collapsed today's budget) and re-included batch-1 people."""
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services import sms_campaigns as svc
+        from .services.sms_credits import credit, plan_campaign_footers
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+        cost_all, _ = plan_campaign_footers(
+            self.org, 'Tickets!', [c.phone for c in custs], as_of=now)
+
+        # First attempt: batch 1 (3 today) commits for real, batch 2 (2 tomorrow) raises.
+        real_finalize = svc.finalize_campaign_send
+        calls = {'n': 0}
+
+        def flaky(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return real_finalize(*args, **kwargs)  # batch 1 succeeds
+            raise svc.DailyCapExceededError(2, 0, 3, timezone.localdate(tomorrow))
+
+        with patch.object(svc, 'finalize_campaign_send', side_effect=flaky):
+            with self.assertRaises(svc.DailyCapExceededError):
+                self._split(custs, scheduled=False, send_at=now,
+                            batch2_send_at=tomorrow, key1='p1', key2='p2')
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 1)
+        batch1 = SMSCampaign.objects.get(organization=self.org, idempotency_key='p1')
+        self.assertEqual(batch1.audience_size, 3)
+
+        # Retry (real path) with the SAME keys → batch 2 gets created, batch 1 reused.
+        result = self._split(custs, scheduled=False, send_at=now,
+                             batch2_send_at=tomorrow, key1='p1', key2='p2')
+
+        # Exactly two campaigns, five distinct recipients total, no customer in both.
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 2)
+        all_ids = list(SMSMessageRecipient.objects.filter(
+            campaign__organization=self.org).values_list('customer_id', flat=True))
+        self.assertEqual(len(all_ids), 5)
+        self.assertEqual(len(set(all_ids)), 5)  # no duplicate recipient across batches
+        # Charged for exactly five recipients — batch-1 people not billed twice.
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100_000 - cost_all)
+        self.assertEqual(result.batch1.id, batch1.id)  # original batch 1 reused
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_truncates_long_batch2_name(self):
+        """REGRESSION (eng-review D3 / Codex #4): batch 2's name must fit
+        SMSCampaign.name max_length=200 even when the base name is at the limit."""
+        from .models import SMSCampaign
+        from .services.sms_campaigns import finalize_campaign_split
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        custs = self._opted_in(5)
+        long_name = 'X' * 200
+        now = timezone.now()
+        result = finalize_campaign_split(
+            self.org, name=long_name, body='Tickets!', criteria={},
+            manual_include_ids=[str(c.id) for c in custs], event=None,
+            scheduled=False, send_at=now, batch2_send_at=now + timedelta(days=1),
+            user=None, cap=5000, idempotency_key_1='n1', idempotency_key_2='n2',
+        )
+        self.assertIsNotNone(result.batch2)
+        self.assertLessEqual(len(result.batch2.name), 200)
+        self.assertTrue(result.batch2.name.endswith(' (part 2)'))
+        # Reload proves the value actually persisted within the column limit.
+        self.assertLessEqual(
+            len(SMSCampaign.objects.get(id=result.batch2.id).name), 200)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_split_insufficient_credits_precheck_creates_nothing(self):
+        """eng-review D5 / D1: if the wallet can't cover BOTH batches, the split raises
+        before any write — never charges batch 1 then fails batch 2."""
+        from .models import SMSCampaign
+        from .services.sms_credits import credit, InsufficientCreditsError
+        credit(self.org.id, 3)  # far below the cost of five recipients
+        custs = self._opted_in(5)
+        now = timezone.now()
+        before = SMSCampaign.objects.filter(organization=self.org).count()
+        with self.assertRaises(InsufficientCreditsError):
+            self._split(custs, scheduled=False, send_at=now,
+                        batch2_send_at=now + timedelta(days=1))
+        self.assertEqual(
+            SMSCampaign.objects.filter(organization=self.org).count(), before)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 3)  # untouched
+
+    def test_materialize_order_is_deterministic_for_criteria_audience(self):
+        """eng-review D2 / Codex #5: split slicing must be stable, so materialize (via
+        candidate_customers' ORDER BY) must return the same order every call for a
+        criteria-built audience — not the arbitrary order of an unordered DISTINCT."""
+        from .models import SMSCampaign
+        self._opted_in(8)
+        tmpl = SMSCampaign(
+            organization=self.org, filter_criteria={'all_subscribers': True})
+        first = [r['customer_id'] for r in tmpl.materialize(self.org)]
+        second = [r['customer_id'] for r in tmpl.materialize(self.org)]
+        self.assertEqual(len(first), 8)
+        self.assertEqual(first, second)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=3)
+    def test_composer_split_blank_time_defaults_and_warns_on_leftover(self):
+        """eng-review D5: the view's split branch defaults a blank second-batch time to
+        the next day, and surfaces a warning when some recipients still don't fit."""
+        from .models import SMSCampaign, SMSMessageRecipient
+        from django.contrib.messages import get_messages
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)
+        # Pre-book 2 of tomorrow's 3-segment budget so 1 recipient is left over.
+        tomorrow = timezone.now() + timedelta(days=1)
+        booked = SMSCampaign.objects.create(
+            organization=self.org, name='booked', body='hi',
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=tomorrow,
+        )
+        SMSMessageRecipient.objects.bulk_create([
+            SMSMessageRecipient(campaign=booked, phone=f'+1558{i:07d}', segments=1,
+                                status=SMSMessageRecipient.Status.QUEUED) for i in range(2)
+        ])
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        user = User.objects.create_user(
+            username='splt2', email='splt2@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        c = Client()
+        c.login(username='splt2@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+
+        resp = c.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Blast', 'body': 'Tickets!', 'send_mode': 'now',
+            'audience_scope': 'all', 'event': str(ev.id),
+            'idempotency_key': 'w1', 'idempotency_key_2': 'w2',
+            'split': '1',  # no split_scheduled_at → view defaults it to next day
+        })
+
+        self.assertEqual(resp.status_code, 302)
+        # Two new split campaigns created (plus the pre-booked one).
+        self.assertEqual(
+            SMSCampaign.objects.filter(
+                organization=self.org, idempotency_key__in=['w1', 'w2']).count(), 2)
+        batch2 = SMSCampaign.objects.get(organization=self.org, idempotency_key='w2')
+        self.assertEqual(
+            timezone.localdate(batch2.scheduled_at),
+            timezone.localdate(timezone.now() + timedelta(days=1)))
+        msgs = [m.message for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('were not scheduled' in m for m in msgs))  # leftover warning
+
     def test_daily_cap_exceeded_error_message_prompts_to_reduce(self):
         from .services.sms_campaigns import DailyCapExceededError
         exc = DailyCapExceededError(count=20, allowed=5, cap=100, send_date=timezone.localdate())
@@ -5249,6 +5629,13 @@ class SMSThroughputGuardTests(TestCase):
         self.assertIn('Reduce', resp.context['daily_cap_block'])
         # Nothing was created — the block is shown, not committed.
         self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+        # This render includes the split modal (daily_cap_next_fits > 0). Guard against
+        # unrendered template markers leaking as page text — a multi-line {# #} comment
+        # (Django only strips single-line ones) renders verbatim; {% %}/{{ }} likewise.
+        html = resp.content.decode()
+        self.assertNotIn('{#', html)
+        self.assertNotIn('{%', html)
+        self.assertNotIn('{{', html)
 
     def _preview_client(self):
         user = User.objects.create_user(

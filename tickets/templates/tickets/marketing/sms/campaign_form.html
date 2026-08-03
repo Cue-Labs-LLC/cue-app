@@ -446,6 +446,7 @@
     <form method="post" novalidate id="sms-campaign-form">
         {% csrf_token %}
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+        <input type="hidden" name="idempotency_key_2" value="{{ idempotency_key_2 }}">
         {% if manual_include_ids_csv %}
         <input type="hidden" name="manual_include_ids" value="{{ manual_include_ids_csv }}">
         {% endif %}
@@ -630,6 +631,9 @@
                     {% elif daily_cap_block %}
                     <div class="sms-confirm" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
                         <span class="sms-confirm-text">{{ daily_cap_block }}</span>
+                        {% if daily_cap_next_fits %}
+                        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#splitBatchModal"><i class="bi bi-calendar2-week"></i> Split into two batches</button>
+                        {% endif %}
                     </div>
                     {% else %}
                     <div class="sms-confirm">
@@ -680,6 +684,56 @@
                 </p>
             </div>
         </div>
+
+        {% comment %}
+        Split a cap-exceeding blast into two batches. On load this modal is reparented to
+        <body> (see the extra_js reparent script) so a transformed ancestor can't trap it
+        under the backdrop; its controls use form="sms-campaign-form" so they still submit
+        with the composer form. Only rendered when an overflow batch would fit the next day.
+        {% endcomment %}
+        {% if daily_cap_next_fits %}
+        <div class="modal fade" id="splitBatchModal" tabindex="-1" aria-labelledby="splitBatchModalLabel" aria-describedby="splitBatchDesc" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="splitBatchModalLabel">Send in two batches</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        {% if split_batch1_now %}
+                        <p id="splitBatchDesc">This blast is larger than today's remaining daily send limit. We'll send as many as fit <b>now</b> and schedule the rest for the next day.</p>
+                        <ul class="mb-3">
+                            <li><b>{{ daily_cap_allowed }}</b> recipient{{ daily_cap_allowed|pluralize }} sent now</li>
+                            <li><b>{{ daily_cap_next_fits }}</b> recipient{{ daily_cap_next_fits|pluralize }} scheduled in a second batch, on the day you pick below</li>
+                        </ul>
+                        {% else %}
+                        <p id="splitBatchDesc">This blast is larger than the daily send limit for its scheduled day. We'll schedule as many as fit that day and the rest for the next day.</p>
+                        <ul class="mb-3">
+                            <li><b>{{ daily_cap_allowed }}</b> recipient{{ daily_cap_allowed|pluralize }} at your scheduled time</li>
+                            <li><b>{{ daily_cap_next_fits }}</b> recipient{{ daily_cap_next_fits|pluralize }} in a second batch, on the day you pick below</li>
+                        </ul>
+                        {% endif %}
+                        {% if daily_cap_next_leftover %}
+                        <div class="sms-confirm mb-3" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
+                            <span class="sms-confirm-text"><b>{{ daily_cap_next_leftover }}</b> recipient{{ daily_cap_next_leftover|pluralize }} still won't fit within the next day's limit and won't be scheduled. Pick a later day or trim the audience to reach everyone.</span>
+                        </div>
+                        {% endif %}
+                        <label class="sms-label" for="split-scheduled-at">Second batch send time</label>
+                        {# form= keeps this submitting with the composer form after the modal is reparented to body. #}
+                        <input type="datetime-local" id="split-scheduled-at" name="split_scheduled_at" form="sms-campaign-form" class="form-control" value="{{ split_default_dt }}">
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        {% if split_batch1_now %}
+                        <button type="submit" name="split" value="1" form="sms-campaign-form" class="btn btn-primary"><i class="bi bi-send"></i> Send now &amp; schedule the rest</button>
+                        {% else %}
+                        <button type="submit" name="split" value="1" form="sms-campaign-form" class="btn btn-primary"><i class="bi bi-calendar2-check"></i> Schedule both batches</button>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </form>
 </div>
 {% endblock %}
@@ -746,6 +800,16 @@
     }
 
     document.addEventListener('DOMContentLoaded', function () {
+        // Reparent the split modal to <body> so no ancestor stacking context (the
+        // composer's transform-based .sms-reveal entrance animations create them) can
+        // trap it beneath Bootstrap's body-level .modal-backdrop — which would leave the
+        // modal visible but un-clickable. Its controls carry form="sms-campaign-form",
+        // so they still submit with the composer form from body level.
+        var splitModal = document.getElementById('splitBatchModal');
+        if (splitModal && splitModal.parentNode !== document.body) {
+            document.body.appendChild(splitModal);
+        }
+
         var body = document.getElementById('{{ form.body.id_for_label }}');
         var chars = document.getElementById('sms-chars');
         var segs = document.getElementById('sms-segs');
