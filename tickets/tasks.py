@@ -798,6 +798,11 @@ def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definition
             recalculate_customer_segments(uploaded_file.organization)
         except Exception:
             logger.exception("RFM recalc after CSV import failed for %s", uploaded_file_id)
+        try:
+            from tickets.services.marketing.sms_attribution import NativeSMSAttributionCalculator
+            NativeSMSAttributionCalculator(uploaded_file.organization).recompute_all()
+        except Exception:
+            logger.exception("Native SMS attribution recompute after CSV import failed for %s", uploaded_file_id)
         _invalidate_event_list_cache(uploaded_file.organization)
 
     logger.info(

@@ -5702,6 +5702,11 @@ def _recompute_utm_attribution_for_event(org, event):
         SMSAttributionCalculator(org).recompute_event(event)
     except Exception:
         logger.exception("SMS attribution recompute failed for org=%s event=%s", org.id, event.id)
+    try:
+        from tickets.services.marketing.sms_attribution import NativeSMSAttributionCalculator
+        NativeSMSAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("Native SMS attribution recompute failed for org=%s event=%s", org.id, event.id)
 
 
 # How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
