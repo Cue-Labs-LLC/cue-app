@@ -588,6 +588,7 @@ def sms_campaign_create(request):
     daily_cap_next_fits = None
     daily_cap_next_leftover = None
     split_default_dt_str = None
+    split_batch1_now = None  # True when batch 1 sends immediately (send-now), not scheduled
     prefill = None
     strategist_prefill = None
     manual_include_ids = []
@@ -727,6 +728,10 @@ def sms_campaign_create(request):
                         )
                         daily_cap_next_fits = _next_fits
                         daily_cap_next_leftover = len(_rest) - _next_fits
+                        # Batch 1 inherits the composer's send mode: on "Send now" it
+                        # dispatches immediately (only batch 2 is scheduled), so the modal
+                        # copy must not claim both batches are scheduled.
+                        split_batch1_now = not scheduled
 
                 if request.POST.get('split'):
                     # Organizer chose to split a cap-exceeding send: fill today, schedule
@@ -775,13 +780,18 @@ def sms_campaign_create(request):
                         committed = SMSCampaign.objects.filter(
                             organization=org, idempotency_key=idem_key).first()
                         if committed:
+                            n = committed.audience_size
+                            plural = '' if n == 1 else 's'
+                            # Batch 1 already committed with the composer's send mode, so
+                            # describe it accurately: send-now dispatched immediately, a
+                            # scheduled send is booked for later.
+                            batch1_state = 'is sending now' if not scheduled else 'is scheduled'
                             messages.warning(
                                 request,
-                                f'Batch 1 ({committed.audience_size} recipient'
-                                f'{"" if committed.audience_size == 1 else "s"}) is '
-                                f'scheduled, but the second batch could not be: {base_msg} '
-                                f'Reopen the composer and choose "Schedule in two batches" '
-                                f'again to schedule the rest.',
+                                f'Batch 1 ({n} recipient{plural}) {batch1_state}, but the '
+                                f'second batch could not be scheduled: {base_msg} Reopen the '
+                                f'composer and choose "Split into two batches" again to '
+                                f'schedule the rest.',
                             )
                             return redirect(
                                 'tickets:sms_campaign_detail', pk=committed.id)
@@ -974,6 +984,7 @@ def sms_campaign_create(request):
         'daily_cap_next_fits': daily_cap_next_fits,
         'daily_cap_next_leftover': daily_cap_next_leftover,
         'split_default_dt': split_default_dt_str,
+        'split_batch1_now': split_batch1_now,
         'idempotency_key': idem_key,
         'idempotency_key_2': idem_key_2,
         'prefill': prefill,

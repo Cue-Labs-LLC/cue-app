@@ -5267,6 +5267,81 @@ class SMSThroughputGuardTests(TestCase):
             SMSCampaign.objects.filter(
                 organization=self.org, name__endswith='(part 2)').exists())
 
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_split_modal_copy_reflects_send_mode(self):
+        """The split modal must not claim both batches are 'scheduled' when batch 1
+        actually dispatches immediately (send-now). Copy is driven by split_batch1_now."""
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)  # over the cap of 2 → split modal renders
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        c = self._preview_client()
+        base = {'name': 'B', 'body': 'test', 'audience_scope': 'all', 'event': str(ev.id)}
+
+        # Send-now: batch 1 goes out immediately → copy says "now", never "scheduled".
+        now_html = c.post(
+            reverse('tickets:sms_campaign_create'),
+            dict(base, send_mode='now'),
+        ).content.decode()
+        self.assertIn('sent now', now_html)
+        self.assertIn('Send now', now_html)
+        self.assertNotIn('Schedule both batches', now_html)
+        # Reparented-to-body controls stay tied to the composer form.
+        self.assertIn(
+            'name="split_scheduled_at" form="sms-campaign-form"', now_html)
+        self.assertIn('name="split" value="1" form="sms-campaign-form"', now_html)
+
+        # Scheduled: both batches are scheduled → the "Schedule both batches" wording.
+        when = (timezone.now() + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M')
+        sch_html = c.post(
+            reverse('tickets:sms_campaign_create'),
+            dict(base, send_mode='schedule', scheduled_at=when),
+        ).content.decode()
+        self.assertIn('at your scheduled time', sch_html)
+        self.assertIn('Schedule both batches', sch_html)
+        self.assertNotIn('sent now', sch_html)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2)
+    def test_split_partial_failure_warning_is_mode_aware(self):
+        """When batch 1 commits (send-now) but batch 2 fails, the warning must say batch 1
+        'is sending now' (not 'scheduled') and point at the real 'Split into two batches'
+        CTA — a partial commit is never reported as a clean failure."""
+        from django.contrib.messages import get_messages
+        from .services import sms_campaigns as svc
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._opted_in(5)
+        ev = Event.objects.create(
+            organization=self.org, name='E', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=1), start_time=time(20, 0),
+        )
+        c = self._preview_client()
+        real_finalize = svc.finalize_campaign_send
+        calls = {'n': 0}
+
+        def flaky(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return real_finalize(*args, **kwargs)  # batch 1 commits (send-now)
+            raise svc.DailyCapExceededError(2, 0, 2, timezone.localdate())
+
+        with patch.object(svc, 'finalize_campaign_send', side_effect=flaky):
+            resp = c.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'B', 'body': 'test', 'send_mode': 'now',
+                'audience_scope': 'all', 'event': str(ev.id),
+                'idempotency_key': 'pf1', 'idempotency_key_2': 'pf2', 'split': '1',
+            })
+
+        self.assertEqual(resp.status_code, 302)  # redirected to batch 1, not a bare error
+        msgs = ' '.join(m.message for m in get_messages(resp.wsgi_request))
+        self.assertIn('is sending now', msgs)         # mode-aware (send-now)
+        self.assertNotIn('is scheduled', msgs)
+        self.assertIn('Split into two batches', msgs)  # the real CTA label
+        self.assertNotIn('Schedule in two batches', msgs)
+
     @override_settings(SMS_DAILY_SEGMENT_CAP=3)
     def test_split_partial_failure_replay_does_not_double_charge(self):
         """REGRESSION (eng-review D2 / Codex #1): batch 1 commits, batch 2 fails, the
@@ -5554,6 +5629,13 @@ class SMSThroughputGuardTests(TestCase):
         self.assertIn('Reduce', resp.context['daily_cap_block'])
         # Nothing was created — the block is shown, not committed.
         self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+        # This render includes the split modal (daily_cap_next_fits > 0). Guard against
+        # unrendered template markers leaking as page text — a multi-line {# #} comment
+        # (Django only strips single-line ones) renders verbatim; {% %}/{{ }} likewise.
+        html = resp.content.decode()
+        self.assertNotIn('{#', html)
+        self.assertNotIn('{%', html)
+        self.assertNotIn('{{', html)
 
     def _preview_client(self):
         user = User.objects.create_user(
