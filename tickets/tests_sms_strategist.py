@@ -1,6 +1,7 @@
 """Tests for the AI SMS Campaign Strategist: plan generation, gating, org scoping,
 token metering, and launching a step into the composer."""
 
+import uuid
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,7 @@ from .models import (
     TICKETING_TYPE_EXTERNAL,
 )
 from .services.sms_strategist import (
-    CampaignPlan, PlanStep, generate_campaign_plan,
+    CampaignPlan, PlanStep, RegeneratedMessage, generate_campaign_plan,
     _top_prior_campaigns, _recent_campaign_bodies,
 )
 from .sms_views import _plan_step_event, _plan_progress
@@ -48,6 +49,24 @@ def _fake_structured_llm():
 
     structured = MagicMock()
     structured.invoke.return_value = {'raw': raw, 'parsed': _fake_plan(), 'parsing_error': None}
+
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    return llm
+
+
+def _fake_regen_llm(message='A brand new take on this message. Grab tix: https://cue.test/t/abc/',
+                    rationale='Fresh angle for this touch.'):
+    """MagicMock ChatOpenAI whose structured invoke returns a single RegeneratedMessage."""
+    raw = MagicMock()
+    raw.usage_metadata = {'input_tokens': 40, 'output_tokens': 20, 'total_tokens': 60}
+
+    structured = MagicMock()
+    structured.invoke.return_value = {
+        'raw': raw,
+        'parsed': RegeneratedMessage(message=message, rationale=rationale),
+        'parsing_error': None,
+    }
 
     llm = MagicMock()
     llm.with_structured_output.return_value = structured
@@ -416,6 +435,104 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         plan.refresh_from_db()
         self.assertEqual(len(plan.steps), 3)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_step_replaces_body_and_rationale(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        old_body = plan.steps[0]['body']
+        # Preserve the step's schedule/audience across a regenerate.
+        old_send_at = plan.steps[0]['send_at']
+        old_audience = plan.steps[0]['audience_criteria']
+
+        mock_openai.return_value = _fake_regen_llm(message='Totally fresh copy for touch one.',
+                                                   rationale='New reason.')
+        resp = self.client.post(
+            reverse('tickets:sms_plan_regenerate_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['body'], 'Totally fresh copy for touch one.')
+        self.assertEqual(data['rationale'], 'New reason.')
+        self.assertGreaterEqual(data['segments'], 1)
+
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], 'Totally fresh copy for touch one.')
+        self.assertNotEqual(plan.steps[0]['body'], old_body)
+        self.assertEqual(plan.steps[0]['rationale'], 'New reason.')
+        # Schedule + audience are untouched by a message regenerate.
+        self.assertEqual(plan.steps[0]['send_at'], old_send_at)
+        self.assertEqual(plan.steps[0]['audience_criteria'], old_audience)
+
+        # A second billable usage row is recorded, tagged as a regenerate.
+        regen_usage = AITokenUsage.objects.filter(
+            organization=self.org, feature=AITokenUsage.FEATURE_SMS_PLAN,
+            metadata__regenerate=True,
+        )
+        self.assertEqual(regen_usage.count(), 1)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_step_refuses_launched_step(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Mark step 0 as already launched.
+        steps = plan.steps
+        steps[0]['launched_campaign_id'] = str(uuid.uuid4())
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+        frozen_body = plan.steps[0]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_regenerate_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], frozen_body)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_plan_replaces_steps_keeps_name(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # User renamed the plan; regenerate must preserve it.
+        plan.name = 'My custom plan name'
+        plan.save(update_fields=['name'])
+        # Edit a message so we can prove regenerate discards edits.
+        steps = plan.steps
+        steps[0]['body'] = 'HAND EDITED'
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+
+        mock_openai.return_value = _fake_structured_llm()
+        resp = self.client.post(reverse('tickets:sms_plan_regenerate', kwargs={'pk': plan.id}))
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        # Name kept; steps replaced with a fresh sequence (edit gone).
+        self.assertEqual(plan.name, 'My custom plan name')
+        self.assertEqual(len(plan.steps), 3)
+        self.assertNotIn('HAND EDITED', [s['body'] for s in plan.steps])
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_plan_blocked_when_step_launched(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        steps = plan.steps
+        steps[1]['launched_campaign_id'] = str(uuid.uuid4())
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+        before = [s['body'] for s in plan.steps]
+
+        resp = self.client.post(reverse('tickets:sms_plan_regenerate', kwargs={'pk': plan.id}))
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        # Nothing regenerated — steps unchanged.
+        self.assertEqual([s['body'] for s in plan.steps], before)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_update_schedule_rejects_bad_datetime(self, mock_openai):
