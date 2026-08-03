@@ -91,10 +91,7 @@ def organization_context(request):
     if org and ctx['is_organizer']:
         try:
             from .models import AIRecommendation
-            ctx['outstanding_actions_count'] = AIRecommendation.objects.filter(
-                organization=org,
-                status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-            ).count()
+            ctx['outstanding_actions_count'] = AIRecommendation.outstanding_for_org(org).count()
         except Exception:
             pass
 

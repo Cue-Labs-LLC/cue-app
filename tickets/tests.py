@@ -22086,3 +22086,112 @@ class CheckinCurveTests(TestCase):
             reverse('tickets:event_checkin_curve_api', args=[other_event.id])
         )
         self.assertEqual(resp.status_code, 404)
+
+
+class ActionCenterKindTogglesTests(TestCase):
+    """Enable/disable AIRecommendation kinds per org (Action Center settings)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Toggle Org', slug='toggle-org')
+        self.admin_user = User.objects.create_user(
+            username='toggleadmin', email='toggleadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Toggle Venue', city='Toggle City',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Toggle Fest', venue=self.venue,
+            start_date=date(2026, 9, 1),
+        )
+        # One unresolved recommendation of two different kinds, both linked to the event.
+        self.pacing = AIRecommendation.objects.create(
+            organization=self.org, event=self.event,
+            kind=AIRecommendation.Kind.SALES_PACING,
+            priority=AIRecommendation.Priority.HIGH,
+            title='Pacing behind', summary='Slow sales', dedupe_key='sales_pacing:1',
+        )
+        self.winback = AIRecommendation.objects.create(
+            organization=self.org, event=self.event,
+            kind=AIRecommendation.Kind.WINBACK_AUDIENCE,
+            priority=AIRecommendation.Priority.MEDIUM,
+            title='Win them back', summary='Lapsed customers', dedupe_key='winback_audience:90',
+        )
+
+    def _login_admin(self):
+        self.client.login(username='toggleadmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_all_kinds_visible_by_default(self):
+        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 2)
+        self._login_admin()
+        resp = self.client.get(reverse('tickets:action_center'))
+        self.assertEqual(resp.status_code, 200)
+        titles = {r.title for r in resp.context['page_obj'].object_list}
+        self.assertEqual(titles, {'Pacing behind', 'Win them back'})
+
+    def test_disabling_a_kind_hides_it_everywhere(self):
+        self._login_admin()
+        resp = self.client.post(
+            reverse('tickets:settings_action_center'),
+            {AIRecommendation.Kind.SALES_PACING: '', AIRecommendation.Kind.WINBACK_AUDIENCE: 'on'},
+        )
+        self.assertRedirects(resp, reverse('tickets:settings_action_center'))
+
+        self.org.refresh_from_db()
+        self.assertIn(AIRecommendation.Kind.SALES_PACING, self.org.disabled_action_kinds)
+        self.assertNotIn(AIRecommendation.Kind.WINBACK_AUDIENCE, self.org.disabled_action_kinds)
+
+        # Outstanding count (sidebar) drops to just the enabled kind.
+        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 1)
+
+        # Action Center page hides the disabled kind and its filter option.
+        resp = self.client.get(reverse('tickets:action_center'))
+        titles = {r.title for r in resp.context['page_obj'].object_list}
+        self.assertEqual(titles, {'Win them back'})
+        kind_values = {value for value, _label in resp.context['kind_choices']}
+        self.assertNotIn(AIRecommendation.Kind.SALES_PACING, kind_values)
+
+        # Per-event badge count on the events list excludes the disabled kind.
+        resp = self.client.get(reverse('tickets:event_list'))
+        page_events = {e.pk: e for e in resp.context['page_obj'].object_list}
+        self.assertEqual(page_events[self.event.pk].action_count, 1)
+
+    def test_re_enabling_restores_suggestions_without_regeneration(self):
+        self.org.disabled_action_kinds = [AIRecommendation.Kind.SALES_PACING]
+        self.org.save(update_fields=['disabled_action_kinds'])
+        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 1)
+
+        self._login_admin()
+        # Turn every kind back on.
+        resp = self.client.post(
+            reverse('tickets:settings_action_center'),
+            {value: 'on' for value, _label in AIRecommendation.Kind.choices},
+        )
+        self.assertRedirects(resp, reverse('tickets:settings_action_center'))
+
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.disabled_action_kinds, [])
+        # The existing rows reappear — no regeneration needed.
+        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 2)
+
+    def test_non_admin_cannot_open_settings(self):
+        host = User.objects.create_user(
+            username='togglehost', email='togglehost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='togglehost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        resp = self.client.get(reverse('tickets:settings_action_center'))
+        self.assertEqual(resp.status_code, 403)
