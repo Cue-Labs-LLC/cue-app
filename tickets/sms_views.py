@@ -1851,8 +1851,10 @@ def _bump_plan_rate_limit(org):
 def sms_plan_create(request):
     """Generate an AI campaign plan for an event or a customer segment.
 
-    GET renders the generate form; POST calls the strategist, persists an
-    SMSCampaignPlan, and redirects to its detail page.
+    GET renders the generate form; POST calls the strategist and holds the result
+    in the session as an UNSAVED preview, then redirects to ``sms_plan_preview``.
+    Nothing is persisted here — the organizer must click "Save as draft"
+    (``sms_plan_save``) to create the SMSCampaignPlan, or the preview is discarded.
     """
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
@@ -1869,7 +1871,18 @@ def sms_plan_create(request):
 
     if request.method == 'POST':
         objective = (request.POST.get('objective') or '').strip()[:300]
-        criteria = {} if event is not None else _plan_criteria_from_post(request.POST)
+        # "Regenerate" on the preview reuses that unsaved preview's own inputs
+        # (event / criteria / objective) so the organizer doesn't re-enter the form.
+        prev = request.session.get('sms_plan_preview')
+        if request.POST.get('from_preview') and prev:
+            objective = (prev.get('objective') or '').strip()[:300]
+            if event is None and prev.get('event_id'):
+                event = (Event.objects.filter(
+                    organization=org, deleted_at__isnull=True, id=prev['event_id'])
+                    .select_related('venue').first())
+            criteria = {} if event is not None else (prev.get('filter_criteria') or {})
+        else:
+            criteria = {} if event is not None else _plan_criteria_from_post(request.POST)
 
         if event is None and not criteria:
             messages.error(request, 'Pick an event, or choose at least one segment, tag, or market.')
@@ -1904,17 +1917,24 @@ def sms_plan_create(request):
                 tmp = SMSCampaign(organization=org, filter_criteria=criteria)
                 name = f'Plan · {tmp.audience_summary(org)}'
 
-        plan = SMSCampaignPlan.objects.create(
-            organization=org, created_by=request.user, event=event,
-            filter_criteria=criteria, name=name[:200], objective=objective,
-            strategy_summary=result['strategy_summary'], model_name=result['model_name'],
-            steps=result['steps'], status=SMSCampaignPlan.Status.DRAFT,
-        )
+        # Hold the generated plan in the session as an UNSAVED preview — nothing is
+        # written to the database until the organizer clicks "Save as draft"
+        # (sms_plan_save). Abandoning the preview simply discards it.
+        request.session['sms_plan_preview'] = {
+            'event_id': str(event.id) if event is not None else None,
+            'filter_criteria': criteria,
+            'name': name[:200],
+            'objective': objective,
+            'strategy_summary': result['strategy_summary'],
+            'model_name': result['model_name'],
+            'steps': result['steps'],
+        }
+        request.session.modified = True
 
         # Count only successful generations against the hourly budget.
         _bump_plan_rate_limit(org)
 
-        return redirect('tickets:sms_plan_detail', pk=plan.id)
+        return redirect('tickets:sms_plan_preview')
 
     # GET: optionally prefill a segment audience from query params (e.g. from the
     # segments page: ?segment=VIP&market=<id>).
@@ -1930,6 +1950,163 @@ def sms_plan_create(request):
         selected = seg_criteria or None
     return render(request, 'tickets/marketing/sms/plan_form.html',
                   _plan_form_context(org, event, selected))
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+def sms_plan_preview(request):
+    """Render the freshly generated, UNSAVED plan held in the session.
+
+    Nothing is in the database yet: the organizer clicks "Save Plan"
+    (``sms_plan_save``) to persist it or "Discard" (``sms_plan_discard``) to drop it.
+    Messages, send times, and audiences are all editable in place before saving.
+    A stale/empty session (e.g. after a save) just bounces back to the generate form.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    data = request.session.get('sms_plan_preview')
+    if not data:
+        return redirect('tickets:sms_plan_create')
+    event = None
+    if data.get('event_id'):
+        event = (Event.objects.filter(organization=org, id=data['event_id'])
+                 .select_related('venue').first())
+    steps = _decorate_plan_steps(data.get('steps') or [], org.get_timezone())
+    context = {
+        'data': data,
+        'steps': steps,
+        'event': event,
+    }
+    context.update(_audience_option_lists(org))  # segment_choices / tags / market_choices
+    return render(request, 'tickets/marketing/sms/plan_preview.html', context)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_save(request):
+    """Persist the session-held preview as a DRAFT SMSCampaignPlan.
+
+    This is now the ONLY path that creates a plan row — generation alone never does.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    data = request.session.get('sms_plan_preview')
+    if not data:
+        messages.error(request, 'Nothing to save — generate a plan first.')
+        return redirect('tickets:sms_plan_create')
+    event = None
+    if data.get('event_id'):
+        event = Event.objects.filter(
+            organization=org, deleted_at__isnull=True, id=data['event_id'],
+        ).first()
+
+    # Apply the in-place edits the organizer made on the preview before saving —
+    # message text, send time, and audience — reusing the exact same helpers the detail
+    # page's inline editors use, so a saved plan is identical whether edited before or after.
+    steps = data.get('steps') or []
+    for i, step in enumerate(steps):
+        edited = request.POST.get(f'step_body_{i}')
+        if edited is not None and edited.strip():
+            step = _apply_step_body(step, edited.strip())
+
+        send_local = request.POST.get(f'step_send_{i}')
+        if send_local and send_local.strip():
+            try:
+                step = _apply_step_schedule(step, send_local, org, event)
+            except ValueError:
+                pass  # keep the generated timing on a malformed value
+
+        aud_raw = request.POST.get(f'step_audience_{i}')
+        if aud_raw:
+            try:
+                criteria = json.loads(aud_raw)
+            except (ValueError, TypeError):
+                criteria = None
+            if isinstance(criteria, dict) and criteria:
+                step = {**step, 'audience_criteria': criteria,
+                        'audience_label': _audience_label_for(org, criteria)}
+
+        steps[i] = step
+
+    plan = SMSCampaignPlan.objects.create(
+        organization=org, created_by=request.user, event=event,
+        filter_criteria=data.get('filter_criteria') or {},
+        name=(data.get('name') or 'Untitled plan')[:200],
+        objective=data.get('objective', ''),
+        strategy_summary=data.get('strategy_summary', ''),
+        model_name=data.get('model_name', ''),
+        steps=steps,
+        status=SMSCampaignPlan.Status.DRAFT,
+    )
+    request.session.pop('sms_plan_preview', None)
+    request.session.modified = True
+    messages.success(request, 'Plan saved.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_discard(request):
+    """Drop the session-held preview without saving.
+
+    Used by the "Discard" button and by the page's unload beacon (so an abandoned
+    preview never lingers). Returns JSON for the beacon/XHR path; otherwise redirects.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    existed = request.session.pop('sms_plan_preview', None) is not None
+    request.session.modified = True
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'beacon' in request.POST:
+        return JsonResponse({'ok': True})
+    if existed:
+        messages.info(request, 'Discarded the unsaved plan.')
+    return redirect('tickets:sms_plan_list')
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_resolve_audience(request):
+    """Resolve an audience selection to its criteria dict + display label — statelessly.
+
+    Used by the preview's audience editor (which has no persisted plan yet) so it can show
+    the authoritative label and stash the criteria for Save Plan. Mirrors the mapping in
+    ``sms_plan_update_audience`` but reads the event from the POST instead of a saved plan.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    mode = request.POST.get('audience_mode') or 'custom'
+    event_id = (request.POST.get('event_id') or '').strip()
+    if mode == 'all' and event_id:
+        criteria = {'all_subscribers': True}
+    elif mode == 'event' and event_id:
+        criteria = {'event_id': event_id}
+    else:
+        criteria = _plan_criteria_from_post(request.POST)
+        if not criteria:
+            return JsonResponse(
+                {'ok': False, 'error': 'Pick at least one segment, tag, or market.'},
+                status=400,
+            )
+    return JsonResponse({
+        'ok': True,
+        'criteria': criteria,
+        'audience_label': _audience_label_for(org, criteria),
+    })
 
 
 def _decorate_plan_steps(steps, tz):
@@ -2133,6 +2310,32 @@ def _apply_step_body(step_dict, body):
     return {**step_dict, 'body': body, 'segments': segments, 'encoding': encoding}
 
 
+def _apply_step_schedule(step_dict, raw_local, org, event=None):
+    """Return a copy of a step with send_at/send_time/offset_days/timing_label recomputed
+    from an org-local ``YYYY-MM-DDTHH:MM`` string. Raises ``ValueError`` on a bad value.
+
+    Shared by the detail page's inline schedule editor and the preview's Save Plan so both
+    compute timing identically.
+    """
+    from tickets.services.sms_strategist import format_send_label
+
+    naive = datetime.strptime((raw_local or '').strip(), '%Y-%m-%dT%H:%M')
+    org_tz = org.get_timezone()
+    dt = naive.replace(tzinfo=org_tz)
+    # offset_days stays informational: anchored on the event date for event plans, else today.
+    if event is not None and event.start_date:
+        offset_days = max(0, (event.start_date - dt.date()).days)
+    else:
+        offset_days = max(0, (dt.date() - timezone.now().astimezone(org_tz).date()).days)
+    return {
+        **step_dict,
+        'send_at': dt.isoformat(),
+        'send_time': dt.strftime('%H:%M'),
+        'offset_days': offset_days,
+        'timing_label': format_send_label(dt),
+    }
+
+
 @login_required
 @require_org
 @require_host
@@ -2325,8 +2528,6 @@ def sms_plan_update_schedule(request, pk, step):
     aware datetime, recomputes the display label (with timezone) and the offset/time so
     the step stays self-consistent for later launches.
     """
-    from tickets.services.sms_strategist import format_send_label
-
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
@@ -2336,34 +2537,18 @@ def sms_plan_update_schedule(request, pk, step):
     if step < 0 or step >= len(steps):
         raise Http404()
 
-    raw = (request.POST.get('send_at') or '').strip()
+    event = plan.event if plan.event_id else None
     try:
-        naive = datetime.strptime(raw, '%Y-%m-%dT%H:%M')
+        steps[step] = _apply_step_schedule(steps[step], request.POST.get('send_at'), org, event)
     except ValueError:
         return JsonResponse({'ok': False, 'error': 'Enter a valid date and time.'}, status=400)
 
-    org_tz = org.get_timezone()
-    dt = naive.replace(tzinfo=org_tz)
-    # Keep offset_days in sync with the chosen date (informational; anchored on the
-    # event date for event plans, else on today in the org's timezone).
-    if plan.event_id and plan.event and plan.event.start_date:
-        offset_days = max(0, (plan.event.start_date - dt.date()).days)
-    else:
-        offset_days = max(0, (dt.date() - timezone.now().astimezone(org_tz).date()).days)
-
-    steps[step] = {
-        **steps[step],
-        'send_at': dt.isoformat(),
-        'send_time': dt.strftime('%H:%M'),
-        'offset_days': offset_days,
-        'timing_label': format_send_label(dt),
-    }
     plan.steps = steps
     plan.save(update_fields=['steps', 'updated_at'])
     return JsonResponse({
         'ok': True,
         'timing_label': steps[step]['timing_label'],
-        'send_local': dt.strftime('%Y-%m-%dT%H:%M'),
+        'send_local': datetime.fromisoformat(steps[step]['send_at']).strftime('%Y-%m-%dT%H:%M'),
     })
 
 
