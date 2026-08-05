@@ -18,11 +18,6 @@
         <span class="hub-link-title">Profitability</span>
         <p class="hub-link-copy">Review margin and profitability across events.</p>
     </a>
-    <a href="{% url 'tickets:expense_analytics' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-receipt-cutoff"></i></span>
-        <span class="hub-link-title">Expenses</span>
-        <p class="hub-link-copy">Analyze spend categories and event cost patterns.</p>
-    </a>
 </div>
 {% endif %}
 
@@ -33,20 +28,10 @@
         <span class="hub-link-title">Segments</span>
         <p class="hub-link-copy">Review RFM segments and purchase behavior profiles.</p>
     </a>
-    <a href="{% url 'tickets:churn_overview' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-person-dash"></i></span>
-        <span class="hub-link-title">Churn Detection</span>
-        <p class="hub-link-copy">Find customers who have gone quiet and prepare outreach lists.</p>
-    </a>
     <a href="{% url 'tickets:repeat_customers' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-arrow-repeat"></i></span>
         <span class="hub-link-title">Repeat Customers</span>
         <p class="hub-link-copy">Measure returning buyers and repeat purchase patterns.</p>
-    </a>
-    <a href="{% url 'tickets:cohort_retention' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-calendar2-range"></i></span>
-        <span class="hub-link-title">Cohort Retention</span>
-        <p class="hub-link-copy">Track how customer cohorts come back over time.</p>
     </a>
     <a href="{% url 'tickets:audience_analytics' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-people"></i></span>
@@ -66,11 +51,6 @@
 
 <h2 class="hub-section-title">Sales &amp; Forecasting</h2>
 <div class="hub-grid">
-    <a href="{% url 'tickets:forecast_tool' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-graph-up-arrow"></i></span>
-        <span class="hub-link-title">Forecast</span>
-        <p class="hub-link-copy">Preview sales curves for upcoming events and capacity decisions.</p>
-    </a>
     <a href="{% url 'tickets:customer_ltv_by_market' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-bar-chart"></i></span>
         <span class="hub-link-title">LTV by Market</span>

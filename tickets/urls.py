@@ -132,14 +132,10 @@ urlpatterns = [
     path('analytics/', views.analytics_overview, name='analytics_overview'),
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
-    path('analytics/churn/', views.churn_overview, name='churn_overview'),
-    path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
-    path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/audience/', views.audience_analytics, name='audience_analytics'),
     path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
-    path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
     # Loyalty programs
     path('loyalty/', views.loyalty_program_list, name='loyalty_program_list'),
     path('loyalty/create/', views.loyalty_program_create, name='loyalty_program_create'),
@@ -319,10 +315,6 @@ urlpatterns = [
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/confirm/', sms_views.sms_plan_confirm_step, name='sms_plan_confirm_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/remove/', sms_views.sms_plan_remove_step, name='sms_plan_remove_step'),
 
-    # Forecast Tool
-    path('forecast/', views.forecast_tool, name='forecast_tool'),
-    path('forecast/api/', views.forecast_api, name='forecast_api'),
-    
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
     path('orders/<uuid:order_id>/refund/', views.refund_order, name='refund_order'),

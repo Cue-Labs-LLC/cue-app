@@ -782,10 +782,12 @@ class MarketTrendCalculator:
     def _reinforce_action(driver_key):
         """Same tool as the fix step, framed as 'keep the momentum going'."""
         tools = {
-            'retention': ('Review retention & win-backs', 'tickets:churn_overview', 'bi-person-dash'),
+            # retention/demand/costs are guidance-only — their former tools
+            # (churn, forecast, expenses pages) have been retired.
+            'retention': ('Review retention & win-backs', None, 'bi-person-dash'),
             'acquisition': ('Review customer segments', 'tickets:customer_segments', 'bi-diagram-3'),
-            'demand': ('Open the forecast tool', 'tickets:forecast_tool', 'bi-graph-up-arrow'),
-            'costs': ('Review event expenses', 'tickets:expense_analytics', 'bi-receipt-cutoff'),
+            'demand': ('Open the forecast tool', None, 'bi-graph-up-arrow'),
+            'costs': ('Review event expenses', None, 'bi-receipt-cutoff'),
             'promoters': ('Review survey feedback', 'tickets:survey_analytics', 'bi-chat-square-heart'),
             'detractors': ('Review survey feedback', 'tickets:survey_analytics', 'bi-chat-square-heart'),
         }
@@ -811,10 +813,13 @@ class MarketTrendCalculator:
     @staticmethod
     def _fix_action(driver_key):
         if driver_key == 'retention':
+            # Churn page retired — surface as guidance only.
             return {
                 'key': 'retention',
-                'label': 'Win back lapsed buyers',
-                'url_name': 'tickets:churn_overview',
+                'label': None,
+                'note': 'Repeat buyers are slipping in this market. Line up '
+                        'win-back outreach and loyalty perks for lapsed customers here.',
+                'url_name': None,
                 'icon': 'bi-person-dash',
             }
         if driver_key == 'acquisition':
@@ -825,10 +830,13 @@ class MarketTrendCalculator:
                 'icon': 'bi-diagram-3',
             }
         if driver_key == 'demand':
+            # Forecast page retired — surface as guidance only.
             return {
                 'key': 'demand',
-                'label': 'Open the forecast tool',
-                'url_name': 'tickets:forecast_tool',
+                'label': None,
+                'note': 'Demand is softening here. Revisit capacity, dates, and '
+                        'promotion timing for upcoming shows in this market.',
+                'url_name': None,
                 'icon': 'bi-graph-up-arrow',
             }
         if driver_key == 'price':
@@ -842,10 +850,13 @@ class MarketTrendCalculator:
                 'icon': 'bi-tag',
             }
         if driver_key == 'costs':
+            # Expenses page retired — surface as guidance only.
             return {
                 'key': 'costs',
-                'label': 'Review event expenses',
-                'url_name': 'tickets:expense_analytics',
+                'label': None,
+                'note': 'Costs are climbing in this market. Review event spend '
+                        'and trim where margins are thinning.',
+                'url_name': None,
                 'icon': 'bi-receipt-cutoff',
             }
         if driver_key in ('promoters', 'detractors'):
