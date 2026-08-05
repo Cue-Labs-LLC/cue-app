@@ -67,11 +67,9 @@ from .forms import (
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
 from .csv_processor import CSVProcessor
-from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
 from .services.markets import MarketBuilder, NO_MARKET_LABEL
 from .services.webhooks import fire_event_created, fire_order_created, fire_customer_created
-from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation import (
     BEHAVIOR_PROFILE_BADGE_COLORS,
     BEHAVIOR_PROFILE_DESCRIPTIONS,
@@ -109,7 +107,6 @@ BEHAVIOR_METRIC_LABELS = {
 }
 
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
-from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .services.loyalty import (
     LoyaltyProgramStats,
     award_points_for_order,
@@ -3422,18 +3419,6 @@ def _segment_mode_display(org):
     }
 
 
-def _parse_churn_days(request):
-    """Return a validated churn threshold from the query string."""
-    raw_days = request.GET.get('days', '').strip()
-    try:
-        days = int(raw_days or 90)
-    except (TypeError, ValueError):
-        days = 90
-    if days not in THRESHOLD_OPTIONS:
-        days = 90
-    return days
-
-
 def _segment_group_case(field_path):
     """Case/When expression mapping blank/null segment fields to 'Dormant'."""
     return Case(
@@ -3882,78 +3867,6 @@ def customer_segments(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_segments.html', context)
-
-
-@login_required
-@require_org
-@require_host
-def churn_overview(request):
-    """Analytics page for churned customers and win-back tagging."""
-    org = get_organization(request)
-    days = _parse_churn_days(request)
-    result = ChurnDetectionService(org).calculate(days_threshold=days)
-
-    paginator = Paginator(result['customers'], 25)
-    page_obj = paginator.get_page(request.GET.get('page'))
-
-    segment_breakdown = []
-    for row in result['stats']['segment_breakdown']:
-        segment = row['seg'] or 'Dormant'
-        segment_breakdown.append({
-            'segment': segment,
-            'count': row['count'],
-            'badge_color': SEGMENT_BADGE_COLORS.get(segment, 'secondary'),
-            'description': SEGMENT_DESCRIPTIONS.get(segment, ''),
-        })
-
-    context = {
-        'page_obj': page_obj,
-        'stats': result['stats'],
-        'days': days,
-        'threshold_options': THRESHOLD_OPTIONS,
-        'org_tags': CustomerTag.objects.filter(organization=org),
-        'segment_breakdown': segment_breakdown,
-        'segment_breakdown_json': json.dumps([
-            {'segment': row['segment'], 'count': row['count']}
-            for row in segment_breakdown
-        ]),
-        'segment_badge_colors': SEGMENT_BADGE_COLORS,
-    }
-    return render(request, 'tickets/churn_overview.html', context)
-
-
-@login_required
-@require_org
-@require_host
-@require_http_methods(['POST'])
-def churn_bulk_tag(request):
-    """Apply an existing org tag to the selected churned customers."""
-    org = get_organization(request)
-    tag_id = request.POST.get('tag_id', '').strip()
-    days = request.POST.get('days', '').strip()
-    customer_ids = request.POST.getlist('customer_ids')
-
-    try:
-        _uuid.UUID(tag_id)
-    except ValueError:
-        messages.error(request, 'Select a valid tag.')
-        return redirect(f"{reverse('tickets:churn_overview')}?days={_parse_churn_days(request)}")
-
-    try:
-        redirect_days = int(days or 90)
-    except (TypeError, ValueError):
-        redirect_days = 90
-    if redirect_days not in THRESHOLD_OPTIONS:
-        redirect_days = 90
-
-    from tickets.services.tagging import tag_customers
-    customers = Customer.objects.filter(organization=org, id__in=customer_ids)
-    tag, tagged_count = tag_customers(org, customers, tag_id=tag_id)
-    if tag is None:
-        messages.error(request, 'Select a valid tag.')
-    else:
-        messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
-    return redirect(f"{reverse('tickets:churn_overview')}?days={redirect_days}")
 
 
 @login_required
@@ -4536,47 +4449,6 @@ def market_trends(request):
     if request.GET.get('fragment'):
         return render(request, 'tickets/_market_trends_content.html', context)
     return render(request, 'tickets/market_trends.html', context)
-
-
-@login_required
-@require_org
-@require_host
-def cohort_retention(request):
-    """Analytics page: monthly cohort retention heatmap and line chart."""
-    org = get_organization(request)
-    start_date, end_date, active_window = _parse_window(request)
-    calculator = CohortRetentionCalculator(org)
-    result = calculator.calculate()
-    cohorts = result['cohorts']
-
-    if start_date:
-        start_m = start_date.strftime('%Y-%m')
-        end_m = (end_date or date.today()).strftime('%Y-%m')
-        cohorts = [c for c in cohorts if start_m <= c['cohort'] <= end_m]
-
-    if cohorts:
-        m1_vals = [c['periods'][1]['retention_pct'] for c in cohorts if len(c['periods']) > 1]
-        m3_vals = [c['periods'][3]['retention_pct'] for c in cohorts if len(c['periods']) > 3]
-        summary = {
-            'total_cohorts': len(cohorts),
-            'avg_m1_retention': round(sum(m1_vals) / len(m1_vals), 1) if m1_vals else 0,
-            'avg_m3_retention': round(sum(m3_vals) / len(m3_vals), 1) if m3_vals else 0,
-        }
-    else:
-        summary = {'total_cohorts': 0, 'avg_m1_retention': 0, 'avg_m3_retention': 0}
-
-    chart_data = json.dumps(cohorts, default=str)
-    max_periods = max(len(c['periods']) for c in cohorts) if cohorts else 0
-    return render(request, 'tickets/cohort_retention.html', {
-        'cohorts': cohorts,
-        'summary': summary,
-        'max_periods': range(max_periods),
-        'chart_data_json': chart_data,
-        'active_window': active_window,
-        'window_start': start_date or '',
-        'window_end': end_date or '',
-        'window_choices': WINDOW_CHOICES,
-    })
 
 
 @login_required
@@ -8571,82 +8443,6 @@ def settings_segment_tuning(request):
     return render(request, 'tickets/settings_segment_tuning.html', context)
 
 
-# Forecast Tool Views
-
-@login_required
-@require_org
-@require_host
-def forecast_tool(request):
-    """Display the standalone forecast tool page."""
-    org = get_organization(request)
-    venues = Venue.objects.filter(organization=org).order_by('city', 'name')
-    context = {
-        'venues': venues,
-    }
-    return render(request, 'tickets/forecast_tool.html', context)
-
-
-@login_required
-@require_org
-@require_host
-def forecast_api(request):
-    """Return forecast data as JSON for the chart."""
-    from datetime import datetime
-
-    org = get_organization(request)
-    venue_id = request.GET.get('venue_id', '').strip()
-    event_date_str = request.GET.get('event_date', '').strip()
-    capacity_str = request.GET.get('capacity', '').strip()
-    starting_tickets_str = request.GET.get('starting_tickets', '').strip()
-
-    # Validate inputs
-    errors = []
-    if not event_date_str:
-        errors.append('Event date is required')
-    if not capacity_str:
-        errors.append('Capacity is required')
-
-    try:
-        capacity = int(capacity_str) if capacity_str else 0
-        if capacity <= 0:
-            errors.append('Capacity must be a positive number')
-    except ValueError:
-        errors.append('Capacity must be a valid number')
-        capacity = 0
-
-    try:
-        event_date = datetime.strptime(event_date_str, '%Y-%m-%d').date() if event_date_str else None
-    except ValueError:
-        errors.append('Invalid date format')
-        event_date = None
-
-    starting_tickets = None
-    if starting_tickets_str:
-        try:
-            starting_tickets = int(starting_tickets_str)
-            if starting_tickets < 0:
-                errors.append('Tickets sold to date must be non-negative')
-        except ValueError:
-            errors.append('Tickets sold to date must be a valid number')
-
-    if errors:
-        return JsonResponse({'error': '; '.join(errors)}, status=400)
-
-    # Generate forecast preview
-    result = generate_forecast_preview(
-        venue_id=venue_id if venue_id else None,
-        event_date=event_date,
-        capacity=capacity,
-        starting_tickets=starting_tickets,
-        organization=org,
-    )
-
-    response = JsonResponse(result)
-    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-    response['Pragma'] = 'no-cache'
-    return response
-
-
 @login_required
 @require_org
 @require_host
@@ -9478,228 +9274,6 @@ def profitability_overview(request):
         'window_choices': WINDOW_CHOICES,
     }
     return render(request, 'tickets/profitability_overview.html', context)
-
-
-# ---------------------------------------------------------------------------
-# Expense Analytics
-# ---------------------------------------------------------------------------
-
-@login_required
-@require_host
-@require_org
-def expense_analytics(request):
-    """Configurable chart page: org-wide expense breakdown by time, event, and category."""
-    from decimal import Decimal
-
-    org = get_organization(request)
-    start_date, end_date, active_window = _parse_window(request)
-
-    selected_cats = request.GET.getlist('cat')
-    selected_event_id = request.GET.get('event', '')
-
-    # Base queryset — org-scoped, soft-delete safe, excludes unconfirmed meta_ads
-    qs = EventExpense.objects.visible().filter(
-        event__organization=org,
-    ).select_related('event')
-
-    # Time-series views: use expense_date when set, fall back to event start_date
-    qs_dated = qs.annotate(effective_date=Coalesce(F('expense_date'), F('event__start_date')))
-    if start_date:
-        qs_dated = qs_dated.filter(effective_date__gte=start_date)
-    if end_date:
-        qs_dated = qs_dated.filter(effective_date__lte=end_date)
-
-    # Event/category views: scope by event start_date (include null-date expenses)
-    qs_event = qs
-    if start_date:
-        qs_event = qs_event.filter(event__start_date__gte=start_date)
-    if end_date:
-        qs_event = qs_event.filter(event__start_date__lte=end_date)
-
-    if selected_cats:
-        qs_dated = qs_dated.filter(category__in=selected_cats)
-        qs_event = qs_event.filter(category__in=selected_cats)
-    if selected_event_id:
-        try:
-            import uuid
-            uuid.UUID(selected_event_id)
-            qs_dated = qs_dated.filter(event__id=selected_event_id)
-            qs_event = qs_event.filter(event__id=selected_event_id)
-        except (ValueError, AttributeError):
-            selected_event_id = ''
-
-    cat_label_map = dict(EventExpense.CATEGORY_CHOICES)
-
-    def _pivot_to_chartjs(rows, bucket_key, bucket_fmt):
-        """Pivot {bucket, category, total} rows into Chart.js stacked dataset format."""
-        buckets = []
-        seen = set()
-        for r in rows:
-            b = bucket_fmt(r[bucket_key])
-            if b not in seen:
-                seen.add(b)
-                buckets.append(b)
-
-        totals = {}  # {bucket: {cat: amount}}
-        for r in rows:
-            b = bucket_fmt(r[bucket_key])
-            totals.setdefault(b, {})[r['category']] = float(r['total'])
-
-        datasets = []
-        for cat, label in EventExpense.CATEGORY_CHOICES:
-            if any(cat in totals.get(b, {}) for b in buckets):
-                datasets.append({
-                    'key': cat,
-                    'label': label,
-                    'data': [totals.get(b, {}).get(cat, 0) for b in buckets],
-                })
-        return {'labels': buckets, 'datasets': datasets}
-
-    # --- Monthly data ---
-    monthly_rows = list(
-        qs_dated
-        .annotate(month=TruncMonth('effective_date'))
-        .values('month', 'category')
-        .annotate(total=Sum('amount'))
-        .order_by('month', 'category')
-    )
-    monthly_data = _pivot_to_chartjs(
-        monthly_rows, 'month', lambda d: d.strftime('%Y-%m')
-    )
-
-    # --- Quarterly data ---
-    quarterly_rows = list(
-        qs_dated
-        .annotate(quarter=TruncQuarter('effective_date'))
-        .values('quarter', 'category')
-        .annotate(total=Sum('amount'))
-        .order_by('quarter', 'category')
-    )
-
-    def _quarter_label(d):
-        return f"Q{((d.month - 1) // 3) + 1} {d.year}"
-
-    def _quarter_sort_key(label):
-        # "Q2 2025" → "2025-Q2" for correct sort
-        parts = label.split()
-        return f"{parts[1]}-{parts[0]}"
-
-    quarterly_data = _pivot_to_chartjs(
-        quarterly_rows, 'quarter', _quarter_label
-    )
-    # Re-sort labels chronologically (pivot preserves insertion order which is already sorted)
-    quarterly_data['labels'] = sorted(quarterly_data['labels'], key=_quarter_sort_key)
-    # Re-align dataset data to sorted labels
-    if quarterly_data['labels']:
-        raw_totals = {}
-        for r in quarterly_rows:
-            label = _quarter_label(r['quarter'])
-            raw_totals.setdefault(label, {})[r['category']] = float(r['total'])
-        for ds in quarterly_data['datasets']:
-            ds['data'] = [raw_totals.get(lbl, {}).get(ds['key'], 0) for lbl in quarterly_data['labels']]
-
-    # --- Event data ---
-    event_rows_raw = list(
-        qs_event
-        .values('event__id', 'event__name', 'event__start_date', 'category')
-        .annotate(total=Sum('amount'))
-        .order_by('event__start_date', 'event__name', 'category')
-    )
-
-    seen_events = {}
-    for r in event_rows_raw:
-        eid = str(r['event__id'])
-        if eid not in seen_events:
-            seen_events[eid] = {
-                'label': '{} ({})'.format(r['event__name'], r['event__start_date'].strftime('%b %d')) if r['event__start_date'] else r['event__name'],
-                'start_date': r['event__start_date'] or '',
-            }
-    event_id_order = sorted(seen_events.keys(), key=lambda k: (seen_events[k]['start_date'] or '', seen_events[k]['label']))
-
-    event_totals = {}
-    for r in event_rows_raw:
-        eid = str(r['event__id'])
-        event_totals.setdefault(eid, {})[r['category']] = float(r['total'])
-
-    event_data = {
-        'labels': [seen_events[eid]['label'] for eid in event_id_order],
-        'datasets': [
-            {
-                'key': cat,
-                'label': label,
-                'data': [event_totals.get(eid, {}).get(cat, 0) for eid in event_id_order],
-            }
-            for cat, label in EventExpense.CATEGORY_CHOICES
-            if any(cat in event_totals.get(eid, {}) for eid in event_id_order)
-        ],
-    }
-
-    # --- Category totals ---
-    cat_rows = list(
-        qs_event
-        .values('category')
-        .annotate(total=Sum('amount'))
-        .order_by('-total')
-    )
-    category_totals_data = {
-        'labels': [cat_label_map.get(r['category'], r['category']) for r in cat_rows],
-        'keys': [r['category'] for r in cat_rows],
-        'data': [float(r['total']) for r in cat_rows],
-    }
-
-    # --- Summary stats ---
-    agg = qs_event.aggregate(
-        total=Coalesce(Sum('amount'), Decimal('0.00')),
-        count=Count('id'),
-    )
-    summary_total = agg['total']
-    summary_count = agg['count']
-
-    largest_cat = cat_rows[0] if cat_rows else None
-    largest_cat_label = cat_label_map.get(largest_cat['category']) if largest_cat else None
-    largest_cat_amount = largest_cat['total'] if largest_cat else Decimal('0.00')
-
-    most_expensive_event = (
-        qs_event
-        .values('event__id', 'event__name', 'event__start_date')
-        .annotate(total=Sum('amount'))
-        .order_by('-total')
-        .first()
-    )
-
-    # --- Event filter dropdown ---
-    filter_events_qs = Event.objects.filter(organization=org)
-    if start_date:
-        filter_events_qs = filter_events_qs.filter(start_date__gte=start_date)
-    if end_date:
-        filter_events_qs = filter_events_qs.filter(start_date__lte=end_date)
-    filter_events = list(filter_events_qs.order_by('-start_date').values('id', 'name', 'start_date'))
-
-    has_data = bool(cat_rows)
-
-    context = {
-        'monthly_data_json': json.dumps(monthly_data, default=str),
-        'quarterly_data_json': json.dumps(quarterly_data, default=str),
-        'event_data_json': json.dumps(event_data, default=str),
-        'category_totals_json': json.dumps(category_totals_data, default=str),
-        'summary_total': summary_total,
-        'summary_count': summary_count,
-        'largest_cat_label': largest_cat_label,
-        'largest_cat_amount': largest_cat_amount,
-        'most_expensive_event_name': most_expensive_event['event__name'] if most_expensive_event else None,
-        'most_expensive_event_date': most_expensive_event['event__start_date'] if most_expensive_event else None,
-        'most_expensive_event_total': most_expensive_event['total'] if most_expensive_event else Decimal('0.00'),
-        'active_window': active_window,
-        'window_start': start_date or '',
-        'window_end': end_date or '',
-        'window_choices': WINDOW_CHOICES,
-        'category_choices': EventExpense.CATEGORY_CHOICES,
-        'selected_cats': selected_cats,
-        'filter_events': filter_events,
-        'selected_event_id': selected_event_id,
-        'has_data': has_data,
-    }
-    return render(request, 'tickets/expense_analytics.html', context)
 
 
 # ---------------------------------------------------------------------------

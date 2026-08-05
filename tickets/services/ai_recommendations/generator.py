@@ -122,7 +122,6 @@ class AIRecommendationGenerator:
                 action={
                     'type': 'forecast_review',
                     'label': 'Review forecast',
-                    'url': reverse('tickets:forecast_tool'),
                     'payload': {'event_id': str(event.id)},
                 },
                 event=event,
@@ -218,7 +217,6 @@ class AIRecommendationGenerator:
             action={
                 'type': 'churn_review',
                 'label': 'Review win-back list',
-                'url': f"{reverse('tickets:churn_overview')}?days=90",
                 'payload': {'days_threshold': 90},
             },
             customer=top_customer,

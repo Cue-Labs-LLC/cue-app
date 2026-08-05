@@ -35,10 +35,7 @@
 
 {# Resolved hrefs for data-driven recommended-action buttons. #}
 <script type="application/json" id="action-urls">{
-    "tickets:churn_overview": "{% url 'tickets:churn_overview' %}",
     "tickets:customer_segments": "{% url 'tickets:customer_segments' %}",
-    "tickets:forecast_tool": "{% url 'tickets:forecast_tool' %}",
-    "tickets:expense_analytics": "{% url 'tickets:expense_analytics' %}",
     "tickets:survey_analytics": "{% url 'tickets:survey_analytics' %}"{% if sms_marketing_enabled %},
     "tickets:sms_campaign_create": "{% url 'tickets:sms_campaign_create' %}"{% endif %}
 }</script>
