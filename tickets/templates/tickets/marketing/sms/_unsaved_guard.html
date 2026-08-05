@@ -1,0 +1,89 @@
+{% comment %}
+Shared "unsaved changes" guard: a Save / Discard / Keep-editing modal plus a
+window.initUnsavedGuard(opts) helper used by plan_preview.html (unsaved preview) and
+plan_detail.html (unsaved inline message edits).
+
+opts = {
+  isDirty()            -> bool: are there unsaved changes right now?
+  save(pendingHref)    -> void: persist, then navigate (called for the modal "Save" button)
+  discard(proceed)     -> void: drop changes; call proceed() to continue to pendingHref
+  onAbandon()          -> void (optional): fired on pagehide when leaving unguarded (e.g. beacon)
+  saveLabel, bodyText  -> optional UI copy
+}
+initUnsavedGuard returns { allow() } — call allow() before any intentional navigation
+(form submit) so it doesn't trip the guard.
+{% endcomment %}
+<div class="modal fade" id="unsavedGuardModal" tabindex="-1" aria-labelledby="unsavedGuardLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="unsavedGuardLabel">Unsaved changes</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="unsavedGuardBody">You have unsaved changes. Save them before leaving?</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Keep editing</button>
+                <button type="button" class="btn btn-outline-danger" id="unsavedGuardDiscard">Discard changes</button>
+                <button type="button" class="btn btn-primary" id="unsavedGuardSave">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+window.initUnsavedGuard = function (opts) {
+    var modalEl = document.getElementById('unsavedGuardModal');
+    var modal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
+    var saveBtn = document.getElementById('unsavedGuardSave');
+    var discardBtn = document.getElementById('unsavedGuardDiscard');
+    var bodyEl = document.getElementById('unsavedGuardBody');
+    var skip = false;          // true = an intentional action is underway; don't guard
+    var pendingHref = null;    // the in-app link the organizer tried to follow
+
+    if (opts.saveLabel && saveBtn) saveBtn.textContent = opts.saveLabel;
+    if (opts.bodyText && bodyEl) bodyEl.textContent = opts.bodyText;
+
+    function allow() { skip = true; }
+    function proceed() { skip = true; if (pendingHref) window.location.href = pendingHref; }
+
+    if (saveBtn) saveBtn.addEventListener('click', function () {
+        skip = true;
+        if (modal) modal.hide();
+        opts.save(pendingHref);
+    });
+    if (discardBtn) discardBtn.addEventListener('click', function () {
+        if (modal) modal.hide();
+        if (opts.discard) opts.discard(proceed); else proceed();
+    });
+
+    // Intercept in-app navigation while dirty and offer Save / Discard / Keep editing.
+    document.addEventListener('click', function (e) {
+        if (skip) return;
+        var a = e.target.closest('a[href]');
+        if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
+        var href = a.getAttribute('href');
+        if (!href || href.charAt(0) === '#' || /^(mailto:|tel:|javascript:)/i.test(href)) return;
+        var url;
+        try { url = new URL(a.href, window.location.href); } catch (err) { return; }
+        if (url.origin !== window.location.origin || url.href === window.location.href) return;
+        if (!opts.isDirty()) return;
+        e.preventDefault();
+        pendingHref = a.href;
+        if (modal) modal.show();
+        else if (window.confirm('You have unsaved changes. Leave without saving?')) proceed();
+    }, true);
+
+    // Native backstop for tab close / refresh / typed URL.
+    window.addEventListener('beforeunload', function (e) {
+        if (skip || !opts.isDirty()) return;
+        e.preventDefault();
+        e.returnValue = '';
+    });
+    // Fire-and-forget cleanup (e.g. discard beacon) when leaving unguarded.
+    window.addEventListener('pagehide', function () {
+        if (skip || !opts.isDirty()) return;
+        if (opts.onAbandon) opts.onAbandon();
+    });
+
+    return { allow: allow };
+};
+</script>

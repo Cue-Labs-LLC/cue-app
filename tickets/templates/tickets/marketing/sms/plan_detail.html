@@ -438,6 +438,8 @@
         </div>
     </div>
 </div>
+
+{% include 'tickets/marketing/sms/_unsaved_guard.html' %}
 {% endblock %}
 
 {% block extra_js %}
@@ -1081,6 +1083,34 @@ document.addEventListener('DOMContentLoaded', function () {
                 doConfirm();
             }
         });
+    });
+
+    // ---- Unsaved-changes guard (D3=B): a message edit isn't persisted until its
+    // textarea blurs, so warn before leaving if any message still differs from what's
+    // saved. "Save changes" flushes the pending edits first, then follows the link.
+    function dirtyMessages() {
+        return Array.prototype.filter.call(
+            document.querySelectorAll('.plan-step-message'),
+            function (ta) { var v = ta.value.trim(); return v && v !== ta.dataset.saved; }
+        );
+    }
+    var editGuard = window.initUnsavedGuard({
+        isDirty: function () { return dirtyMessages().length > 0; },
+        saveLabel: 'Save changes',
+        bodyText: 'You have an unsaved message edit. Save it before leaving?',
+        save: async function (href) {
+            var pending = dirtyMessages();
+            for (var i = 0; i < pending.length; i++) { await saveStep(pending[i]); }
+            editGuard.allow();
+            if (href) window.location.href = href;
+        },
+        discard: function (proceed) { proceed(); },
+    });
+    // Deliberate plan-level actions (delete / regenerate the whole plan) discard edits by
+    // design — don't let the guard intercept their form submit.
+    ['planDeleteForm', 'planRegenForm'].forEach(function (id) {
+        var f = document.getElementById(id);
+        if (f) f.addEventListener('submit', function () { editGuard.allow(); });
     });
 });
 </script>

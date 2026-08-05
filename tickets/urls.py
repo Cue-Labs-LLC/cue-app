@@ -302,6 +302,10 @@ urlpatterns = [
 
     path('marketing/sms/plans/', sms_views.sms_plan_list, name='sms_plan_list'),
     path('marketing/sms/plan/new/', sms_views.sms_plan_create, name='sms_plan_create'),
+    path('marketing/sms/plan/preview/', sms_views.sms_plan_preview, name='sms_plan_preview'),
+    path('marketing/sms/plan/preview/save/', sms_views.sms_plan_save, name='sms_plan_save'),
+    path('marketing/sms/plan/preview/discard/', sms_views.sms_plan_discard, name='sms_plan_discard'),
+    path('marketing/sms/plan/preview/audience/', sms_views.sms_plan_resolve_audience, name='sms_plan_resolve_audience'),
     path('marketing/sms/plan/<uuid:pk>/', sms_views.sms_plan_detail, name='sms_plan_detail'),
     path('marketing/sms/plan/<uuid:pk>/delete/', sms_views.sms_plan_delete, name='sms_plan_delete'),
     path('marketing/sms/plan/<uuid:pk>/rename/', sms_views.sms_plan_rename, name='sms_plan_rename'),
