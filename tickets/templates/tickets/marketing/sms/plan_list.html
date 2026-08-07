@@ -33,6 +33,7 @@
                         <th>Plan</th>
                         <th>Status</th>
                         <th>Event</th>
+                        <th>Event date</th>
                         <th>Progress</th>
                         <th>Created</th>
                         <th class="text-center">Active</th>
@@ -49,15 +50,20 @@
                         </td>
                         <td>{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</td>
                         <td>{% if plan.event %}{{ plan.event.name }}{% else %}<span class="text-secondary">Segment</span>{% endif %}</td>
+                        <td>{% if plan.event and plan.event.start_date %}{{ plan.event.start_date|date:'M d, Y' }}{% else %}<span class="text-secondary">—</span>{% endif %}</td>
                         <td>{% include 'tickets/marketing/sms/_plan_progress.html' with step_count=plan.step_count sent_count=plan.sent_count scheduled_count=plan.scheduled_count draft_count=plan.draft_count %}</td>
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
                         <td class="text-center" onclick="event.stopPropagation()">
+                            {% if plan.status == 'sent' %}
+                            <span class="text-secondary" title="This plan has finished sending">—</span>
+                            {% else %}
                             <div class="form-check form-switch d-inline-flex m-0 justify-content-center">
                                 <input class="form-check-input plan-enable-toggle" type="checkbox" role="switch"
                                        data-toggle-url="{% url 'tickets:sms_plan_toggle_enabled' pk=plan.id %}"
                                        {% if plan.enabled %}checked{% endif %}
                                        aria-label="Enable or disable this plan">
                             </div>
+                            {% endif %}
                         </td>
                         <td class="text-end" onclick="event.stopPropagation()">
                             <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
