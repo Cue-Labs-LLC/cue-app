@@ -1332,6 +1332,189 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.client.post(reverse('tickets:sms_plan_discard')).status_code, 404)
         self.assertEqual(SMSCampaignPlan.objects.count(), 0)
 
+    # --- Enabled/Disabled toggle + paused-send hold + overdue resolution -------
+
+    def _confirm_step(self, plan, step=0, key='k'):
+        self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': step}),
+            {'idempotency_key': key},
+        )
+        return SMSCampaign.objects.filter(organization=self.org).latest('created_at')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_new_plan_enabled_by_default(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.assertTrue(self._make_event_plan().enabled)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_toggle_enabled_endpoint(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        url = reverse('tickets:sms_plan_toggle_enabled', kwargs={'pk': plan.id})
+        # Default flip on -> off, then explicit enable.
+        self.assertFalse(self.client.post(url).json()['enabled'])
+        plan.refresh_from_db(); self.assertFalse(plan.enabled)
+        self.assertTrue(self.client.post(url, {'enabled': '1'}).json()['enabled'])
+        plan.refresh_from_db(); self.assertTrue(plan.enabled)
+        # POST-only + feature-gated.
+        self.assertEqual(self.client.get(url).status_code, 405)
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        self.assertEqual(self.client.post(url).status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_links_campaign_to_plan(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.assertEqual(self._confirm_step(plan).plan_id, plan.id)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_blocked_when_disabled(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'idempotency_key': 'k'},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+
+    @patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (True, 'SM' + to[-4:], None))
+    @patch('langchain_openai.ChatOpenAI')
+    def test_disabled_plan_holds_send_but_force_overrides(self, mock_openai, mock_send):
+        from .tasks import send_sms_campaign_task
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        # Disabled → the send task holds it (stays SCHEDULED, nothing sent).
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        send_sms_campaign_task.delay(str(c.id))
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.assertFalse(mock_send.called)
+        # force=True sends despite the disabled plan.
+        send_sms_campaign_task.delay(str(c.id), force=True)
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+
+    @patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (True, 'SM' + to[-4:], None))
+    @patch('langchain_openai.ChatOpenAI')
+    def test_enabled_plan_send_not_held(self, mock_openai, mock_send):
+        from .tasks import send_sms_campaign_task
+        mock_openai.return_value = _fake_structured_llm()
+        c = self._confirm_step(self._make_event_plan())
+        send_sms_campaign_task.delay(str(c.id))   # enabled plan → sends
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_overdue_detection_and_modal(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(len(resp.context['overdue_steps']), 1)
+        self.assertContains(resp, 'id="overdueModal"')
+        # An enabled plan (even past-due) shows no overdue warning — the cron just sends it.
+        plan.enabled = True
+        plan.save(update_fields=['enabled'])
+        resp2 = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp2.context['overdue_steps'], [])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_overdue_skip_cancels_and_refunds(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        self.org.refresh_from_db()
+        after_charge = self.org.sms_credit_balance_cents
+        SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        resp = self.client.post(
+            reverse('tickets:sms_plan_overdue_action', kwargs={'pk': plan.id, 'step': 0}),
+            {'action': 'skip'},
+        )
+        self.assertTrue(resp.json()['ok'])
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
+        self.org.refresh_from_db()
+        self.assertGreater(self.org.sms_credit_balance_cents, after_charge)   # refunded
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_overdue_reschedule_updates_campaign_and_step(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        future = (timezone.now() + timedelta(days=5)).astimezone(
+            self.org.get_timezone()).strftime('%Y-%m-%dT%H:%M')
+        resp = self.client.post(
+            reverse('tickets:sms_plan_overdue_action', kwargs={'pk': plan.id, 'step': 0}),
+            {'action': 'reschedule', 'send_at': future},
+        )
+        self.assertTrue(resp.json()['ok'])
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.assertGreater(c.scheduled_at, timezone.now())
+        plan.refresh_from_db()
+        from datetime import datetime
+        self.assertEqual(
+            datetime.fromisoformat(plan.steps[0]['send_at']).strftime('%Y-%m-%dT%H:%M'), future)
+        # A past reschedule is rejected.
+        past = (timezone.now() - timedelta(days=1)).astimezone(
+            self.org.get_timezone()).strftime('%Y-%m-%dT%H:%M')
+        self.assertEqual(self.client.post(
+            reverse('tickets:sms_plan_overdue_action', kwargs={'pk': plan.id, 'step': 0}),
+            {'action': 'reschedule', 'send_at': past}).status_code, 400)
+
+    @patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (True, 'SM', None))
+    @patch('langchain_openai.ChatOpenAI')
+    def test_overdue_send_now_forces_dispatch(self, mock_openai, mock_send):
+        from .tasks import send_sms_campaign_task
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        with patch.object(send_sms_campaign_task, 'delay') as mock_delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = self.client.post(
+                    reverse('tickets:sms_plan_overdue_action', kwargs={'pk': plan.id, 'step': 0}),
+                    {'action': 'send_now'},
+                )
+            self.assertTrue(resp.json()['ok'])
+            mock_delay.assert_called_once()
+            self.assertTrue(mock_delay.call_args.kwargs.get('force'))
+        c.refresh_from_db()
+        self.assertLessEqual(c.scheduled_at, timezone.now() + timedelta(seconds=5))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_list_shows_toggle_and_overdue_indicator(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        resp = self.client.get(reverse('tickets:sms_plan_list'))
+        self.assertContains(resp, 'plan-enable-toggle')          # per-row switch
+        self.assertNotContains(resp, 'bi-exclamation-triangle-fill')
+        SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+        resp2 = self.client.get(reverse('tickets:sms_plan_list'))
+        self.assertContains(resp2, 'bi-exclamation-triangle-fill')   # overdue indicator
+        self.assertContains(resp2, '>Disabled<')
+
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
 class TopPriorCampaignsTests(TestCase):

@@ -2221,6 +2221,16 @@ class SMSCampaign(AuditBaseModel):
         blank=True,
         related_name='native_sms_campaigns',
     )
+    # Set when this campaign was launched from an AI campaign plan step. Lets the send
+    # pipeline hold the campaign while its plan is disabled (paused); null for standalone
+    # composer campaigns, which are never gated by a plan.
+    plan = models.ForeignKey(
+        'SMSCampaignPlan',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='campaigns',
+    )
     # Audience lives inline on the campaign (no separate recipient-list model).
     # filter_criteria is a JSON spec consumed by filter_customers: tag_ids /
     # rfm_segment / event_id / min_ltv / last_order_after. manual include/exclude
@@ -2438,6 +2448,10 @@ class SMSCampaignPlan(BaseModel):
         default=Status.DRAFT,
         db_index=True,
     )
+    # Master on/off. A disabled plan is paused: its scheduled sends are held (not sent by
+    # the send pipeline) and its steps can't be confirmed, until it's re-enabled. Toggled
+    # from the plan detail page and the plans list; does not cancel or refund anything.
+    enabled = models.BooleanField(default=True, db_index=True)
     generated_at = models.DateTimeField(default=timezone.now)
     # Ordered sequence. Each entry:
     #   {order, purpose, audience_label, audience_criteria, timing_label, body,

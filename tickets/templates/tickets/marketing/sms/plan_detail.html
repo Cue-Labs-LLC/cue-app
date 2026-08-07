@@ -146,6 +146,7 @@
                 </span>
             </span>
             <span class="align-middle">{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</span>
+            <span class="align-middle" id="planDisabledBadge"{% if plan.enabled %} hidden{% endif %}><span class="badge bg-secondary">Disabled</span></span>
         </h1>
         <p class="page-subtitle">
             AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
@@ -153,7 +154,13 @@
         </p>
         {% include 'tickets/marketing/sms/_plan_progress.html' with step_count=progress.total sent_count=progress.sent scheduled_count=progress.scheduled draft_count=progress.draft %}
     </div>
-    <div class="d-flex gap-2">
+    <div class="d-flex gap-2 align-items-center">
+        <div class="form-check form-switch d-flex align-items-center gap-2 m-0 me-1" title="Enable or disable this plan">
+            <input class="form-check-input" type="checkbox" role="switch" id="planEnableToggle"
+                   data-toggle-url="{% url 'tickets:sms_plan_toggle_enabled' pk=plan.id %}"
+                   {% if plan.enabled %}checked{% endif %}>
+            <label class="form-check-label small text-nowrap" for="planEnableToggle" id="planEnableLabel">{{ plan.enabled|yesno:"Enabled,Disabled" }}</label>
+        </div>
         {% if progress.total == progress.draft %}
         <form method="post" action="{% url 'tickets:sms_plan_regenerate' pk=plan.id %}" class="m-0" id="planRegenForm">
             {% csrf_token %}
@@ -167,6 +174,19 @@
         <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Plans</a>
     </div>
 </div>
+
+<div class="alert alert-warning py-2 px-3" id="planDisabledBanner"{% if plan.enabled %} hidden{% endif %}>
+    <i class="bi bi-pause-circle me-2"></i>This plan is <strong>disabled</strong> — its scheduled messages are paused and won't send until you enable it.
+</div>
+
+{% if overdue_steps %}
+<div class="alert alert-warning d-flex align-items-center justify-content-between gap-2 py-2 px-3" id="overdueBanner">
+    <div><i class="bi bi-exclamation-triangle-fill"></i>
+        {{ overdue_steps|length }} scheduled message{{ overdue_steps|length|pluralize }} missed {{ overdue_steps|length|pluralize:"its,their" }} send time while this plan was disabled.
+    </div>
+    <button type="button" class="btn btn-sm btn-warning" id="overdueReviewBtn">Review</button>
+</div>
+{% endif %}
 
 {% if plan.objective %}
 <p class="text-secondary mb-3"><strong>Goal:</strong> {{ plan.objective }}</p>
@@ -246,7 +266,8 @@
                     </form>
                     <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
                             data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
-                            data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}">
+                            data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}"
+                            {% if not plan.enabled %}disabled title="Enable the plan to send"{% endif %}>
                         <i class="bi bi-send"></i> Confirm &amp; Schedule
                     </button>
                     {% endif %}
@@ -438,6 +459,47 @@
         </div>
     </div>
 </div>
+
+{% if overdue_steps %}
+<div class="modal fade" id="overdueModal" tabindex="-1" aria-labelledby="overdueModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="overdueModalLabel"><i class="bi bi-exclamation-triangle-fill text-warning"></i> Messages missed their send time</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary small">This plan is disabled, so these messages were held past their scheduled time. Choose what to do with each — send it now, pick a new time, or skip it (cancel &amp; refund).</p>
+                {% for od in overdue_steps %}
+                <div class="overdue-row border rounded p-2 mb-2" data-step="{{ od.order }}"
+                     data-action-url="{% url 'tickets:sms_plan_overdue_action' pk=plan.id step=od.order %}">
+                    <div>
+                        <span class="badge text-bg-secondary">{{ od.purpose_label }}</span>
+                        <span class="text-secondary small">was scheduled {{ od.was_scheduled_label }}</span>
+                        <div class="small mt-1">{{ od.body|truncatechars:140 }}</div>
+                    </div>
+                    <div class="overdue-actions d-flex flex-wrap gap-2 mt-2">
+                        <button type="button" class="btn btn-sm btn-primary" data-overdue-send-now><i class="bi bi-send"></i> Send now</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-overdue-reschedule-open><i class="bi bi-clock"></i> Reschedule</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger" data-overdue-skip><i class="bi bi-x-lg"></i> Skip</button>
+                    </div>
+                    <div class="overdue-reschedule d-flex flex-wrap align-items-center gap-2 mt-2" hidden>
+                        <input type="datetime-local" class="form-control form-control-sm" style="width:auto" value="{{ od.send_local }}" data-overdue-send-at>
+                        <button type="button" class="btn btn-sm btn-primary" data-overdue-reschedule-save>Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-overdue-reschedule-cancel>Cancel</button>
+                    </div>
+                    <div class="overdue-result text-success small mt-2" hidden></div>
+                    <div class="overdue-error text-danger small mt-2" hidden></div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% include 'tickets/marketing/sms/_unsaved_guard.html' %}
 {% endblock %}
@@ -1084,6 +1146,94 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     });
+
+    // ---- Enable/Disable toggle -------------------------------------------
+    var enableToggle = document.getElementById('planEnableToggle');
+    if (enableToggle) {
+        var enableLabel = document.getElementById('planEnableLabel');
+        var disabledBadge = document.getElementById('planDisabledBadge');
+        var disabledBanner = document.getElementById('planDisabledBanner');
+        function reflectEnabled(enabled) {
+            if (enableLabel) enableLabel.textContent = enabled ? 'Enabled' : 'Disabled';
+            if (disabledBadge) disabledBadge.hidden = enabled;
+            if (disabledBanner) disabledBanner.hidden = enabled;
+            document.querySelectorAll('.plan-confirm-open').forEach(function (b) {
+                b.disabled = !enabled;
+                b.title = enabled ? '' : 'Enable the plan to send';
+            });
+        }
+        reflectEnabled(enableToggle.checked);
+        enableToggle.addEventListener('change', async function () {
+            var want = enableToggle.checked;
+            enableToggle.disabled = true;
+            try {
+                const resp = await fetch(enableToggle.dataset.toggleUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({enabled: want ? '1' : '0'}),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error();
+                enableToggle.checked = data.enabled;
+                reflectEnabled(data.enabled);
+            } catch (e) {
+                enableToggle.checked = !want;   // revert on failure
+            } finally {
+                enableToggle.disabled = false;
+            }
+        });
+    }
+
+    // ---- Overdue held sends: Send now / Reschedule / Skip ----------------
+    var overdueModalEl = document.getElementById('overdueModal');
+    if (overdueModalEl && window.bootstrap) {
+        var overdueModal = new bootstrap.Modal(overdueModalEl);
+        var reviewBtn = document.getElementById('overdueReviewBtn');
+        if (reviewBtn) reviewBtn.addEventListener('click', function () { overdueModal.show(); });
+        overdueModal.show();   // auto-open: the organizer needs to act on these
+
+        overdueModalEl.querySelectorAll('.overdue-row').forEach(function (row) {
+            var url = row.dataset.actionUrl;
+            var actions = row.querySelector('.overdue-actions');
+            var reschedule = row.querySelector('.overdue-reschedule');
+            var resultEl = row.querySelector('.overdue-result');
+            var errEl = row.querySelector('.overdue-error');
+
+            function fail(msg) { errEl.textContent = msg; errEl.hidden = false; }
+            function done(msg) {
+                actions.hidden = true; reschedule.hidden = true; errEl.hidden = true;
+                resultEl.textContent = msg; resultEl.hidden = false;
+            }
+            async function post(params) {
+                errEl.hidden = true;
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error((data && data.error) || 'Something went wrong.');
+                return data;
+            }
+
+            row.querySelector('[data-overdue-send-now]').addEventListener('click', async function () {
+                try { await post(new URLSearchParams({action: 'send_now'})); done('Sending now.'); }
+                catch (e) { fail(e.message); }
+            });
+            row.querySelector('[data-overdue-skip]').addEventListener('click', async function () {
+                try { await post(new URLSearchParams({action: 'skip'})); done('Skipped — canceled and refunded.'); }
+                catch (e) { fail(e.message); }
+            });
+            row.querySelector('[data-overdue-reschedule-open]').addEventListener('click', function () { reschedule.hidden = false; });
+            row.querySelector('[data-overdue-reschedule-cancel]').addEventListener('click', function () { reschedule.hidden = true; });
+            row.querySelector('[data-overdue-reschedule-save]').addEventListener('click', async function () {
+                const v = row.querySelector('[data-overdue-send-at]').value;
+                if (!v) return;
+                try { const d = await post(new URLSearchParams({action: 'reschedule', send_at: v})); done('Rescheduled for ' + d.timing_label + '.'); }
+                catch (e) { fail(e.message); }
+            });
+        });
+    }
 
     // ---- Unsaved-changes guard (D3=B): a message edit isn't persisted until its
     // textarea blurs, so warn before leaving if any message still differs from what's

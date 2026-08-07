@@ -35,17 +35,30 @@
                         <th>Event</th>
                         <th>Progress</th>
                         <th>Created</th>
+                        <th class="text-center">Active</th>
                         <th class="text-end"></th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for plan in page_obj.object_list %}
                     <tr role="button" tabindex="0" onclick="window.location='{% url 'tickets:sms_plan_detail' pk=plan.id %}'">
-                        <td>{{ plan.name }}</td>
+                        <td>
+                            {{ plan.name }}
+                            {% if not plan.enabled %}<span class="badge bg-secondary ms-1">Disabled</span>{% endif %}
+                            {% if plan.has_overdue %}<i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Scheduled messages missed their send time while disabled"></i>{% endif %}
+                        </td>
                         <td>{% include 'tickets/marketing/sms/_plan_status_badge.html' with status=plan.status %}</td>
                         <td>{% if plan.event %}{{ plan.event.name }}{% else %}<span class="text-secondary">Segment</span>{% endif %}</td>
                         <td>{% include 'tickets/marketing/sms/_plan_progress.html' with step_count=plan.step_count sent_count=plan.sent_count scheduled_count=plan.scheduled_count draft_count=plan.draft_count %}</td>
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
+                        <td class="text-center" onclick="event.stopPropagation()">
+                            <div class="form-check form-switch d-inline-flex m-0 justify-content-center">
+                                <input class="form-check-input plan-enable-toggle" type="checkbox" role="switch"
+                                       data-toggle-url="{% url 'tickets:sms_plan_toggle_enabled' pk=plan.id %}"
+                                       {% if plan.enabled %}checked{% endif %}
+                                       aria-label="Enable or disable this plan">
+                            </div>
+                        </td>
                         <td class="text-end" onclick="event.stopPropagation()">
                             <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
                                 {% csrf_token %}
@@ -98,6 +111,8 @@
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    var CSRF = '{{ csrf_token }}';
+
     var modalEl = document.getElementById('deletePlanModal');
     if (modalEl && window.bootstrap) {
         var modal = new bootstrap.Modal(modalEl);
@@ -112,6 +127,28 @@ document.addEventListener('DOMContentLoaded', function () {
             if (pendingForm) pendingForm.submit();
         });
     }
+
+    // Per-row enable/disable toggle. Reverts the switch if the request fails.
+    document.querySelectorAll('.plan-enable-toggle').forEach(function (input) {
+        input.addEventListener('change', async function () {
+            var want = input.checked;
+            input.disabled = true;
+            try {
+                var resp = await fetch(input.dataset.toggleUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({enabled: want ? '1' : '0'}),
+                });
+                var data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error();
+                input.checked = data.enabled;
+            } catch (e) {
+                input.checked = !want;   // revert on failure
+            } finally {
+                input.disabled = false;
+            }
+        });
+    });
 });
 </script>
 {% endblock %}

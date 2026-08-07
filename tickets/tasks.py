@@ -932,16 +932,32 @@ from tickets.sms import apply_stop_footer as _apply_stop_footer  # noqa: E402  (
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def send_sms_campaign_task(self, campaign_id):
+def send_sms_campaign_task(self, campaign_id, force=False):
     """Orchestrate a marketing SMS send: atomically claim the campaign, snapshot
     recipients (re-resolving the audience and re-checking suppression at send
     time), then fan out chunked send tasks. Idempotent and recovery-safe — a
     re-dispatch of a stuck 'sending' campaign reuses existing recipient rows and
-    only sends the ones still queued."""
+    only sends the ones still queued.
+
+    ``force=True`` bypasses the plan-disabled hold (used by the organizer's explicit
+    "Send now" on an overdue held send); the cron/auto dispatch always leaves it False."""
     from django.conf import settings
     from django.utils import timezone as tz
     from celery import chord
     from tickets.models import SMSCampaign, SMSMessageRecipient
+
+    # Hold gate: a campaign launched from a DISABLED (paused) plan is not sent — it stays
+    # SCHEDULED until the plan is re-enabled (or the organizer forces it). This one check
+    # covers every dispatch path (cron, send-now on_commit, stuck recovery). ``plan__enabled``
+    # is None when there is no plan (standalone composer campaign) → never held.
+    if not force:
+        plan_enabled = (
+            SMSCampaign.objects.filter(id=campaign_id)
+            .values_list('plan__enabled', flat=True).first()
+        )
+        if plan_enabled is False:
+            logger.info("SMS campaign %s held: its plan is disabled", campaign_id)
+            return
 
     # Atomic claim: exactly one worker can move draft/scheduled -> sending.
     claimed = SMSCampaign.objects.filter(
