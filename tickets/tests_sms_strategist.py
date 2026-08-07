@@ -1515,6 +1515,43 @@ class SMSStrategistViewTests(TestCase):
         self.assertContains(resp2, 'bi-exclamation-triangle-fill')   # overdue indicator
         self.assertContains(resp2, '>Disabled<')
 
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_remaining_redrafts_only_unlaunched(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)              # step 0 launched → plan is in progress
+        plan.refresh_from_db()
+        launched_body = plan.steps[0]['body']
+        self.assertEqual(plan.steps[0].get('launched_campaign_id'), str(c.id))
+
+        mock_openai.return_value = _fake_regen_llm(
+            message='Fresh redraft for the remaining touch.', rationale='New angle.')
+        resp = self.client.post(
+            reverse('tickets:sms_plan_regenerate_remaining', kwargs={'pk': plan.id}))
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+
+        plan.refresh_from_db()
+        # The launched step is untouched; the remaining draft steps are redrafted.
+        self.assertEqual(plan.steps[0]['body'], launched_body)
+        self.assertEqual(plan.steps[0].get('launched_campaign_id'), str(c.id))
+        self.assertEqual(plan.steps[1]['body'], 'Fresh redraft for the remaining touch.')
+        self.assertEqual(plan.steps[2]['body'], 'Fresh redraft for the remaining touch.')
+        self.assertEqual(plan.steps[1]['rationale'], 'New angle.')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_regenerate_drafts_button_only_when_in_progress(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        # All-draft plan → the whole-plan Regenerate, not the drafts variant.
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp, 'id="planRegenForm"')
+        self.assertNotContains(resp, 'id="planRegenDraftsForm"')
+        # Once a step is launched (in progress) → the "Regenerate drafts" form appears instead.
+        self._confirm_step(plan)
+        resp2 = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp2, 'id="planRegenDraftsForm"')
+        self.assertNotContains(resp2, 'id="planRegenForm"')
+
     def test_completed_plan_hides_toggle_in_list(self):
         S = SMSCampaign.Status
         P = SMSCampaignPlan.Status

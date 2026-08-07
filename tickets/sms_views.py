@@ -2211,6 +2211,9 @@ def sms_plan_detail(request, pk):
     context = {
         'plan': plan, 'steps': steps, 'progress': progress,
         'presets': presets,
+        # Un-launched steps that a partial "Regenerate drafts" can still redraft (drives the
+        # header button on an in-progress plan, where a full regenerate is blocked).
+        'regenerable_count': sum(1 for s in steps if not s.get('launched_campaign_id')),
         # Overdue held sends (disabled plan whose scheduled time has passed) drive the
         # Send now / Reschedule / Skip warning modal.
         'overdue_steps': _overdue_held_steps(org, plan, steps),
@@ -2636,6 +2639,70 @@ def sms_plan_regenerate(request, pk):
     plan.save(update_fields=['strategy_summary', 'model_name', 'steps', 'status', 'updated_at'])
     _bump_plan_rate_limit(org)
     messages.success(request, 'Regenerated the campaign plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_regenerate_remaining(request, pk):
+    """Re-draft every still-DRAFT (un-launched) message with the AI, leaving launched
+    (sent/scheduled/canceled) steps untouched.
+
+    For an in-progress plan a full regenerate is blocked (it would discard real campaigns),
+    so this redrafts only the remaining draft touches — each preserving its purpose, audience,
+    and schedule — via the same ``regenerate_step_message`` the per-message button uses.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    draft_idx = [i for i, s in enumerate(steps) if not (s or {}).get('launched_campaign_id')]
+    if not draft_idx:
+        messages.info(request, 'No draft messages to regenerate.')
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    if not _check_plan_rate_limit(org):
+        messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    from .services.sms_strategist import regenerate_step_message, SMSStrategistError
+    ticket_url = _event_ticket_url(request, org, plan.event) if plan.event else ''
+    regenerated = 0
+    for i in draft_idx:
+        siblings = [s for j, s in enumerate(steps) if j != i]
+        try:
+            result = regenerate_step_message(
+                org, event=plan.event, criteria=plan.filter_criteria or None,
+                objective=plan.objective, ticket_url=ticket_url,
+                step=steps[i], sibling_steps=siblings, user=request.user,
+            )
+        except SMSStrategistError as exc:
+            messages.error(request, str(exc))
+            break
+        steps[i] = {
+            **steps[i],
+            'body': result['body'],
+            'rationale': result['rationale'],
+            'segments': result['segments'],
+            'encoding': result['encoding'],
+        }
+        regenerated += 1
+
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    if regenerated:
+        _bump_plan_rate_limit(org)
+        messages.success(
+            request,
+            f'Regenerated {regenerated} draft message{"" if regenerated == 1 else "s"}.',
+        )
     return redirect('tickets:sms_plan_detail', pk=plan.id)
 
 
