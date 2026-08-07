@@ -316,6 +316,7 @@ urlpatterns = [
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/preview/', sms_views.sms_plan_preview_step, name='sms_plan_preview_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/confirm/', sms_views.sms_plan_confirm_step, name='sms_plan_confirm_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/remove/', sms_views.sms_plan_remove_step, name='sms_plan_remove_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/unschedule/', sms_views.sms_plan_unschedule_step, name='sms_plan_unschedule_step'),
 
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),

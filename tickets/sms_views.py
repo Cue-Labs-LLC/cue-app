@@ -2175,7 +2175,51 @@ def _annotate_launched_status(org, steps):
         s['launched_label'] = label
         s['launched_pill_class'] = css
         s['launched_icon'] = icon
+        # A step whose campaign is sending/sent can't be removed from the plan — the
+        # message has already gone out, so removal would only rewrite history.
+        s['is_sent'] = status_by_id.get(str(cid)) in (
+            SMSCampaign.Status.SENDING, SMSCampaign.Status.SENT,
+        )
+        # A scheduled step can be moved back to draft (cancel + refund), but not deleted
+        # outright — it must return to draft first.
+        s['is_scheduled'] = status_by_id.get(str(cid)) == SMSCampaign.Status.SCHEDULED
     return status_by_id
+
+
+def _plan_has_sent_step(org, steps):
+    """True if any of the plan's steps has a launched campaign that's sending or already
+    sent — the point past which the plan (and that message) can no longer be removed."""
+    status_by_id = _resolve_campaign_statuses(org, steps or [])
+    return any(
+        status in (SMSCampaign.Status.SENDING, SMSCampaign.Status.SENT)
+        for status in status_by_id.values()
+    )
+
+
+def _step_is_sent(org, step_dict):
+    """True if this single step's launched campaign is sending or already sent — the point
+    past which the message (text, schedule, audience) can no longer be edited or removed."""
+    cid = (step_dict or {}).get('launched_campaign_id')
+    if not cid:
+        return False
+    status = (
+        SMSCampaign.objects.filter(organization=org, id=cid)
+        .values_list('status', flat=True).first()
+    )
+    return status in (SMSCampaign.Status.SENDING, SMSCampaign.Status.SENT)
+
+
+def _step_is_scheduled(org, step_dict):
+    """True if this single step's launched campaign is still SCHEDULED — the point at which it
+    can be moved back to draft (cancel + refund) but not yet deleted."""
+    cid = (step_dict or {}).get('launched_campaign_id')
+    if not cid:
+        return False
+    status = (
+        SMSCampaign.objects.filter(organization=org, id=cid)
+        .values_list('status', flat=True).first()
+    )
+    return status == SMSCampaign.Status.SCHEDULED
 
 
 def _audience_label_for(org, criteria):
@@ -2211,6 +2255,8 @@ def sms_plan_detail(request, pk):
     context = {
         'plan': plan, 'steps': steps, 'progress': progress,
         'presets': presets,
+        # Once any message has sent, the plan can no longer be deleted.
+        'plan_has_sent': any(s.get('is_sent') for s in steps),
         # Overdue held sends (disabled plan whose scheduled time has passed) drive the
         # Send now / Reschedule / Skip warning modal.
         'overdue_steps': _overdue_held_steps(org, plan, steps),
@@ -2292,6 +2338,9 @@ def sms_plan_delete(request, pk):
     if not org.ai_sms_strategist_enabled:
         raise Http404()
     plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+    if _plan_has_sent_step(org, plan.steps):
+        messages.error(request, "You can't delete a plan once one of its messages has been sent.")
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
     plan.delete()
     messages.success(request, 'Plan deleted.')
     return redirect('tickets:sms_plan_list')
@@ -2518,6 +2567,11 @@ def sms_plan_update_step(request, pk, step):
     steps = plan.steps or []
     if step < 0 or step >= len(steps):
         raise Http404()
+    if _step_is_sent(org, steps[step]):
+        return JsonResponse(
+            {'ok': False, 'error': "This message was already sent and can't be edited."},
+            status=409,
+        )
 
     body = (request.POST.get('body') or '').strip()
     if not body:
@@ -2658,6 +2712,11 @@ def sms_plan_update_audience(request, pk, step):
     steps = plan.steps or []
     if step < 0 or step >= len(steps):
         raise Http404()
+    if _step_is_sent(org, steps[step]):
+        return JsonResponse(
+            {'ok': False, 'error': "This message was already sent and can't be edited."},
+            status=409,
+        )
 
     mode = request.POST.get('audience_mode') or 'custom'
     if mode == 'all' and plan.event_id:
@@ -2699,6 +2758,11 @@ def sms_plan_update_schedule(request, pk, step):
     steps = plan.steps or []
     if step < 0 or step >= len(steps):
         raise Http404()
+    if _step_is_sent(org, steps[step]):
+        return JsonResponse(
+            {'ok': False, 'error': "This message was already sent and can't be edited."},
+            status=409,
+        )
 
     event = plan.event if plan.event_id else None
     try:
@@ -2738,10 +2802,11 @@ def sms_plan_launch_step(request, pk, step):
     target = steps[step]
 
     # An edit typed into the message box (and not yet blur-saved) is authoritative:
-    # apply + persist it so what launches is exactly what the organizer sees.
+    # apply + persist it so what launches is exactly what the organizer sees — but never
+    # rewrite a message that's already been sent (its body is history).
     body_changed = False
     override_body = request.POST.get('body')
-    if override_body is not None and override_body.strip():
+    if override_body is not None and override_body.strip() and not _step_is_sent(org, target):
         target = _apply_step_body(target, override_body.strip())
         steps[step] = target
         body_changed = True
@@ -3146,6 +3211,15 @@ def sms_plan_remove_step(request, pk, step):
     if step < 0 or step >= len(steps):
         raise Http404()
 
+    # A message that's already sending/sent can't be removed — the send is history.
+    if _step_is_sent(org, steps[step]):
+        messages.error(request, "You can't remove a message that's already been sent.")
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+    # A scheduled send must be moved back to draft (cancel + refund) before it can be deleted.
+    if _step_is_scheduled(org, steps[step]):
+        messages.error(request, 'Move this message back to draft before deleting it.')
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
     steps.pop(step)
     for i, s in enumerate(steps):
         s['order'] = i
@@ -3153,4 +3227,55 @@ def sms_plan_remove_step(request, pk, step):
     # Scheduled when every remaining step is queued).
     _save_plan_steps(org, plan, steps)
     messages.success(request, 'Removed the message from this plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_unschedule_step(request, pk, step):
+    """Move a SCHEDULED step back to draft: cancel its scheduled send, refund the reserved
+    credits, and clear the step's launch linkage so it's editable/regenerable/removable again.
+
+    A campaign must be in draft before it can be deleted, so this is the path a scheduled step
+    takes to become deletable. Only a still-SCHEDULED campaign can be reverted (an already
+    sending/sent one is history).
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    cid = steps[step].get('launched_campaign_id')
+    # Atomic cancel guarded on SCHEDULED so it can't race the send task (mirrors
+    # sms_campaign_cancel / the overdue 'skip' path).
+    updated = SMSCampaign.objects.filter(
+        id=cid, organization=org, status=SMSCampaign.Status.SCHEDULED,
+    ).update(status=SMSCampaign.Status.CANCELED) if cid else 0
+    if not updated:
+        messages.error(request, 'That message can no longer be moved back to draft.')
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    from .services.sms_credits import refund_campaign
+    campaign = SMSCampaign.objects.get(id=cid)
+    refunded = refund_campaign(campaign, description='Scheduled plan send moved back to draft')
+    # Detach the now-canceled campaign from the plan and clear the step's launch linkage so the
+    # step is a true draft again. _save_plan_steps recomputes the derived plan status.
+    SMSCampaign.objects.filter(organization=org, id=cid).update(plan=None)
+    steps[step] = {**steps[step], 'launched_campaign_id': None, 'launched_at': None}
+    _save_plan_steps(org, plan, steps)
+
+    if refunded:
+        messages.success(
+            request,
+            f'Message moved back to draft. ${refunded / 100:.2f} in credits refunded.',
+        )
+    else:
+        messages.success(request, 'Message moved back to draft.')
     return redirect('tickets:sms_plan_detail', pk=plan.id)

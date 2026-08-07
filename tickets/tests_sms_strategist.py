@@ -435,6 +435,161 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual([s['order'] for s in plan.steps], [0, 1])
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_remove_step_blocked_once_sent(self, mock_openai):
+        # A message that's already been sent can't be removed from the plan.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='sent', body=plan.steps[0]['body'],
+            status=SMSCampaign.Status.SENT)
+        plan.steps[0]['launched_campaign_id'] = str(campaign.id)
+        plan.steps[0]['launched_at'] = timezone.now().isoformat()
+        plan.save(update_fields=['steps'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        # Still there — the sent step was not dropped.
+        self.assertEqual(len(plan.steps), 3)
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(campaign.id))
+        # And the detail page hides its trash button for that step.
+        detail = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertTrue(detail.context['steps'][0]['is_sent'])
+        self.assertFalse(detail.context['steps'][1].get('is_sent'))
+
+    def _plan_with_sent_first_step(self):
+        """Generate a plan and mark step 0 as SENT (steps 1-2 stay draft). Returns
+        (plan, campaign) for the edit-lock tests below."""
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='sent', body=plan.steps[0]['body'],
+            status=SMSCampaign.Status.SENT)
+        plan.steps[0]['launched_campaign_id'] = str(campaign.id)
+        plan.steps[0]['launched_at'] = timezone.now().isoformat()
+        plan.save(update_fields=['steps'])
+        return plan, campaign
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_step_blocked_once_sent(self, mock_openai):
+        # The message text of a sent step can't be edited.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+        original = plan.steps[0]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': 'Rewritten after the fact'},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_schedule_blocked_once_sent(self, mock_openai):
+        # The send time of a sent step can't be edited.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+        original = plan.steps[0]['send_at']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 0}),
+            {'send_at': '2026-07-15T09:30'},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['send_at'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_blocked_once_sent(self, mock_openai):
+        # The audience of a sent step can't be edited.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'all_subscribers': True})
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'all_subscribers': True})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_step_ignores_body_override_once_sent(self, mock_openai):
+        # Opening the composer for a sent step must not rewrite its stored body.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+        original = plan.steps[0]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': 'hacked'},
+        )
+        # Launch still functions (redirects to the composer); only the persist is suppressed.
+        self.assertEqual(resp.status_code, 302)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_edit_endpoints_still_work_on_unsent_step(self, mock_openai):
+        # The lock is per-step: a draft step in a plan that also has a sent step still edits.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+
+        # Body
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 1}),
+            {'body': 'Fresh draft copy for touch two.'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        # Schedule
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 1}),
+            {'send_at': '2026-07-15T09:30'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        # Audience
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 1}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[1]['body'], 'Fresh draft copy for touch two.')
+        self.assertEqual(plan.steps[1]['send_time'], '09:30')
+        self.assertEqual(plan.steps[1]['audience_criteria'].get('rfm_segment'), ['VIP'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_sent_step_render_omits_edit_affordances(self, mock_openai):
+        # The detail page drops the edit affordances for a sent step but keeps them for drafts.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+
+        # Sent step (0): no per-step edit URLs; static, read-only message bubble.
+        for name in ('sms_plan_update_step', 'sms_plan_update_schedule', 'sms_plan_update_audience'):
+            self.assertNotIn(reverse(f'tickets:{name}', kwargs={'pk': plan.id, 'step': 0}), html)
+        self.assertIn('plan-step-message-sent', html)
+        # Draft step (1): all three edit URLs still present.
+        for name in ('sms_plan_update_step', 'sms_plan_update_schedule', 'sms_plan_update_audience'):
+            self.assertIn(reverse(f'tickets:{name}', kwargs={'pk': plan.id, 'step': 1}), html)
+
+        self.assertTrue(resp.context['steps'][0]['is_sent'])
+        self.assertFalse(resp.context['steps'][1].get('is_sent'))
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_remove_step_org_scoped_and_gated(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self._gen({'event': str(self.event.id)})
@@ -1119,6 +1274,29 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 1)
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_plan_delete_blocked_once_a_message_is_sent(self, mock_openai):
+        # Once any message has sent, the whole plan can no longer be deleted.
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='sent', body=plan.steps[0]['body'],
+            status=SMSCampaign.Status.SENT)
+        plan.steps[0]['launched_campaign_id'] = str(campaign.id)
+        plan.steps[0]['launched_at'] = timezone.now().isoformat()
+        plan.save(update_fields=['steps'])
+
+        resp = self.client.post(reverse('tickets:sms_plan_delete', kwargs={'pk': plan.id}))
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertTrue(SMSCampaignPlan.objects.filter(id=plan.id).exists())
+
+        # Neither the detail header nor the list row offers a delete control anymore.
+        delete_url = reverse('tickets:sms_plan_delete', kwargs={'pk': plan.id})
+        detail = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertNotContains(detail, delete_url)
+        lst = self.client.get(reverse('tickets:sms_plan_list'))
+        self.assertNotContains(lst, delete_url)
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_plan_delete_gated_scoped_and_post_only(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
@@ -1524,6 +1702,102 @@ class SMSStrategistViewTests(TestCase):
         # A finished (Sent) plan shows no enable/disable toggle; an active one still does.
         self.assertNotContains(resp, reverse('tickets:sms_plan_toggle_enabled', kwargs={'pk': done.id}))
         self.assertContains(resp, reverse('tickets:sms_plan_toggle_enabled', kwargs={'pk': live.id}))
+
+    # --- Scheduled step → "move back to draft" (draft-before-delete) -----------
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_unschedule_step_reverts_to_draft_and_refunds(self, mock_openai):
+        # Moving a scheduled step back to draft cancels + refunds its campaign and clears the
+        # step's launch linkage so it's a true draft again.
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        c = self._confirm_step(plan)
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.org.refresh_from_db()
+        after_charge = self.org.sms_credit_balance_cents
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_unschedule_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
+        self.assertIsNone(c.plan_id)                      # detached from the plan
+        self.org.refresh_from_db()
+        self.assertGreater(self.org.sms_credit_balance_cents, after_charge)  # refunded
+        plan.refresh_from_db()
+        self.assertIsNone(plan.steps[0]['launched_campaign_id'])
+        self.assertIsNone(plan.steps[0].get('launched_at'))
+        # All steps back to draft → plan status recomputed to Draft.
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_unschedule_errors_when_step_is_draft(self, mock_openai):
+        # A step that was never launched can't be "moved back to draft".
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        resp = self.client.post(
+            reverse('tickets:sms_plan_unschedule_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+        plan.refresh_from_db()
+        self.assertIsNone(plan.steps[0].get('launched_campaign_id'))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_unschedule_errors_when_step_is_sent(self, mock_openai):
+        # A sent step is history — unschedule leaves the campaign and linkage untouched.
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='sent', body=plan.steps[0]['body'],
+            status=SMSCampaign.Status.SENT)
+        plan.steps[0]['launched_campaign_id'] = str(campaign.id)
+        plan.steps[0]['launched_at'] = timezone.now().isoformat()
+        plan.save(update_fields=['steps'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_unschedule_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SMSCampaign.Status.SENT)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(campaign.id))
+
+    def test_remove_step_blocked_when_scheduled(self):
+        # A scheduled step must be moved back to draft before it can be deleted.
+        plan = self._plan_with_steps(
+            'Sched', [SMSCampaign.Status.SCHEDULED, None, None],
+            SMSCampaignPlan.Status.IN_PROGRESS)
+        cid = plan.steps[0]['launched_campaign_id']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 3)                       # not popped
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], cid)
+        self.assertEqual(
+            SMSCampaign.objects.get(id=cid).status, SMSCampaign.Status.SCHEDULED)  # not canceled
+
+    def test_render_scheduled_step_shows_unschedule_not_remove(self):
+        # A scheduled step shows the "move back to draft" control instead of the trash icon;
+        # draft steps still show the trash.
+        plan = self._plan_with_steps(
+            'Sched', [SMSCampaign.Status.SCHEDULED, None],
+            SMSCampaignPlan.Status.IN_PROGRESS)
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['steps'][0]['is_scheduled'])
+        self.assertFalse(resp.context['steps'][1].get('is_scheduled'))
+        self.assertContains(
+            resp, reverse('tickets:sms_plan_unschedule_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertNotContains(
+            resp, reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertContains(
+            resp, reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 1}))
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')

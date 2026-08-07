@@ -90,6 +90,20 @@
     outline: none; background: var(--bg-primary);
     border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,124,255,0.15);
 }
+/* Read-only variant for a sent message: same bubble, no editing affordances. */
+.plan-step-message-sent {
+    display: block; width: 100%; box-sizing: border-box;
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.8rem 0.95rem; margin: 0.5rem 0 0.6rem;
+    font-size: 14.5px; line-height: 1.5; color: var(--text-primary);
+    font-family: inherit;
+}
+/* Static send-time label for a sent step (no click-to-edit). */
+.plan-timing-static {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+}
 .plan-step-rationale { font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; }
 .plan-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
@@ -167,10 +181,12 @@
             <button type="button" class="btn btn-outline-secondary btn-sm" id="planRegenBtn"><i class="bi bi-arrow-repeat"></i> Regenerate</button>
         </form>
         {% endif %}
+        {% if not plan_has_sent %}
         <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0" id="planDeleteForm">
             {% csrf_token %}
             <button type="button" class="btn btn-outline-danger btn-sm" id="planDeleteBtn"><i class="bi bi-trash"></i> Delete</button>
         </form>
+        {% endif %}
         <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Plans</a>
     </div>
 </div>
@@ -205,6 +221,11 @@
         <div class="plan-step-card">
             <div class="plan-step-head">
                 <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
+                {% if step.is_sent %}
+                <span class="plan-timing-static" data-step="{{ step.order }}">
+                    <i class="bi bi-clock"></i> {{ step.timing_label }}
+                </span>
+                {% else %}
                 <span class="plan-step-timing" data-step="{{ step.order }}"
                       data-schedule-url="{% url 'tickets:sms_plan_update_schedule' pk=plan.id step=step.order %}">
                     <button type="button" class="plan-timing-display" title="Click to edit send date &amp; time">
@@ -218,7 +239,18 @@
                         <button type="button" class="btn btn-sm btn-outline-secondary plan-timing-cancel">Cancel</button>
                     </span>
                 </span>
+                {% endif %}
                 {% if step.launched_at %}<span class="launched-pill {{ step.launched_pill_class }}"><i class="bi {{ step.launched_icon|default:'bi-check2' }}"></i> {{ step.launched_label|default:'Launched' }}</span>{% endif %}
+                {% if step.is_scheduled %}
+                <form method="post" action="{% url 'tickets:sms_plan_unschedule_step' pk=plan.id step=step.order %}"
+                      class="plan-step-remove m-0" data-unschedule-form>
+                    {% csrf_token %}
+                    <button type="button" class="plan-step-remove-btn" data-unschedule-trigger
+                            title="Move back to draft" aria-label="Move back to draft">
+                        <i class="bi bi-arrow-counterclockwise"></i>
+                    </button>
+                </form>
+                {% elif not step.is_sent %}
                 <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
                       class="plan-step-remove m-0" data-remove-form>
                     {% csrf_token %}
@@ -227,20 +259,27 @@
                         <i class="bi bi-trash"></i>
                     </button>
                 </form>
+                {% endif %}
             </div>
             <div class="plan-step-audience">
                 <i class="bi bi-people"></i>
                 <span data-audience-label>{{ step.audience_label }}</span>
+                {% if not step.is_sent %}
                 <button type="button" class="plan-audience-edit" data-audience-trigger
                         data-update-url="{% url 'tickets:sms_plan_update_audience' pk=plan.id step=step.order %}"
                         data-criteria="{{ step.audience_criteria_json }}"
                         title="Change who this is sent to" aria-label="Change audience">
                     <i class="bi bi-pencil"></i>
                 </button>
+                {% endif %}
             </div>
+            {% if step.is_sent %}
+            <div class="plan-step-message-sent" data-step="{{ step.order }}">{{ step.body }}</div>
+            {% else %}
             <textarea class="plan-step-message" data-step="{{ step.order }}"
                       data-update-url="{% url 'tickets:sms_plan_update_step' pk=plan.id step=step.order %}"
                       maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
+            {% endif %}
             {% if step.rationale %}<div class="plan-step-rationale">{{ step.rationale }}</div>{% endif %}
             <div class="plan-step-foot">
                 <span class="plan-step-segs">
@@ -259,11 +298,6 @@
                             title="Ask the AI to rewrite this message">
                         <i class="bi bi-arrow-repeat"></i> Regenerate
                     </button>
-                    <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
-                        {% csrf_token %}
-                        <input type="hidden" name="body">
-                        <button type="submit" class="btn btn-sm btn-outline-secondary">Open in full editor</button>
-                    </form>
                     <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
                             data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
                             data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}"
@@ -312,6 +346,22 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="unscheduleStepModal" tabindex="-1" aria-labelledby="unscheduleStepModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="unscheduleStepModalLabel">Move back to draft</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">This cancels the scheduled send and refunds the reserved credits. The message returns to draft so you can edit, regenerate, or remove it.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="unscheduleStepConfirm">Move to draft</button>
             </div>
         </div>
     </div>
@@ -705,6 +755,24 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Move-back-to-draft confirmation (mirrors the removeStep modal pattern). The revert
+    // button opens the modal; "Move to draft" submits its form (cancel + refund server-side).
+    var unschedModalEl = document.getElementById('unscheduleStepModal');
+    if (unschedModalEl && window.bootstrap) {
+        var unschedModal = new bootstrap.Modal(unschedModalEl);
+        var pendingUnschedForm = null;
+        document.querySelectorAll('[data-unschedule-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                pendingUnschedForm = btn.closest('[data-unschedule-form]');
+                unschedModal.show();
+            });
+        });
+        var unschedConfirm = document.getElementById('unscheduleStepConfirm');
+        if (unschedConfirm) unschedConfirm.addEventListener('click', function () {
+            if (pendingUnschedForm) pendingUnschedForm.submit();
+        });
+    }
+
     // Delete-whole-plan confirmation (same Bootstrap-modal pattern).
     var delModalEl = document.getElementById('deletePlanModal');
     if (delModalEl && window.bootstrap) {
@@ -810,17 +878,6 @@ document.addEventListener('DOMContentLoaded', function () {
             audModal.hide();
         });
     }
-
-    // On launch, copy the (possibly just-edited) message into the form so the
-    // composer prefills exactly what the organizer sees — even without a blur-save.
-    document.querySelectorAll('.plan-launch-form').forEach(function (form) {
-        form.addEventListener('submit', function () {
-            const card = form.closest('.plan-step-card');
-            const ta = card ? card.querySelector('.plan-step-message') : null;
-            const hidden = form.querySelector('input[name="body"]');
-            if (ta && hidden) hidden.value = ta.value;
-        });
-    });
 
     // Inline "Review & send": confirm recipients + schedule and actually send/schedule
     // the message right here, without the full composer. A past/unset send time asks for
