@@ -2211,6 +2211,9 @@ def sms_plan_detail(request, pk):
     context = {
         'plan': plan, 'steps': steps, 'progress': progress,
         'presets': presets,
+        # Overdue held sends (disabled plan whose scheduled time has passed) drive the
+        # Send now / Reschedule / Skip warning modal.
+        'overdue_steps': _overdue_held_steps(org, plan, steps),
         'stripe_publishable_key': getattr(settings, 'STRIPE_PUBLISHABLE_KEY', ''),
         'stripe_currency': getattr(settings, 'STRIPE_CURRENCY', 'usd'),
         'stripe_ready': bool(getattr(settings, 'STRIPE_SECRET_KEY', '')),
@@ -2250,6 +2253,26 @@ def sms_plan_list(request):
         p.scheduled_count = progress['scheduled']
         p.sent_count = progress['sent']
         _sync_plan_status(p, progress['status'])  # heals p.status in-memory + DB on drift
+
+    # Overdue-held indicator: a disabled plan with a still-SCHEDULED, past-due launched
+    # campaign. One query, only when the page actually has disabled plans with sends.
+    disabled_launched_ids = [
+        s.get('launched_campaign_id')
+        for p in page_plans if not p.enabled
+        for s in (p.steps or []) if s.get('launched_campaign_id')
+    ]
+    overdue_ids = set()
+    if disabled_launched_ids:
+        overdue_ids = {
+            str(cid) for cid in SMSCampaign.objects.filter(
+                organization=org, id__in=disabled_launched_ids,
+                status=SMSCampaign.Status.SCHEDULED, scheduled_at__lt=timezone.now(),
+            ).values_list('id', flat=True)
+        }
+    for p in page_plans:
+        p.has_overdue = (not p.enabled) and any(
+            str(s.get('launched_campaign_id')) in overdue_ids for s in (p.steps or [])
+        )
 
     return render(request, 'tickets/marketing/sms/plan_list.html', {
         'page_obj': page,
@@ -2297,6 +2320,146 @@ def sms_plan_rename(request, pk):
     plan.name = name[:200]
     plan.save(update_fields=['name', 'updated_at'])
     return JsonResponse({'ok': True, 'name': plan.name})
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_toggle_enabled(request, pk):
+    """Flip a plan's ``enabled`` (paused) flag. JSON endpoint for the toggle on the plan
+    detail page and the plans list.
+
+    Disabling holds the plan's scheduled sends (the gate in ``send_sms_campaign_task``);
+    enabling lets the next due-send cron resume them. Never cancels or refunds anything —
+    overdue held sends are resolved separately via ``sms_plan_overdue_action``.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    raw = (request.POST.get('enabled') or '').strip().lower()
+    if raw in ('1', 'true', 'on'):
+        plan.enabled = True
+    elif raw in ('0', 'false', 'off'):
+        plan.enabled = False
+    else:
+        plan.enabled = not plan.enabled
+    plan.save(update_fields=['enabled', 'updated_at'])
+    return JsonResponse({'ok': True, 'enabled': plan.enabled})
+
+
+def _overdue_held_steps(org, plan, decorated_steps):
+    """For a DISABLED plan, the steps whose launched campaign is still SCHEDULED with a send
+    time already in the past — held by the pause and now overdue. Empty for an enabled plan
+    (its due sends go out on time). Returns display dicts for the warning modal. One query.
+    """
+    if plan.enabled:
+        return []
+    ids = [s.get('launched_campaign_id') for s in decorated_steps if s.get('launched_campaign_id')]
+    if not ids:
+        return []
+    now = timezone.now()
+    rows = {
+        str(cid): (status, sched)
+        for cid, status, sched in SMSCampaign.objects.filter(
+            organization=org, id__in=ids,
+        ).values_list('id', 'status', 'scheduled_at')
+    }
+    tz = org.get_timezone()
+    overdue = []
+    for s in decorated_steps:
+        info = rows.get(str(s.get('launched_campaign_id')))
+        if not info:
+            continue
+        status, sched = info
+        if status == SMSCampaign.Status.SCHEDULED and sched and sched < now:
+            overdue.append({
+                'order': s['order'],
+                'purpose_label': s.get('purpose_label'),
+                'body': s.get('body'),
+                'campaign_id': str(s['launched_campaign_id']),
+                'was_scheduled_label': s.get('timing_label'),
+                'send_local': sched.astimezone(tz).strftime('%Y-%m-%dT%H:%M'),
+            })
+    return overdue
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_overdue_action(request, pk, step):
+    """Resolve one overdue held send on a disabled plan. ``action`` is one of:
+
+      send_now   — dispatch it immediately (bypasses the plan-disabled hold via ``force``).
+      reschedule — move it to a future ``send_at`` (stays held until the plan is enabled).
+      skip       — cancel the scheduled campaign and refund its reserved credits.
+
+    Acts on the step's launched, still-SCHEDULED campaign; a no-longer-pending send is a 400.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    cid = steps[step].get('launched_campaign_id')
+    campaign = SMSCampaign.objects.filter(organization=org, id=cid).first() if cid else None
+    if not campaign or campaign.status != SMSCampaign.Status.SCHEDULED:
+        return JsonResponse({'ok': False, 'error': 'That send is no longer pending.'}, status=400)
+
+    action = request.POST.get('action')
+
+    if action == 'send_now':
+        SMSCampaign.objects.filter(
+            id=campaign.id, status=SMSCampaign.Status.SCHEDULED,
+        ).update(scheduled_at=timezone.now())
+        transaction.on_commit(
+            lambda c=str(campaign.id): send_sms_campaign_task.delay(c, force=True)
+        )
+        return JsonResponse({'ok': True, 'action': 'send_now'})
+
+    if action == 'reschedule':
+        event = plan.event if plan.event_id else None
+        try:
+            new_step = _apply_step_schedule(steps[step], request.POST.get('send_at'), org, event)
+        except ValueError:
+            return JsonResponse({'ok': False, 'error': 'Enter a valid date and time.'}, status=400)
+        new_dt = datetime.fromisoformat(new_step['send_at'])
+        if new_dt <= timezone.now():
+            return JsonResponse({'ok': False, 'error': 'Pick a time in the future.'}, status=400)
+        SMSCampaign.objects.filter(
+            id=campaign.id, status=SMSCampaign.Status.SCHEDULED,
+        ).update(scheduled_at=new_dt)
+        steps[step] = new_step
+        _save_plan_steps(org, plan, steps)
+        return JsonResponse({
+            'ok': True, 'action': 'reschedule',
+            'timing_label': new_step['timing_label'],
+            'send_local': new_dt.astimezone(org.get_timezone()).strftime('%Y-%m-%dT%H:%M'),
+        })
+
+    if action == 'skip':
+        updated = SMSCampaign.objects.filter(
+            id=campaign.id, organization=org, status=SMSCampaign.Status.SCHEDULED,
+        ).update(status=SMSCampaign.Status.CANCELED)
+        if updated:
+            from .services.sms_credits import refund_campaign
+            refund_campaign(
+                SMSCampaign.objects.get(id=campaign.id),
+                description='Overdue plan send skipped',
+            )
+        return JsonResponse({'ok': True, 'action': 'skip'})
+
+    return JsonResponse({'ok': False, 'error': 'Unknown action.'}, status=400)
 
 
 def _apply_step_body(step_dict, body):
@@ -2741,6 +2904,10 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
     plan = SMSCampaignPlan.objects.filter(organization=org, id=plan_id).first()
     if not plan:
         return
+    # Link the campaign back to its plan so the send pipeline can hold it while the plan is
+    # disabled (paused). Org-scoped filtered update keeps it cheap. Covers every launch path
+    # (inline confirm + the composer's single/split sends all funnel through here).
+    SMSCampaign.objects.filter(organization=org, id=campaign_id).update(plan=plan)
     steps = plan.steps or []
     if step is None or step < 0 or step >= len(steps):
         return
@@ -2896,6 +3063,12 @@ def sms_plan_confirm_step(request, pk, step):
             'ok': True, 'already_launched': True, 'campaign_id': existing_id,
             'campaign_url': reverse('tickets:sms_campaign_detail', args=[existing_id]),
         })
+
+    # A disabled (paused) plan can't launch new sends — enable it first.
+    if not plan.enabled:
+        return JsonResponse(
+            {'ok': False, 'error': 'This plan is disabled. Enable it to send.'}, status=409,
+        )
 
     # A just-typed (unsaved) body edit is authoritative: apply + persist it so what
     # sends is exactly what the organizer sees.
