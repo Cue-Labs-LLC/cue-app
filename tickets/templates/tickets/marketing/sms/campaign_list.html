@@ -1,7 +1,7 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
 
-{% block title %}SMS Campaigns{% endblock %}
+{% block title %}SMS Sends{% endblock %}
 
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -90,7 +90,7 @@ tr.campaign-row { cursor: pointer; }
         {% if org.ai_sms_strategist_enabled %}
         <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-stars"></i> Plan with AI</a>
         {% endif %}
-        <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Campaign</a>
+        <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Send</a>
     </div>
     {% endif %}
 </div>
@@ -99,7 +99,7 @@ tr.campaign-row { cursor: pointer; }
 <nav class="marketing-subnav" role="tablist" aria-label="SMS views">
     <a class="marketing-subnav-btn{% if view == 'campaigns' %} active{% endif %}"
        href="?view=campaigns&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
-       {% if view == 'campaigns' %}aria-current="page"{% endif %}>Campaigns</a>
+       {% if view == 'campaigns' %}aria-current="page"{% endif %}>Sends</a>
     <a class="marketing-subnav-btn{% if view == 'audience' %} active{% endif %}"
        href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
@@ -123,7 +123,7 @@ tr.campaign-row { cursor: pointer; }
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Campaign</th>
+                        <th>Send</th>
                         <th>Event</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Sent so far</th>
@@ -168,7 +168,7 @@ tr.campaign-row { cursor: pointer; }
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Campaign</th>
+                        <th>Send</th>
                         <th>Event</th>
                         <th class="text-end">Audience</th>
                         <th>Sends</th>
@@ -205,7 +205,7 @@ tr.campaign-row { cursor: pointer; }
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Campaign</th>
+                        <th>Send</th>
                         <th>Source</th>
                         <th>Event</th>
                         <th>Event Date</th>
@@ -249,7 +249,7 @@ tr.campaign-row { cursor: pointer; }
             </table>
         </div>
         {% if campaigns_page.has_other_pages %}
-        <nav aria-label="Campaign pagination" class="d-flex justify-content-center py-3">
+        <nav aria-label="Send pagination" class="d-flex justify-content-center py-3">
             <ul class="pagination pagination-sm mb-0">
                 {% if campaigns_page.has_previous %}
                 <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.previous_page_number }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&lsaquo;</a></li>
@@ -268,9 +268,9 @@ tr.campaign-row { cursor: pointer; }
         {% else %}
         <div class="empty-state">
             <i class="bi bi-chat-dots" style="font-size:2rem;opacity:.35;"></i>
-            <p>No campaigns in this window.</p>
+            <p>No sends in this window.</p>
             {% if sms_native_enabled %}
-            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-sm btn-primary">New Campaign</a>
+            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-sm btn-primary">New Send</a>
             {% endif %}
         </div>
         {% endif %}
@@ -280,7 +280,7 @@ tr.campaign-row { cursor: pointer; }
 {# ── Audience view (reach: chart + by-market) ────────────────────────── #}
 {% elif view == 'audience' %}
 <div class="sms-section-head">
-    <h2>Campaign audiences over time</h2>
+    <h2>Send audiences over time</h2>
     <div class="audience-head-controls">
         <div class="marketing-subnav marketing-subnav--inline" role="group" aria-label="Group audience chart by">
             <button type="button" class="marketing-subnav-btn active" data-group="send" id="audience-group-send">By send date</button>
@@ -346,7 +346,7 @@ tr.campaign-row { cursor: pointer; }
   <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="cdmName">Campaign</h5>
+        <h5 class="modal-title" id="cdmName">Send</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
@@ -357,7 +357,7 @@ tr.campaign-row { cursor: pointer; }
         </div>
         <div class="fw-semibold small text-body-secondary mb-1">Message</div>
         <div id="cdmMessage" class="cdm-message p-3 rounded border bg-body-tertiary"></div>
-        <img id="cdmMedia" class="img-fluid rounded mt-2 d-none" alt="Campaign media">
+        <img id="cdmMedia" class="img-fluid rounded mt-2 d-none" alt="Send media">
         <div class="row text-center g-2 mt-3">
           <div class="col"><div class="small text-body-secondary">Audience</div><div class="fw-semibold" id="cdmAudience">—</div></div>
           <div class="col"><div class="small text-body-secondary">Clicks</div><div class="fw-semibold" id="cdmClicks">—</div></div>
@@ -366,7 +366,7 @@ tr.campaign-row { cursor: pointer; }
         </div>
       </div>
       <div class="modal-footer">
-        <a href="#" id="cdmDetailLink" class="btn btn-sm btn-outline-primary d-none">Open full campaign</a>
+        <a href="#" id="cdmDetailLink" class="btn btn-sm btn-outline-primary d-none">Open full send</a>
         <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
@@ -518,14 +518,14 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     function openRow(row) {
         var d = row.dataset;
-        document.getElementById('cdmName').textContent = d.name || 'Campaign';
+        document.getElementById('cdmName').textContent = d.name || 'Send';
         var src = document.getElementById('cdmSource');
         src.textContent = d.source || '';
         src.className = 'badge source-badge source-badge--' + (d.sourceKey || '');
         document.getElementById('cdmWhen').textContent = d.when || '';
         document.getElementById('cdmEvent').textContent = d.event ? ('· ' + d.event) : '';
         document.getElementById('cdmMessage').textContent =
-            d.message || '(No message stored for this campaign.)';
+            d.message || '(No message stored for this send.)';
         set('cdmAudience', d.audience);
         set('cdmClicks', d.clicks);
         set('cdmOrders', d.orders);

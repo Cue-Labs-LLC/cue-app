@@ -764,7 +764,7 @@ def sms_campaign_create(request):
                             AudienceTooLargeError, DailyCapExceededError) as exc:
                         if isinstance(exc, InsufficientCreditsError):
                             insufficient_credits = True
-                            base_msg = ('Not enough SMS tokens to send this campaign. '
+                            base_msg = ('Not enough SMS tokens to send. '
                                         'Top up to continue.')
                         elif isinstance(exc, AudienceEmptyError):
                             base_msg = 'This audience has no contactable recipients.'
@@ -841,7 +841,7 @@ def sms_campaign_create(request):
                 elif request.POST.get('confirm') and insufficient_credits:
                     form.add_error(
                         None,
-                        'Not enough SMS tokens to send this campaign. Top up to continue.',
+                        'Not enough SMS tokens to send. Top up to continue.',
                     )
                 elif request.POST.get('confirm') and daily_cap_block:
                     form.add_error(None, daily_cap_block)
@@ -861,7 +861,7 @@ def sms_campaign_create(request):
                         insufficient_credits = True
                         form.add_error(
                             None,
-                            'Not enough SMS tokens to send this campaign. Top up to continue.',
+                            'Not enough SMS tokens to send. Top up to continue.',
                         )
                     except AudienceEmptyError:
                         form.add_error(None, 'This audience has no contactable recipients.')
@@ -896,7 +896,7 @@ def sms_campaign_create(request):
                         else:
                             messages.success(
                                 request,
-                                f'Campaign scheduled for {result.campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
+                                f'Send scheduled for {result.campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
                             )
                         return redirect('tickets:sms_campaign_detail', pk=result.campaign.id)
     else:
@@ -1138,16 +1138,16 @@ def sms_campaign_cancel(request, pk):
         # Refund the credits reserved at scheduling time (idempotent).
         from .services.sms_credits import refund_campaign
         campaign = SMSCampaign.objects.get(id=pk)
-        refunded = refund_campaign(campaign, description='Scheduled campaign canceled')
+        refunded = refund_campaign(campaign, description='Scheduled send canceled')
         if refunded:
             messages.success(
                 request,
-                f'Scheduled campaign canceled. ${refunded / 100:.2f} in credits refunded.',
+                f'Scheduled send canceled. ${refunded / 100:.2f} in credits refunded.',
             )
         else:
-            messages.success(request, 'Scheduled campaign canceled.')
+            messages.success(request, 'Scheduled send canceled.')
     else:
-        messages.error(request, 'That campaign can no longer be canceled.')
+        messages.error(request, 'That send can no longer be canceled.')
     return redirect('tickets:sms_campaign_detail', pk=pk)
 
 
