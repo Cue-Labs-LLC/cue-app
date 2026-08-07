@@ -166,6 +166,11 @@
             {% csrf_token %}
             <button type="button" class="btn btn-outline-secondary btn-sm" id="planRegenBtn"><i class="bi bi-arrow-repeat"></i> Regenerate</button>
         </form>
+        {% elif regenerable_count %}
+        <form method="post" action="{% url 'tickets:sms_plan_regenerate_remaining' pk=plan.id %}" class="m-0" id="planRegenDraftsForm">
+            {% csrf_token %}
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="planRegenDraftsBtn"><i class="bi bi-arrow-repeat"></i> Regenerate drafts</button>
+        </form>
         {% endif %}
         <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0" id="planDeleteForm">
             {% csrf_token %}
@@ -344,6 +349,22 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="regeneratePlanConfirm"><i class="bi bi-arrow-repeat"></i> Regenerate</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="regenerateDraftsModal" tabindex="-1" aria-labelledby="regenerateDraftsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="regenerateDraftsModalLabel">Regenerate draft messages</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Redraft the remaining <strong>draft</strong> messages? The AI will rewrite each one (keeping its purpose, audience, and schedule), discarding any edits to them. Messages you've already sent or scheduled are left untouched.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="regenerateDraftsConfirm"><i class="bi bi-arrow-repeat"></i> Regenerate drafts</button>
             </div>
         </div>
     </div>
@@ -727,6 +748,20 @@ document.addEventListener('DOMContentLoaded', function () {
             regenConfirm.disabled = true;
             regenConfirm.innerHTML = 'Regenerating…';
             document.getElementById('planRegenForm').submit();
+        });
+    }
+
+    // Regenerate-remaining-drafts confirmation (in-progress plan; leaves sent/scheduled alone).
+    var regenDraftsModalEl = document.getElementById('regenerateDraftsModal');
+    if (regenDraftsModalEl && window.bootstrap) {
+        var regenDraftsModal = new bootstrap.Modal(regenDraftsModalEl);
+        var regenDraftsBtn = document.getElementById('planRegenDraftsBtn');
+        if (regenDraftsBtn) regenDraftsBtn.addEventListener('click', function () { regenDraftsModal.show(); });
+        var regenDraftsConfirm = document.getElementById('regenerateDraftsConfirm');
+        if (regenDraftsConfirm) regenDraftsConfirm.addEventListener('click', function () {
+            regenDraftsConfirm.disabled = true;
+            regenDraftsConfirm.innerHTML = 'Regenerating…';
+            document.getElementById('planRegenDraftsForm').submit();
         });
     }
 
@@ -1258,7 +1293,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     // Deliberate plan-level actions (delete / regenerate the whole plan) discard edits by
     // design — don't let the guard intercept their form submit.
-    ['planDeleteForm', 'planRegenForm'].forEach(function (id) {
+    ['planDeleteForm', 'planRegenForm', 'planRegenDraftsForm'].forEach(function (id) {
         var f = document.getElementById(id);
         if (f) f.addEventListener('submit', function () { editGuard.allow(); });
     });

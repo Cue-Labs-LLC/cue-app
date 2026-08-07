@@ -308,6 +308,7 @@ urlpatterns = [
     path('marketing/sms/plan/<uuid:pk>/toggle/', sms_views.sms_plan_toggle_enabled, name='sms_plan_toggle_enabled'),
     path('marketing/sms/plan/<uuid:pk>/overdue/<int:step>/', sms_views.sms_plan_overdue_action, name='sms_plan_overdue_action'),
     path('marketing/sms/plan/<uuid:pk>/regenerate/', sms_views.sms_plan_regenerate, name='sms_plan_regenerate'),
+    path('marketing/sms/plan/<uuid:pk>/regenerate-remaining/', sms_views.sms_plan_regenerate_remaining, name='sms_plan_regenerate_remaining'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/update/', sms_views.sms_plan_update_step, name='sms_plan_update_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/regenerate/', sms_views.sms_plan_regenerate_step, name='sms_plan_regenerate_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/schedule/', sms_views.sms_plan_update_schedule, name='sms_plan_update_schedule'),
