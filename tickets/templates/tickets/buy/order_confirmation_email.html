@@ -2,95 +2,108 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <meta name="supported-color-schemes" content="dark">
+    <!-- Progressive enhancement: DM Sans loads in clients that honor <style> web fonts (e.g. Apple Mail). Others fall back to the system stack. -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700;800&display=swap');
+    </style>
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px;">
-    <div style="max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 8px; padding: 40px;">
-        <h2 style="margin: 0 0 8px; color: #1a1a2e; text-align: center;">Cue</h2>
-        <p style="color: #666; margin: 0 0 32px; text-align: center;">Order confirmation</p>
+<body style="font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0F0E0D; margin: 0; padding: 0;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0F0E0D" style="background-color: #0F0E0D; margin: 0; padding: 0;">
+        <tr>
+            <td align="center" style="padding: 20px;">
+                <div style="max-width: 480px; margin: 0 auto; background: #191817; border: 1px solid #2E2C2A; border-radius: 3px; padding: 40px;">
+                    <h2 style="margin: 0 0 6px; color: #EDE8E3; text-align: center; font-weight: 800; letter-spacing: -0.02em;">Cue</h2>
+                    <p style="color: #7A7672; margin: 0 0 32px; text-align: center; font-size: 12px; text-transform: uppercase; letter-spacing: 0.15em;">Order confirmation</p>
 
-        <p style="color: #333; margin: 0 0 8px;">Hi {{ customer.name }},</p>
-        <p style="color: #333; margin: 0 0 24px;">Your order for <strong>{{ event.name }}</strong> is confirmed.</p>
+                    <p style="color: #A8A5A1; margin: 0 0 8px;">Hi{% if customer.name.split.0 %} {{ customer.name.split.0 }}{% endif %},</p>
+                    <p style="color: #A8A5A1; margin: 0 0 24px;">Your order for <strong style="color: #EDE8E3;">{{ event.name }}</strong> is confirmed.</p>
 
-        <div style="background: #f8f8fb; border-radius: 6px; padding: 20px; margin: 0 0 24px;">
-            <p style="margin: 0 0 12px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em;">Order details</p>
-            <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                    <td style="padding: 4px 0; color: #555; font-size: 14px;">Order number</td>
-                    <td style="padding: 4px 0; color: #1a1a2e; font-size: 14px; font-weight: 600; text-align: right;">{{ order.display_order_number }}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 4px 0; color: #555; font-size: 14px;">Event</td>
-                    <td style="padding: 4px 0; color: #1a1a2e; font-size: 14px; text-align: right;">{{ event.name }}</td>
-                </tr>
-                {% if event.start_date %}
-                <tr>
-                    <td style="padding: 4px 0; color: #555; font-size: 14px;">Date</td>
-                    <td style="padding: 4px 0; color: #1a1a2e; font-size: 14px; text-align: right;">{{ event.start_date|date:"N j, Y" }}{% if event.start_time %} at {% timezone event.timezone %}{{ event.start_datetime|date:"g:i A T" }}{% endtimezone %}{% endif %}</td>
-                </tr>
-                {% endif %}
-                {% if event.venue %}
-                <tr>
-                    <td style="padding: 4px 0; color: #555; font-size: 14px;">Venue</td>
-                    <td style="padding: 4px 0; color: #1a1a2e; font-size: 14px; text-align: right;">{{ event.venue.name }}</td>
-                </tr>
-                {% if event.venue.get_display_address %}
-                <tr>
-                    <td style="padding: 4px 0; color: #555; font-size: 14px;"></td>
-                    <td style="padding: 4px 0; color: #666; font-size: 13px; text-align: right;">{{ event.venue.get_display_address }}</td>
-                </tr>
-                {% endif %}
-                {% endif %}
-            </table>
-        </div>
+                    <div style="background: #232220; border-radius: 3px; padding: 20px; margin: 0 0 24px;">
+                        <p style="margin: 0 0 12px; font-size: 12px; color: #7A7672; text-transform: uppercase; letter-spacing: 0.1em;">Order details</p>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="padding: 4px 0; color: #7A7672; font-size: 14px;">Order number</td>
+                                <td style="padding: 4px 0; color: #EDE8E3; font-size: 14px; font-weight: 600; text-align: right;">{{ order.display_order_number }}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 4px 0; color: #7A7672; font-size: 14px;">Event</td>
+                                <td style="padding: 4px 0; color: #EDE8E3; font-size: 14px; text-align: right;">{{ event.name }}</td>
+                            </tr>
+                            {% if event.start_date %}
+                            <tr>
+                                <td style="padding: 4px 0; color: #7A7672; font-size: 14px;">Date</td>
+                                <td style="padding: 4px 0; color: #EDE8E3; font-size: 14px; text-align: right;">{{ event.start_date|date:"N j, Y" }}{% if event.start_time %} at {% timezone event.timezone %}{{ event.start_datetime|date:"g:i A T" }}{% endtimezone %}{% endif %}</td>
+                            </tr>
+                            {% endif %}
+                            {% if event.venue %}
+                            <tr>
+                                <td style="padding: 4px 0; color: #7A7672; font-size: 14px;">Venue</td>
+                                <td style="padding: 4px 0; color: #EDE8E3; font-size: 14px; text-align: right;">{{ event.venue.name }}</td>
+                            </tr>
+                            {% if event.venue.get_display_address %}
+                            <tr>
+                                <td style="padding: 4px 0; color: #7A7672; font-size: 14px;"></td>
+                                <td style="padding: 4px 0; color: #A8A5A1; font-size: 13px; text-align: right;">{{ event.venue.get_display_address }}</td>
+                            </tr>
+                            {% endif %}
+                            {% endif %}
+                        </table>
+                    </div>
 
-        {% if event_url %}
-        <div style="text-align: center; margin: 0 0 24px;">
-            <a href="{{ event_url }}" style="display: inline-block; background: #1a1a2e; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; padding: 12px 24px; border-radius: 6px;">View event page</a>
-        </div>
-        {% endif %}
+                    {% if event_url %}
+                    <div style="text-align: center; margin: 0 0 24px;">
+                        <a href="{{ event_url }}" style="display: inline-block; background: #EDE8E3; color: #0F0E0D; text-decoration: none; font-size: 14px; font-weight: 700; padding: 14px 32px; border-radius: 3px;">View event page</a>
+                    </div>
+                    {% endif %}
 
-        {% if tickets %}
-        <div style="margin: 0 0 24px;">
-            <p style="margin: 0 0 12px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em;">Tickets</p>
-            {% for ticket in tickets %}
-            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
-                <span style="color: #333; font-size: 14px;">{{ ticket.ticket_type }}</span>
-                <span style="color: #1a1a2e; font-size: 14px; font-weight: 600; padding-left: 24px;">
-                    {% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}
-                </span>
-            </div>
-            {% endfor %}
-            {% if service_fee %}
-            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
-                <span style="color: #333; font-size: 14px;">Includes service fee</span>
-                <span style="color: #1a1a2e; font-size: 14px; padding-left: 24px;">${{ service_fee }}</span>
-            </div>
-            {% endif %}
-            <div style="display: flex; justify-content: space-between; padding: 12px 0 0;">
-                <span style="color: #333; font-size: 14px; font-weight: 600;">Total</span>
-                <span style="color: #1a1a2e; font-size: 14px; font-weight: 700; padding-left: 24px;">
-                    {% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}
-                </span>
-            </div>
-        </div>
-        {% endif %}
+                    {% if tickets %}
+                    <div style="margin: 0 0 24px;">
+                        <p style="margin: 0 0 12px; font-size: 12px; color: #7A7672; text-transform: uppercase; letter-spacing: 0.1em;">Tickets</p>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            {% for ticket in tickets %}
+                            <tr>
+                                <td style="padding: 8px 0; border-bottom: 1px solid #2E2C2A; color: #A8A5A1; font-size: 14px;">{{ ticket.ticket_type }}</td>
+                                <td style="padding: 8px 0; border-bottom: 1px solid #2E2C2A; color: #EDE8E3; font-size: 14px; font-weight: 600; text-align: right;">{% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                            {% if service_fee %}
+                            <tr>
+                                <td style="padding: 8px 0; border-bottom: 1px solid #2E2C2A; color: #A8A5A1; font-size: 14px;">Includes service fee</td>
+                                <td style="padding: 8px 0; border-bottom: 1px solid #2E2C2A; color: #EDE8E3; font-size: 14px; text-align: right;">${{ service_fee }}</td>
+                            </tr>
+                            {% endif %}
+                            <tr>
+                                <td style="padding: 12px 0 0; color: #EDE8E3; font-size: 14px; font-weight: 600;">Total</td>
+                                <td style="padding: 12px 0 0; color: #EDE8E3; font-size: 14px; font-weight: 700; text-align: right;">{% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    {% endif %}
 
-        {% if ticket_qrs %}
-        <div style="margin: 0 0 24px;">
-            <p style="margin: 0 0 16px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em; text-align: center;">Your ticket QR codes</p>
-            {% for q in ticket_qrs %}
-            <div style="margin: 0 0 24px; text-align: center;">
-                <p style="margin: 0 0 8px; color: #333; font-size: 14px; font-weight: 600;">{{ q.ticket.ticket_type }}{% if q.ticket.tier_name %} &mdash; {{ q.ticket.tier_name }}{% endif %}</p>
-                <img src="cid:{{ q.cid }}" alt="Ticket QR code" width="180" height="180" style="display: block; margin: 0 auto;">
-            </div>
-            {% endfor %}
-            <p style="color: #555; font-size: 13px; margin: 12px 0 0; text-align: center;">Show one QR code per guest at the door for check-in.</p>
-        </div>
-        {% endif %}
+                    {% if ticket_qrs %}
+                    <div style="margin: 0 0 24px;">
+                        <p style="margin: 0 0 16px; font-size: 12px; color: #7A7672; text-transform: uppercase; letter-spacing: 0.1em; text-align: center;">Your ticket QR codes</p>
+                        {% for q in ticket_qrs %}
+                        <div style="margin: 0 0 24px; text-align: center;">
+                            <p style="margin: 0 0 10px; color: #EDE8E3; font-size: 14px; font-weight: 600;">{{ q.ticket.ticket_type }}{% if q.ticket.tier_name %} &mdash; {{ q.ticket.tier_name }}{% endif %}</p>
+                            <div style="display: inline-block; background: #FFFFFF; padding: 12px; border-radius: 6px; line-height: 0;">
+                                <img src="cid:{{ q.cid }}" alt="Ticket QR code" width="180" height="180" style="display: block;">
+                            </div>
+                        </div>
+                        {% endfor %}
+                        <p style="color: #A8A5A1; font-size: 13px; margin: 12px 0 0; text-align: center;">Show one QR code per guest at the door for check-in.</p>
+                    </div>
+                    {% endif %}
 
-        <p style="color: #999; font-size: 13px; margin: 32px 0 0; text-align: center;">
-            Questions? Reply to this email and we'll be happy to help.
-        </p>
-    </div>
+                    <p style="color: #7A7672; font-size: 13px; margin: 32px 0 0; text-align: center;">
+                        Questions? Reply to this email and we'll be happy to help.
+                    </p>
+                </div>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>
