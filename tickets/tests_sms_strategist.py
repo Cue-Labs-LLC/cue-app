@@ -1515,6 +1515,16 @@ class SMSStrategistViewTests(TestCase):
         self.assertContains(resp2, 'bi-exclamation-triangle-fill')   # overdue indicator
         self.assertContains(resp2, '>Disabled<')
 
+    def test_completed_plan_hides_toggle_in_list(self):
+        S = SMSCampaign.Status
+        P = SMSCampaignPlan.Status
+        done = self._plan_with_steps('Done', [S.SENT], P.SENT)
+        live = self._plan_with_steps('Live', [S.SCHEDULED], P.SCHEDULED)
+        resp = self.client.get(reverse('tickets:sms_plan_list'))
+        # A finished (Sent) plan shows no enable/disable toggle; an active one still does.
+        self.assertNotContains(resp, reverse('tickets:sms_plan_toggle_enabled', kwargs={'pk': done.id}))
+        self.assertContains(resp, reverse('tickets:sms_plan_toggle_enabled', kwargs={'pk': live.id}))
+
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
 class TopPriorCampaignsTests(TestCase):
