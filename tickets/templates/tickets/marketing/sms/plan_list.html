@@ -66,11 +66,13 @@
                             {% endif %}
                         </td>
                         <td class="text-end" onclick="event.stopPropagation()">
+                            {% if not plan.sent_count %}
                             <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
                                 {% csrf_token %}
                                 <button type="button" class="btn btn-sm btn-link text-danger p-0 plan-delete-trigger" data-plan-delete-trigger
                                         title="Delete plan" aria-label="Delete plan"><i class="bi bi-trash"></i></button>
                             </form>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
