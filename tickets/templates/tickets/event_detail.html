@@ -1377,7 +1377,7 @@ document.addEventListener('DOMContentLoaded', function() {
             <table class="table table-hover mb-0 align-middle">
                 <thead>
                     <tr>
-                        <th>Campaign</th>
+                        <th>Send</th>
                         <th>Status</th>
                         <th class="text-end">Sent</th>
                         <th class="text-end">Clicks</th>
@@ -1420,7 +1420,7 @@ document.addEventListener('DOMContentLoaded', function() {
             </table>
         </div>
         {% else %}
-        <p class="text-body-secondary mb-0">Text this event's ticket buyers directly. No native SMS campaigns sent yet.</p>
+        <p class="text-body-secondary mb-0">Text this event's ticket buyers directly. No native SMS sends yet.</p>
         {% endif %}
     </div>
 </div>
@@ -1431,7 +1431,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="modal-content">
             <div class="modal-header">
                 <div>
-                    <h5 class="modal-title" id="smsCampaignModalLabel">Campaign</h5>
+                    <h5 class="modal-title" id="smsCampaignModalLabel">Send</h5>
                     <div class="text-body-secondary small mt-1" id="smsCampaignModalWhen"></div>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -1450,7 +1450,7 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
             <div class="modal-footer">
                 <a href="#" class="btn btn-outline-primary btn-sm" id="smsCampaignModalDetailLink">
-                    <i class="bi bi-box-arrow-up-right"></i> Open full campaign
+                    <i class="bi bi-box-arrow-up-right"></i> Open full send
                 </a>
             </div>
         </div>
@@ -1606,7 +1606,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB: Customers ===== -->
 <div class="tab-pane fade" id="tab-customers" role="tabpanel">
 {% if event_customers_page and event_customers_page.paginator.count %}
-<p class="text-body-secondary mb-3">Select customers below to tag them. Target tags in an SMS campaign from the Marketing tab.</p>
+<p class="text-body-secondary mb-3">Select customers below to tag them. Target tags in an SMS send from the Marketing tab.</p>
 
 <!-- Selection action bar (revealed once at least one customer is checked) -->
 <form method="post" action="{% url 'tickets:event_bulk_tag' event.id %}" id="custActionBar" class="card mb-3 d-none">

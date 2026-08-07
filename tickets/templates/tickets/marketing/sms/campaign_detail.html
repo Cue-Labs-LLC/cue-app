@@ -5,7 +5,7 @@
 {% block content %}
 <div class="page-header d-flex align-items-start justify-content-between flex-wrap gap-2">
     <div>
-        <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to campaigns</a>
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to sends</a>
         <h1 class="mb-0">{{ campaign.name }}</h1>
         <div class="text-muted small mt-1">
             {% if campaign.status == 'sent' %}<span class="badge bg-success">Sent</span> {{ campaign.sent_at|date:"M d, Y g:i A" }}
@@ -17,7 +17,7 @@
         </div>
     </div>
     {% if campaign.status == 'scheduled' %}
-    <form method="post" action="{% url 'tickets:sms_campaign_cancel' pk=campaign.id %}" onsubmit="return confirm('Cancel this scheduled campaign?');">
+    <form method="post" action="{% url 'tickets:sms_campaign_cancel' pk=campaign.id %}" onsubmit="return confirm('Cancel this scheduled send?');">
         {% csrf_token %}
         <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-x-circle"></i> Cancel</button>
     </form>
@@ -28,7 +28,7 @@
 <div class="alert alert-danger d-flex align-items-start gap-2" role="alert">
     <i class="bi bi-exclamation-octagon-fill mt-1"></i>
     <div>
-        <strong>This campaign didn't send.</strong>
+        <strong>This send didn't go out.</strong>
         {{ campaign.failure_reason }}
     </div>
 </div>
@@ -50,7 +50,7 @@
     {% endif %}
 </div>
 {% if external_ticket_link %}
-<div class="text-muted small mb-3"><i class="bi bi-info-circle"></i> This campaign links to an external ticket page, so clicks are tracked but ticket sales and revenue are not.</div>
+<div class="text-muted small mb-3"><i class="bi bi-info-circle"></i> This send links to an external ticket page, so clicks are tracked but ticket sales and revenue are not.</div>
 {% endif %}
 {% else %}
 <div class="row g-3 mb-3">

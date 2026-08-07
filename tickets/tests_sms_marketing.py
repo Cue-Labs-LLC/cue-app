@@ -1134,8 +1134,8 @@ class SMSViewTests(TestCase):
         # Default view is unified Campaigns tab (shows empty state when no sends).
         self.assertContains(resp, 'marketing-sectionnav')
         self.assertContains(resp, 'marketing-subnav')              # SMS sub-view pills
-        self.assertContains(resp, 'No campaigns in this window')   # empty state
-        self.assertContains(resp, 'New Campaign')                  # native CTA in empty state + toolbar
+        self.assertContains(resp, 'No sends in this window')   # empty state
+        self.assertContains(resp, 'New Send')                  # native CTA in empty state + toolbar
 
     def test_campaign_rows_open_detail_modal_with_message(self):
         # Both native (Cue) and external (SlickText) campaigns render as clickable
@@ -1220,7 +1220,7 @@ class SMSViewTests(TestCase):
         self.assertContains(resp, 'Audience by market')
         self.assertContains(resp, 'id="sms-audience-chart"')
         # Campaigns empty state not rendered on the Audience view.
-        self.assertNotContains(resp, 'No campaigns in this window')
+        self.assertNotContains(resp, 'No sends in this window')
 
     def test_linked_sms_visible_when_native_disabled_but_slicktext_linked(self):
         # Native SMS off, but SlickText connected → the SMS tab/page stays
@@ -1252,7 +1252,7 @@ class SMSViewTests(TestCase):
         self.assertContains(resp, 'SlickText')   # source label in table cell
         self.assertContains(resp, '>Source<')    # unified table column header
         # Native compose UI absent for linked-only orgs.
-        self.assertNotContains(resp, 'New Campaign')
+        self.assertNotContains(resp, 'New Send')
 
         # view=campaigns is the default and is always valid.
         resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'campaigns'})
@@ -1266,7 +1266,7 @@ class SMSViewTests(TestCase):
         self.org.save(update_fields=['sms_marketing_enabled'])
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, 'New Campaign')
+        self.assertNotContains(resp, 'New Send')
         self.assertNotContains(resp, 'Your campaigns')
 
     def test_marketing_overview_has_unified_section_nav(self):

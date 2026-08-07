@@ -82,7 +82,7 @@ and carry: data-campaign-pk, data-campaign-name, data-current-event, data-next.
 
     form.action = urlTemplate.replace(PLACEHOLDER, pk);
     nextInput.value = next;
-    nameLabel.textContent = name ? ('Campaign: ' + name) : '';
+    nameLabel.textContent = name ? ('Send: ' + name) : '';
 
     // Highlight the currently-linked event (if any).
     options.forEach(function (opt) {
