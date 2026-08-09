@@ -87,14 +87,6 @@ def organization_context(request):
     # native SMS is off; the page itself hides native-only UI in that case.
     ctx['sms_section_visible'] = ctx['is_org_host']
 
-    ctx['outstanding_actions_count'] = 0
-    if org and ctx['is_organizer']:
-        try:
-            from .models import AIRecommendation
-            ctx['outstanding_actions_count'] = AIRecommendation.outstanding_for_org(org).count()
-        except Exception:
-            pass
-
     # True when an internal admin is currently logged in as this user via the
     # "Log in as" flow — drives the impersonation banner in base.html.
     ctx['is_impersonating'] = bool(request.session.get('_impersonator_id'))
