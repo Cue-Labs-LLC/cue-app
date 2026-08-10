@@ -317,6 +317,10 @@ urlpatterns = [
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/confirm/', sms_views.sms_plan_confirm_step, name='sms_plan_confirm_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/remove/', sms_views.sms_plan_remove_step, name='sms_plan_remove_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/unschedule/', sms_views.sms_plan_unschedule_step, name='sms_plan_unschedule_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/add-after/', sms_views.sms_plan_add_step_after, name='sms_plan_add_step_after'),
+    path('marketing/sms/plan/<uuid:pk>/draft-message/', sms_views.sms_plan_draft_message, name='sms_plan_draft_message'),
+    path('marketing/sms/plan/<uuid:pk>/preview-all/', sms_views.sms_plan_preview_all, name='sms_plan_preview_all'),
+    path('marketing/sms/plan/<uuid:pk>/confirm-all/', sms_views.sms_plan_confirm_all, name='sms_plan_confirm_all'),
 
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),

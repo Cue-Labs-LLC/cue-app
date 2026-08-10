@@ -16,10 +16,8 @@
 }
 .plan-timeline { position: relative; margin-left: 6px; }
 .plan-step { position: relative; padding: 0 0 1.5rem 2rem; }
-.plan-step:not(:last-child)::before {
-    content: ''; position: absolute; left: 7px; top: 22px; bottom: 0;
-    width: 2px; background: var(--border);
-}
+/* The connecting line + its hover "+" live on .plan-connector (a real element so it can hold
+   an interactive control), one per step. See .plan-connector rules below. */
 .plan-step::after {
     content: ''; position: absolute; left: 0; top: 6px;
     width: 16px; height: 16px; border-radius: 50%;
@@ -123,6 +121,43 @@
 .plan-step-remove-btn:hover { opacity: 1; color: #e5484d; background: rgba(229,72,77,0.1); }
 .plan-step-actions { display: inline-flex; align-items: center; gap: 8px; }
 .plan-step-launched-link { text-decoration: none; }
+/* Interactive connector line between two step circles. At rest it's just the timeline line;
+   hovering (or focusing) it reveals a "+" that inserts a message in that gap. Appending at the
+   end is the explicit .plan-add-bottom button below the list. */
+.plan-connector { position: absolute; left: 0; top: 22px; bottom: 0; width: 16px; margin: 0; z-index: 2; }
+.plan-connector::before {
+    content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--border);
+}
+.plan-connector-btn {
+    position: absolute; inset: 0; width: 100%; height: 100%; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 0; cursor: pointer;
+}
+.plan-connector-plus {
+    flex: none;   /* keep a true circle — don't let the narrow connector shrink it into an oval */
+    display: flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%; font-size: 12px;
+    background: var(--accent); color: #fff;
+    opacity: 0; transform: scale(0.6); transition: opacity 0.12s, transform 0.12s;
+    box-shadow: 0 0 0 3px var(--bg-primary);   /* mask the line behind the + */
+}
+.plan-connector-btn:hover .plan-connector-plus,
+.plan-connector-btn:focus-visible .plan-connector-plus { opacity: 1; transform: scale(1); }
+/* Explicit "add another message" affordance at the end of the timeline — clearly a button,
+   aligned under the message cards, distinct from the timeline dots. */
+.plan-add-bottom-wrap { padding-left: 2rem; margin-top: 0.25rem; }
+.plan-add-bottom {
+    width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 0.7rem 1rem; border: 1.5px solid var(--accent); border-radius: 12px;
+    background: var(--bg-inset); color: var(--accent);
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+    transition: color .12s, background .12s, box-shadow .12s;
+}
+.plan-add-bottom:hover, .plan-add-bottom:focus-visible {
+    color: #fff; background: var(--accent);
+    box-shadow: 0 2px 10px -2px var(--accent);
+}
+.plan-add-bottom i { font-size: 16px; }
 .plan-confirm-panel {
     margin-top: 0.75rem; padding: 0.85rem 0.95rem;
     border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset);
@@ -175,6 +210,14 @@
                    {% if plan.enabled %}checked{% endif %}>
             <label class="form-check-label small text-nowrap" for="planEnableToggle" id="planEnableLabel">{{ plan.enabled|yesno:"Enabled,Disabled" }}</label>
         </div>
+        {% if confirmable_count %}
+        <button type="button" class="btn btn-primary btn-sm" id="planConfirmAllBtn"
+                data-preview-url="{% url 'tickets:sms_plan_preview_all' pk=plan.id %}"
+                data-confirm-url="{% url 'tickets:sms_plan_confirm_all' pk=plan.id %}"
+                {% if not plan.enabled %}disabled title="Enable the plan to send"{% endif %}>
+            <i class="bi bi-send-check"></i> Confirm &amp; schedule all
+        </button>
+        {% endif %}
         {% if progress.total == progress.draft %}
         <form method="post" action="{% url 'tickets:sms_plan_regenerate' pk=plan.id %}" class="m-0" id="planRegenForm">
             {% csrf_token %}
@@ -217,7 +260,7 @@
 
 <div class="plan-timeline">
     {% for step in steps %}
-    <div class="plan-step{% if step.launched_at %} is-launched{% endif %}">
+    <div id="step-{{ step.order }}" class="plan-step{% if step.launched_at %} is-launched{% endif %}">
         <div class="plan-step-card">
             <div class="plan-step-head">
                 <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
@@ -326,6 +369,21 @@
             </div>
             {% endif %}
         </div>
+        {% if not forloop.last %}
+        {% comment %}
+        Hover the connector line between two circles to reveal a "+" that opens the
+        "Add a message" modal, inserting a new message in that gap. Appending at the end is the
+        explicit "Add message" button below the list.
+        {% endcomment %}
+        <div class="plan-connector">
+            <button type="button" class="plan-connector-btn" data-add-message
+                    data-add-url="{% url 'tickets:sms_plan_add_step_after' pk=plan.id step=step.order %}"
+                    data-step="{{ step.order }}"
+                    aria-label="Add a message here" title="Add a message here">
+                <span class="plan-connector-plus"><i class="bi bi-plus-lg"></i></span>
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% empty %}
     <div class="empty-state">
@@ -333,6 +391,17 @@
         <p>This plan has no steps.</p>
     </div>
     {% endfor %}
+    {% if steps %}
+    {% with last_order=steps|length|add:"-1" %}
+    <div class="plan-add-bottom-wrap">
+        <button type="button" class="plan-add-bottom" data-add-message
+                data-add-url="{% url 'tickets:sms_plan_add_step_after' pk=plan.id step=last_order %}"
+                data-step="{{ last_order }}">
+            <i class="bi bi-plus-lg"></i> Add message
+        </button>
+    </div>
+    {% endwith %}
+    {% endif %}
 </div>
 
 <div class="modal fade" id="removeStepModal" tabindex="-1" aria-labelledby="removeStepModalLabel" aria-hidden="true">
@@ -450,6 +519,141 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="audienceSave">Save audience</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="addMessageModal" tabindex="-1" aria-labelledby="addMessageModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <form id="addMessageForm" method="post">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addMessageModalLabel">Add a message</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex align-items-center justify-content-between mb-1">
+                        <label class="form-label mb-0" for="add-msg-body">Message</label>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="addMsgGenerate">
+                            <i class="bi bi-stars"></i> Generate with AI
+                        </button>
+                    </div>
+                    <textarea class="form-control" name="body" id="add-msg-body" rows="3"
+                              maxlength="1600" placeholder="Write your message, or generate one with AI."></textarea>
+                    <div class="d-flex align-items-center gap-2 mt-1 plan-step-segs">
+                        <span><b id="add-msg-segs">1</b> <span id="add-msg-segs-word">segment</span> · <span id="add-msg-enc">GSM-7</span></span>
+                        <span class="text-danger small" id="addMsgError" hidden></span>
+                    </div>
+                    <div class="sms-hint small text-secondary mt-1">"Reply STOP to opt out" is appended automatically and included in the segment count.</div>
+
+                    <hr class="my-3">
+
+                    <label class="form-label mb-1">Audience</label>
+                    {% if plan.event %}
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="audience_mode" id="add_aud_mode_all" value="all">
+                        <label class="form-check-label" for="add_aud_mode_all">All SMS subscribers</label>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="audience_mode" id="add_aud_mode_event" value="event">
+                        <label class="form-check-label" for="add_aud_mode_event">Ticket buyers for {{ plan.event.name }}</label>
+                    </div>
+                    {% endif %}
+                    <div class="form-check mb-1">
+                        <input class="form-check-input" type="radio" name="audience_mode" id="add_aud_mode_custom" value="custom">
+                        <label class="form-check-label" for="add_aud_mode_custom">Specific segments, tags, or market</label>
+                    </div>
+                    <div id="add-aud-custom" class="mt-2">
+                        <label class="form-label mb-1">Segments</label>
+                        <div class="dropdown">
+                            <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start d-flex justify-content-between align-items-center"
+                                    type="button" id="addSegDropdown" data-bs-toggle="dropdown"
+                                    data-bs-auto-close="outside" aria-expanded="false">
+                                <span data-dd-label="segments">Any segment</span>
+                            </button>
+                            <ul class="dropdown-menu w-100" aria-labelledby="addSegDropdown"
+                                style="max-height: 240px; overflow-y: auto;">
+                                {% for seg in segment_choices %}
+                                <li><label class="dropdown-item d-flex align-items-center gap-2 mb-0">
+                                    <input type="checkbox" class="form-check-input mt-0 add-aud-seg" name="rfm_segment" value="{{ seg }}"> {{ seg }}
+                                </label></li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        {% if tags %}
+                        <label class="form-label mb-1 mt-3">Tags</label>
+                        <div class="dropdown">
+                            <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start d-flex justify-content-between align-items-center"
+                                    type="button" id="addTagDropdown" data-bs-toggle="dropdown"
+                                    data-bs-auto-close="outside" aria-expanded="false">
+                                <span data-dd-label="tags">Any tag</span>
+                            </button>
+                            <ul class="dropdown-menu w-100" aria-labelledby="addTagDropdown"
+                                style="max-height: 240px; overflow-y: auto;">
+                                {% for tag in tags %}
+                                <li><label class="dropdown-item d-flex align-items-center gap-2 mb-0">
+                                    <input type="checkbox" class="form-check-input mt-0 add-aud-tag" name="tag_ids" value="{{ tag.id }}"> {{ tag.name }}
+                                </label></li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        {% endif %}
+                        <label class="form-label mb-1 mt-3" for="add-aud-market">Market</label>
+                        <select class="form-select add-aud-market" name="market_id" id="add-aud-market">
+                            <option value="">All markets</option>
+                            {% for value, name in market_choices %}
+                            <option value="{{ value }}">{{ name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <hr class="my-3">
+
+                    <label class="form-label mb-1" for="add-msg-when">Send time</label>
+                    <input type="datetime-local" class="form-control" name="send_at" id="add-msg-when">
+                    <div class="sms-hint small text-secondary mt-1">Leave blank to set the time later on the message card.</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="addMsgConfirm" disabled>
+                        <i class="bi bi-plus-lg"></i> Add message
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{{ add_default_criteria|json_script:"add-msg-default-audience" }}
+
+<div class="modal fade" id="confirmAllModal" tabindex="-1" aria-labelledby="confirmAllModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="confirmAllModalLabel">Confirm &amp; schedule all</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div data-all-loading>Checking messages…</div>
+                <div data-all-body hidden>
+                    <div class="plan-confirm-headline" data-all-headline></div>
+                    <div class="plan-confirm-meta" data-all-meta></div>
+                    <div class="text-danger small mt-2" data-all-warn hidden></div>
+                    <div class="mt-2" data-all-topup hidden>
+                        <button type="button" class="btn btn-sm btn-primary" data-all-topup-btn>Buy tokens</button>
+                    </div>
+                    <div class="mt-3" data-all-notready hidden>
+                        <div class="small text-secondary mb-1">Not ready — these will be skipped:</div>
+                        <ul class="small text-secondary mb-0 ps-3" data-all-notready-list></ul>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmAllGo" disabled>
+                    <i class="bi bi-send-check"></i> Confirm &amp; schedule all
+                </button>
             </div>
         </div>
     </div>
@@ -634,6 +838,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ta.value = data.body;
                 ta.dataset.saved = data.body;  // already persisted server-side; next blur is a no-op
                 autoGrow(ta);
+                ta.dispatchEvent(new Event('input'));  // re-enable the step's Confirm button
             }
             const segs = document.querySelector('[data-segs-for="' + step + '"]');
             if (segs) {
@@ -1040,6 +1245,20 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // A hand-added step starts with an empty message, so its "Confirm & Schedule" button is
+    // disabled until the organizer writes something (and while the plan is disabled). Shared
+    // by the confirm wiring below and the enable/disable toggle so both reasons compose.
+    var enableToggleEl = document.getElementById('planEnableToggle');
+    function planIsEnabled() { return enableToggleEl ? enableToggleEl.checked : true; }
+    function syncConfirmOpenBtn(openBtn) {
+        var card = openBtn.closest('.plan-step-card');
+        var ta = card ? card.querySelector('.plan-step-message') : null;
+        var emptyBody = ta ? !ta.value.trim() : false;
+        openBtn.disabled = !planIsEnabled() || emptyBody;
+        openBtn.title = !planIsEnabled() ? 'Enable the plan to send'
+                      : (emptyBody ? 'Write a message first' : '');
+    }
+
     document.querySelectorAll('.plan-confirm-open').forEach(function (openBtn) {
         const card = openBtn.closest('.plan-step-card');
         const step = openBtn.dataset.step;
@@ -1202,6 +1421,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 doConfirm();
             }
         });
+
+        // Keep the button in step with the message box (empty → disabled). Regenerate sets
+        // the value programmatically and dispatches 'input', so this fires there too.
+        if (ta) ta.addEventListener('input', function () { syncConfirmOpenBtn(openBtn); });
+        syncConfirmOpenBtn(openBtn);
     });
 
     // ---- Enable/Disable toggle -------------------------------------------
@@ -1214,10 +1438,13 @@ document.addEventListener('DOMContentLoaded', function () {
             if (enableLabel) enableLabel.textContent = enabled ? 'Enabled' : 'Disabled';
             if (disabledBadge) disabledBadge.hidden = enabled;
             if (disabledBanner) disabledBanner.hidden = enabled;
-            document.querySelectorAll('.plan-confirm-open').forEach(function (b) {
-                b.disabled = !enabled;
-                b.title = enabled ? '' : 'Enable the plan to send';
-            });
+            // Compose plan-enabled with the per-step empty-body rule (see syncConfirmOpenBtn).
+            document.querySelectorAll('.plan-confirm-open').forEach(syncConfirmOpenBtn);
+            var confirmAll = document.getElementById('planConfirmAllBtn');
+            if (confirmAll) {
+                confirmAll.disabled = !enabled;
+                confirmAll.title = enabled ? '' : 'Enable the plan to send';
+            }
         }
         reflectEnabled(enableToggle.checked);
         enableToggle.addEventListener('change', async function () {
@@ -1319,6 +1546,275 @@ document.addEventListener('DOMContentLoaded', function () {
         var f = document.getElementById(id);
         if (f) f.addEventListener('submit', function () { editGuard.allow(); });
     });
+
+    // ---- "Add a message" modal: compose or AI-generate, insert on confirm (reload) -------
+    (function () {
+        var modalEl = document.getElementById('addMessageModal');
+        if (!modalEl || !window.bootstrap) return;
+        var modal = new bootstrap.Modal(modalEl);
+        var form = document.getElementById('addMessageForm');
+        var bodyEl = document.getElementById('add-msg-body');
+        var segsEl = document.getElementById('add-msg-segs');
+        var segsWord = document.getElementById('add-msg-segs-word');
+        var encEl = document.getElementById('add-msg-enc');
+        var confirmBtn = document.getElementById('addMsgConfirm');
+        var genBtn = document.getElementById('addMsgGenerate');
+        var errEl = document.getElementById('addMsgError');
+        var whenEl = document.getElementById('add-msg-when');
+        var custom = document.getElementById('add-aud-custom');
+        var draftUrl = '{% url "tickets:sms_plan_draft_message" pk=plan.id %}';
+        // The plan's own audience/market — the modal opens pre-filled to it.
+        var defaultAud = {};
+        try { defaultAud = JSON.parse(document.getElementById('add-msg-default-audience').textContent) || {}; }
+        catch (e) { defaultAud = {}; }
+
+        // GSM-7 segment math — mirrors tickets/sms.py:sms_segment_info + apply_stop_footer so
+        // the meter matches what actually ships/bills (ported from the composer's counter).
+        var GSM_BASIC = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ ÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+        var GSM_EXT = "^{}\\[~]|€";
+        var GSM = new Set((GSM_BASIC + GSM_EXT).split(''));
+        var GSM7_MAP = {
+            '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-', '\u2015': '-',
+            '\u2022': '-', '\u00B7': '-',
+            '\u2018': "'", '\u2019': "'", '\u201A': "'", '\u2032': "'", '\u02BC': "'", '\u0060': "'",
+            '\u201C': '"', '\u201D': '"', '\u201E': '"', '\u2033': '"', '\u00AB': '"', '\u00BB': '"',
+            '\u2026': '...',
+            '\u00A0': ' ', '\u202F': ' ', '\u2009': ' ', '\u2007': ' ',
+            '\u200B': '', '\u200C': '', '\u200D': '', '\uFEFF': ''
+        };
+        function normalizeToGsm7(body) {
+            if (!body) return body;
+            var out = '';
+            for (var i = 0; i < body.length; i++) {
+                var ch = body[i];
+                if (GSM7_MAP.hasOwnProperty(ch)) { out += GSM7_MAP[ch]; continue; }
+                var code = body.charCodeAt(i);
+                if (ch === '\n' || ch === '\r' || code >= 0x20) { out += ch; }
+                else if (ch === '\t') { out += ' '; }
+            }
+            return out;
+        }
+        var STOP_FOOTER = "\n\nReply STOP to opt out";
+        var OPT_OUT_RE = /\b(?:reply|text|send)\s+["“]?stop\b/i;
+        function withStopFooter(body) {
+            body = normalizeToGsm7(body);
+            return OPT_OUT_RE.test(body) ? body : body + STOP_FOOTER;
+        }
+        function segmentInfo(body) {
+            body = body || '';
+            var isUnicode = false;
+            for (var i = 0; i < body.length; i++) { if (!GSM.has(body[i])) { isUnicode = true; break; } }
+            var length, single, multi, encoding;
+            if (isUnicode) {
+                length = body.length; single = 70; multi = 67; encoding = 'UCS-2';
+            } else {
+                length = 0;
+                for (var j = 0; j < body.length; j++) { length += GSM_EXT.indexOf(body[j]) !== -1 ? 2 : 1; }
+                single = 160; multi = 153; encoding = 'GSM-7';
+            }
+            var segments = length === 0 ? 1 : (length <= single ? 1 : Math.ceil(length / multi));
+            return { segments: segments, encoding: encoding };
+        }
+
+        function refreshMeter() {
+            var info = segmentInfo(withStopFooter(bodyEl.value));
+            segsEl.textContent = info.segments;
+            segsWord.textContent = info.segments === 1 ? 'segment' : 'segments';
+            encEl.textContent = info.encoding;
+            confirmBtn.disabled = !bodyEl.value.trim();
+        }
+        function syncAudMode() {
+            var checked = modalEl.querySelector('input[name="audience_mode"]:checked');
+            custom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+        }
+        modalEl.querySelectorAll('input[name="audience_mode"]').forEach(function (r) {
+            r.addEventListener('change', syncAudMode);
+        });
+        bodyEl.addEventListener('input', refreshMeter);
+
+        // Dropdown toggle labels reflect the checked segments/tags (0 → "Any …", 1 → its name,
+        // N → "N …s"). Checkboxes stay named rfm_segment/tag_ids so the server parser is reused.
+        function ddText(sel, none, unit) {
+            var checked = modalEl.querySelectorAll(sel + ':checked');
+            if (checked.length === 0) return none;
+            if (checked.length === 1) return checked[0].closest('label').textContent.trim();
+            return checked.length + ' ' + unit + 's';
+        }
+        function refreshAudDd() {
+            var s = modalEl.querySelector('[data-dd-label="segments"]');
+            var t = modalEl.querySelector('[data-dd-label="tags"]');
+            if (s) s.textContent = ddText('.add-aud-seg', 'Any segment', 'segment');
+            if (t) t.textContent = ddText('.add-aud-tag', 'Any tag', 'tag');
+        }
+        modalEl.querySelectorAll('.add-aud-seg, .add-aud-tag').forEach(function (c) {
+            c.addEventListener('change', refreshAudDd);
+        });
+
+        // Pre-fill the audience controls from a criteria dict (the plan's default on open).
+        // Mirrors the per-step audience editor's population logic.
+        function applyAudience(criteria) {
+            criteria = criteria || {};
+            modalEl.querySelectorAll('.add-aud-seg, .add-aud-tag').forEach(function (c) { c.checked = false; });
+            var market = document.getElementById('add-aud-market');
+            if (market) market.value = '';
+            var allR = document.getElementById('add_aud_mode_all');
+            var evR = document.getElementById('add_aud_mode_event');
+            var custR = document.getElementById('add_aud_mode_custom');
+            if (criteria.all_subscribers && allR) {
+                allR.checked = true;
+            } else if (criteria.event_id && evR) {
+                evR.checked = true;
+            } else {
+                if (custR) custR.checked = true;
+                (criteria.rfm_segment || []).forEach(function (s) {
+                    var el = modalEl.querySelector('.add-aud-seg[value="' + CSS.escape(s) + '"]');
+                    if (el) el.checked = true;
+                });
+                (criteria.tag_ids || []).forEach(function (t) {
+                    var el = modalEl.querySelector('.add-aud-tag[value="' + CSS.escape(String(t)) + '"]');
+                    if (el) el.checked = true;
+                });
+                if (criteria.market_id && market) market.value = criteria.market_id;
+            }
+            refreshAudDd();
+            syncAudMode();
+        }
+
+        var currentAfterStep = '';   // the connector's step index, for the AI time suggestion
+        document.querySelectorAll('[data-add-message]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                form.action = btn.dataset.addUrl;   // insert after this step
+                currentAfterStep = btn.dataset.step || '';
+                bodyEl.value = '';
+                whenEl.value = '';
+                errEl.hidden = true;
+                applyAudience(defaultAud);          // pre-fill with the plan's audience/market
+                refreshMeter();
+                modal.show();
+            });
+        });
+
+        genBtn.addEventListener('click', async function () {
+            errEl.hidden = true;
+            var orig = genBtn.innerHTML;
+            genBtn.disabled = true;
+            genBtn.innerHTML = '<i class="bi bi-stars"></i> Generating…';
+            try {
+                var resp = await fetch(draftUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({after_step: currentAfterStep}),
+                });
+                var data = await resp.json();
+                if (!resp.ok || !data || !data.ok) {
+                    throw new Error((data && data.error) || 'Could not generate. Please try again.');
+                }
+                bodyEl.value = data.body;
+                if (data.send_local) whenEl.value = data.send_local;   // AI also sets a send time
+                refreshMeter();
+            } catch (e) {
+                errEl.textContent = e.message || 'Could not generate. Please try again.';
+                errEl.hidden = false;
+            } finally {
+                genBtn.disabled = false;
+                genBtn.innerHTML = orig;
+            }
+        });
+
+        // Deliberate insert — flush/allow past the unsaved-edit guard so the POST goes through.
+        form.addEventListener('submit', function () { editGuard.allow(); });
+    })();
+
+    // ---- "Confirm & schedule all": preview totals, then schedule every draft at once --------
+    (function () {
+        var btn = document.getElementById('planConfirmAllBtn');
+        var modalEl = document.getElementById('confirmAllModal');
+        if (!btn || !modalEl || !window.bootstrap) return;
+        var modal = new bootstrap.Modal(modalEl);
+        var loadingEl = modalEl.querySelector('[data-all-loading]');
+        var bodyEl = modalEl.querySelector('[data-all-body]');
+        var headlineEl = modalEl.querySelector('[data-all-headline]');
+        var metaEl = modalEl.querySelector('[data-all-meta]');
+        var warnEl = modalEl.querySelector('[data-all-warn]');
+        var topupWrap = modalEl.querySelector('[data-all-topup]');
+        var topupBtn = modalEl.querySelector('[data-all-topup-btn]');
+        var notReadyWrap = modalEl.querySelector('[data-all-notready]');
+        var notReadyList = modalEl.querySelector('[data-all-notready-list]');
+        var goBtn = document.getElementById('confirmAllGo');
+
+        async function runPreview() {
+            loadingEl.hidden = false; bodyEl.hidden = true; warnEl.hidden = true;
+            topupWrap.hidden = true; notReadyWrap.hidden = true; goBtn.disabled = true;
+            var data;
+            try {
+                var resp = await fetch(btn.dataset.previewUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error();
+            } catch (e) {
+                loadingEl.textContent = 'Could not load the summary. Try again.';
+                return;
+            }
+            loadingEl.hidden = true; bodyEl.hidden = false;
+
+            headlineEl.innerHTML = 'Schedule <b>' + data.ready_count + '</b> message' + pluralR(data.ready_count) +
+                ' to <b>' + data.total_recipients + '</b> recipient' + pluralR(data.total_recipients) +
+                ' for <b>' + tokensLabel(data.total_cost_tokens) + '</b>';
+            metaEl.textContent = 'Wallet balance ' + tokensLabel(data.balance_tokens);
+
+            if (data.not_ready && data.not_ready.length) {
+                notReadyList.innerHTML = '';
+                data.not_ready.forEach(function (n) {
+                    var li = document.createElement('li');
+                    li.textContent = n.label + ' — ' + n.reason;
+                    notReadyList.appendChild(li);
+                });
+                notReadyWrap.hidden = false;
+            }
+
+            if (data.ready_count === 0) {
+                warnEl.textContent = 'No messages are ready to schedule.';
+                warnEl.hidden = false;
+                goBtn.disabled = true;
+            } else if (data.insufficient) {
+                warnEl.textContent = 'Not enough SMS tokens — ' + tokensLabel(data.shortfall_tokens) + ' more needed.';
+                warnEl.hidden = false;
+                goBtn.disabled = true;
+                if (topupCfg.stripeReady) {
+                    topupWrap.hidden = false;
+                    topupBtn.onclick = function () { openTopupModal(data.topup_pack_tokens, runPreview); };
+                }
+            } else {
+                goBtn.disabled = false;
+            }
+        }
+
+        btn.addEventListener('click', function () { modal.show(); runPreview(); });
+
+        goBtn.addEventListener('click', async function () {
+            goBtn.disabled = true;
+            var orig = goBtn.innerHTML;
+            goBtn.innerHTML = 'Scheduling…';
+            try {
+                var resp = await fetch(btn.dataset.confirmUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({}),
+                });
+                var data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error((data && data.error) || 'Could not schedule. Try again.');
+                editGuard.allow();
+                window.location.reload();
+            } catch (e) {
+                warnEl.textContent = e.message || 'Could not schedule. Try again.';
+                warnEl.hidden = false;
+                goBtn.disabled = false; goBtn.innerHTML = orig;
+            }
+        });
+    })();
 });
 </script>
 {% endblock %}

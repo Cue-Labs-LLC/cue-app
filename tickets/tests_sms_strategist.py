@@ -589,6 +589,347 @@ class SMSStrategistViewTests(TestCase):
         self.assertTrue(resp.context['steps'][0]['is_sent'])
         self.assertFalse(resp.context['steps'][1].get('is_sent'))
 
+    # --- Add a message after a sent step ---------------------------------------
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_step_after_sent_inserts_blank_draft_and_reindexes(self, mock_openai):
+        # Inserting after a sent step drops a fresh blank draft at that position and keeps
+        # order == index across the whole sequence.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, campaign = self._plan_with_sent_first_step()
+        second_body = plan.steps[1]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+
+        self.assertEqual(len(plan.steps), 4)
+        new = plan.steps[1]
+        self.assertEqual(new['body'], '')
+        self.assertIsNone(new['launched_campaign_id'])
+        self.assertEqual(new['purpose'], 'follow_up')
+        # Inherits the plan's default audience (event plan with no matching market → all subs).
+        self.assertEqual(new['audience_criteria'], {'all_subscribers': True})
+        self.assertGreaterEqual(new['segments'], 1)
+        # The old second step shifted down; every order matches its index.
+        self.assertEqual(plan.steps[2]['body'], second_body)
+        self.assertEqual([s['order'] for s in plan.steps], [0, 1, 2, 3])
+        # The sent step is untouched.
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(campaign.id))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_step_after_any_step_inserts(self, mock_openai):
+        # The connector "+" works on any message (all-draft plans included), not just sent ones,
+        # and carries the body composed in the modal.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)  # 3 draft steps
+        first_body = plan.steps[0]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': 'A fresh mid-sequence nudge.'},
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 4)  # inserted after the draft step
+        self.assertEqual(plan.steps[0]['body'], first_body)  # existing step untouched
+        self.assertEqual(plan.steps[1]['body'], 'A fresh mid-sequence nudge.')  # composed body
+        self.assertGreaterEqual(plan.steps[1]['segments'], 1)
+        self.assertEqual([s['order'] for s in plan.steps], [0, 1, 2, 3])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_message_with_audience_and_schedule(self, mock_openai):
+        # The modal can set a custom audience + a send time; both land on the new step.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 1}),
+            {'body': 'VIPs only, act now.', 'audience_mode': 'custom',
+             'rfm_segment': ['VIP'], 'send_at': '2026-09-15T18:30'},
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        new = plan.steps[2]  # inserted after step 1
+        self.assertEqual(new['body'], 'VIPs only, act now.')
+        self.assertEqual(new['audience_criteria'].get('rfm_segment'), ['VIP'])
+        self.assertEqual(new['send_time'], '18:30')
+        self.assertTrue(new['send_at'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_message_modal_prefills_plan_market(self, mock_openai):
+        # The Add-a-message modal opens pre-filled with the plan's own audience: an event plan
+        # whose venue matches a Market defaults to that market (normalized to a single market_id).
+        mock_openai.return_value = _fake_structured_llm()
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level=MARKET_GEOGRAPHY_CITY,
+            geography_value='Austin',
+        )
+        plan = self._make_event_plan()
+
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.context['add_default_criteria'], {'market_id': str(market.id)})
+        html = resp.content.decode()
+        self.assertIn('add-msg-default-audience', html)   # the prefill JSON is embedded
+        self.assertIn(str(market.id), html)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_draft_message_returns_ai_body(self, mock_openai):
+        # "Generate with AI" in the modal drafts a message from the plan context (no persist).
+        mock_openai.return_value = _fake_structured_llm()   # plan generation uses the plan LLM
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        before = len(plan.steps)
+
+        # Now the single-message drafter returns a RegeneratedMessage.
+        mock_openai.return_value = _fake_regen_llm(message='Generated follow-up. Grab tix!')
+        resp = self.client.post(
+            reverse('tickets:sms_plan_draft_message', kwargs={'pk': plan.id}),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['body'], 'Generated follow-up. Grab tix!')
+        self.assertGreaterEqual(data['segments'], 1)
+        # It also suggests a send time (datetime-local) for the modal's schedule field: a valid,
+        # future, parseable slot.
+        from datetime import datetime
+        self.assertIn('send_local', data)
+        suggested = datetime.strptime(data['send_local'], '%Y-%m-%dT%H:%M')
+        self.assertGreater(suggested, datetime.now())
+        # Drafting does not add a step.
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), before)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_draft_message_suggests_time_between_neighbors(self, mock_openai):
+        # Opening the "+" between two scheduled messages suggests a time in that gap.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        mock_openai.return_value = _fake_regen_llm()
+
+        from datetime import datetime
+        tz = self.org.get_timezone()
+        # Steps 0 and 1 are scheduled ~14 and ~3 days before the event (both future).
+        before = datetime.fromisoformat(plan.steps[0]['send_at']).astimezone(tz).replace(tzinfo=None)
+        after = datetime.fromisoformat(plan.steps[1]['send_at']).astimezone(tz).replace(tzinfo=None)
+        self.assertLess(before, after)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_draft_message', kwargs={'pk': plan.id}),
+            {'after_step': '0'},   # "+" between step 0 and step 1
+        )
+        data = resp.json()
+        suggested = datetime.strptime(data['send_local'], '%Y-%m-%dT%H:%M')
+        self.assertLess(before, suggested)
+        self.assertLess(suggested, after)
+
+    # --- Confirm & schedule all -----------------------------------------------
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_all_schedules_every_draft(self, mock_openai):
+        # One action schedules every draft message: a campaign per step, each step stamped.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)  # 3 future-timed drafts
+
+        resp = self.client.post(reverse('tickets:sms_plan_confirm_all', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['scheduled'], 3)
+        self.assertEqual(data['skipped'], [])
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 3)
+        plan.refresh_from_db()
+        self.assertTrue(all(s['launched_campaign_id'] for s in plan.steps))
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.SCHEDULED)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_all_skips_not_ready(self, mock_openai):
+        # A blank-body message is skipped (and reported); the ready ones still schedule.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Append a blank draft (no body posted → blank).
+        self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 2}),
+        )
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 4)
+
+        resp = self.client.post(reverse('tickets:sms_plan_confirm_all', kwargs={'pk': plan.id}))
+        data = resp.json()
+        self.assertEqual(data['scheduled'], 3)
+        self.assertEqual(len(data['skipped']), 1)
+        self.assertIn('no message text', data['skipped'][0]['reason'])
+        plan.refresh_from_db()
+        # The blank step (index 3) stays unlaunched; the three real ones are launched.
+        self.assertIsNone(plan.steps[3]['launched_campaign_id'])
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 3)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_all_blocked_when_disabled(self, mock_openai):
+        # A disabled (paused) plan can't bulk-send — 409, nothing scheduled.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        plan.enabled = False
+        plan.save(update_fields=['enabled'])
+
+        resp = self.client.post(reverse('tickets:sms_plan_confirm_all', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(resp.json()['ok'])
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_preview_all_returns_totals_and_not_ready(self, mock_openai):
+        # The preview sums recipients/cost across the ready drafts and lists the not-ready ones.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 2}),
+        )  # a blank (not-ready) step
+
+        resp = self.client.post(reverse('tickets:sms_plan_preview_all', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['ready_count'], 3)          # the three AI messages
+        self.assertEqual(data['total_recipients'], 3)     # one opted-in customer × 3
+        self.assertGreaterEqual(data['total_cost_tokens'], 3)
+        self.assertEqual(len(data['not_ready']), 1)
+        self.assertIn('no message text', data['not_ready'][0]['reason'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_confirm_all_button_renders_with_drafts(self, mock_openai):
+        # The header exposes "Confirm & schedule all" while drafts remain; gone once all launched.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        html = self.client.get(
+            reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id})).content.decode()
+        self.assertIn('id="planConfirmAllBtn"', html)
+        self.assertIn('id="confirmAllModal"', html)
+
+        # Launch every step → the button disappears.
+        for i, step in enumerate(plan.steps):
+            c = SMSCampaign.objects.create(
+                organization=self.org, name=f'c{i}', body=step['body'],
+                status=SMSCampaign.Status.SCHEDULED)
+            step['launched_campaign_id'] = str(c.id)
+        plan.save(update_fields=['steps'])
+        html = self.client.get(
+            reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id})).content.decode()
+        self.assertNotIn('id="planConfirmAllBtn"', html)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_step_reverts_fully_sent_plan_to_in_progress(self, mock_openai):
+        # A completed (all-sent) plan gains a draft → status re-derives to In progress.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        for i, step in enumerate(plan.steps):
+            c = SMSCampaign.objects.create(
+                organization=self.org, name=f'sent{i}', body=step['body'],
+                status=SMSCampaign.Status.SENT)
+            step['launched_campaign_id'] = str(c.id)
+            step['launched_at'] = timezone.now().isoformat()
+        plan.status = SMSCampaignPlan.Status.SENT
+        plan.save(update_fields=['steps', 'status'])
+
+        self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 2}),
+        )
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 4)
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.IN_PROGRESS)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_added_step_is_editable_and_sendable(self, mock_openai):
+        # The new blank step behaves like any draft: rejects an empty-body send, then sends
+        # once written, stamping launched_campaign_id.
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+        self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        new_index = 1  # inserted right after the sent step
+
+        # Empty body → confirm refuses.
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': new_index}),
+            {'idempotency_key': 'k1'},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+
+        # Write a body via the inline editor, then send.
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': new_index}),
+            {'body': 'One more reason to grab tickets before Friday.'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': new_index}),
+            {'idempotency_key': 'k2'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        plan.refresh_from_db()
+        self.assertIsNotNone(plan.steps[new_index]['launched_campaign_id'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_step_after_org_scoped_and_gated(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan, _ = self._plan_with_sent_first_step()
+
+        # Gated off → 404, nothing added.
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        resp = self.client.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.org.ai_sms_strategist_enabled = True
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 3)
+
+        # GET is rejected (POST-only).
+        resp = self.client.get(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 405)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_add_message_connector_opens_modal(self, mock_openai):
+        # Each step's connector "+" is a modal trigger (data-add-message) carrying its insert
+        # URL; the "Add a message" modal exists; the old inline divider/connector form is gone.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)  # 3 draft steps
+
+        html = self.client.get(
+            reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id})).content.decode()
+        self.assertIn('data-add-message', html)
+        self.assertIn('id="addMessageModal"', html)
+        self.assertIn('id="addMessageForm"', html)
+        # An explicit "Add message" button appends at the end of the list.
+        self.assertIn('plan-add-bottom', html)
+        self.assertNotIn('plan-add-here', html)
+        # The connector's dev comment must not leak into the page (multi-line {# #} pitfall).
+        self.assertNotIn('Hover the connector line', html)
+        for i in range(len(plan.steps)):
+            self.assertIn(
+                reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': i}), html)
+
     @patch('langchain_openai.ChatOpenAI')
     def test_remove_step_org_scoped_and_gated(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()

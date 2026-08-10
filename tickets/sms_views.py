@@ -1730,6 +1730,9 @@ PLAN_PURPOSE_LABELS = {
     'last_chance': ('Last chance', 'danger'),
     'thank_you': ('Thank you', 'success'),
     're_engagement': ('Re-engagement', 'warning'),
+    # Purpose for a message added by hand after a plan's sends have begun (see
+    # sms_plan_add_step_after) — it has no AI-assigned purpose.
+    'follow_up': ('Follow-up', 'secondary'),
 }
 
 
@@ -2255,6 +2258,8 @@ def sms_plan_detail(request, pk):
     context = {
         'plan': plan, 'steps': steps, 'progress': progress,
         'presets': presets,
+        # Draft messages the "Confirm & schedule all" action would act on (none launched yet).
+        'confirmable_count': sum(1 for s in steps if not s.get('launched_campaign_id')),
         # Once any message has sent, the plan can no longer be deleted.
         'plan_has_sent': any(s.get('is_sent') for s in steps),
         # Overdue held sends (disabled plan whose scheduled time has passed) drive the
@@ -2265,6 +2270,16 @@ def sms_plan_detail(request, pk):
         'stripe_ready': bool(getattr(settings, 'STRIPE_SECRET_KEY', '')),
     }
     context.update(_audience_option_lists(org))
+    # Pre-fill the "Add a message" modal's audience with the plan's own default. Normalize the
+    # event-plan ``market_ids`` shape to the single ``market_id`` the modal's market picker uses.
+    from .services.sms_strategist import _build_step_criteria
+    add_default_criteria = _build_step_criteria(
+        org, plan.filter_criteria, plan.event if plan.event_id else None,
+    )
+    market_ids = add_default_criteria.pop('market_ids', None)
+    if market_ids and not add_default_criteria.get('market_id'):
+        add_default_criteria['market_id'] = market_ids[0]
+    context['add_default_criteria'] = add_default_criteria
     return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
 
@@ -3144,6 +3159,13 @@ def sms_plan_confirm_step(request, pk, step):
         plan.steps = steps
         plan.save(update_fields=['steps', 'updated_at'])
 
+    # A hand-added step starts blank (AI-generated ones never are). Refuse to send an empty
+    # message rather than dispatch a blank/footer-only SMS.
+    if not (target.get('body') or '').strip():
+        return JsonResponse(
+            {'ok': False, 'error': 'Add a message before sending.'}, status=400,
+        )
+
     criteria = target.get('audience_criteria') or {}
     event = _plan_step_event(org, plan, criteria)
     scheduled, send_at = _resolve_step_send_at(target, org)
@@ -3188,6 +3210,401 @@ def sms_plan_confirm_step(request, pk, step):
         'campaign_id': str(result.campaign.id),
         'campaign_url': reverse('tickets:sms_campaign_detail', args=[result.campaign.id]),
         'scheduled': result.scheduled,
+    })
+
+
+def _step_send_label(step):
+    """A short human label for one step in bulk summaries (its purpose)."""
+    return step.get('purpose_label') or (step.get('purpose') or 'Message').replace('_', ' ').title()
+
+
+def _finalize_plan_step(org, plan, steps, i, user):
+    """Schedule/send draft step ``i``'s campaign for the bulk "Confirm & schedule all" flow.
+
+    Mirrors the single-step ``sms_plan_confirm_step`` finalize path (kept separate so that
+    money-critical endpoint stays untouched). Draft-only; never re-charges an already-launched
+    step. A blank/past send time sends now (D2), matching the single-message button. Returns a
+    dict: ``{'status': 'scheduled'|'sent', 'campaign_id': ...}`` on success, or
+    ``{'status': 'skipped'|'error', 'reason': <friendly>}`` — callers skip & report (D1).
+    """
+    target = steps[i]
+    if target.get('launched_campaign_id'):
+        return {'status': 'skipped', 'reason': 'already scheduled'}
+    if not (target.get('body') or '').strip():
+        return {'status': 'skipped', 'reason': 'no message text'}
+
+    criteria = target.get('audience_criteria') or {}
+    event = _plan_step_event(org, plan, criteria)
+    scheduled, send_at = _resolve_step_send_at(target, org)
+    name = f"{plan.name} · {_step_send_label(target)}"[:200]
+    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+
+    from .services.sms_campaigns import (
+        finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError, DailyCapExceededError,
+    )
+    from .services.sms_credits import InsufficientCreditsError
+    try:
+        result = finalize_campaign_send(
+            org, name=name, body=target.get('body', ''), criteria=criteria,
+            manual_include_ids=[], event=event, scheduled=scheduled, send_at=send_at,
+            user=user, idempotency_key=uuid.uuid4().hex, cap=cap,
+        )
+    except AudienceEmptyError:
+        return {'status': 'error', 'reason': 'audience has no contactable recipients'}
+    except AudienceTooLargeError as exc:
+        return {'status': 'error', 'reason': f'audience is over the {exc.cap} recipient cap'}
+    except DailyCapExceededError as exc:
+        return {'status': 'error', 'reason': exc.user_message()}
+    except InsufficientCreditsError:
+        return {'status': 'error', 'reason': 'not enough SMS tokens'}
+
+    _mark_plan_step_launched(org, plan.id, i, result.campaign.id)
+    return {
+        'status': 'scheduled' if result.scheduled else 'sent',
+        'campaign_id': str(result.campaign.id),
+    }
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_preview_all(request, pk):
+    """JSON: aggregate recipients + token cost across every draft message, plus the messages
+    that aren't ready to send (skipped in the bulk confirm). Powers the "Confirm & schedule all"
+    preview modal. Never writes.
+    """
+    from .services.sms_credits import plan_campaign_footers, price_per_segment_cents
+    from tickets.templatetags.tickets_extras import tokens as _tokens
+
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    ready_count = 0
+    total_recipients = 0
+    total_cost_cents = 0
+    total_cost_tokens = 0
+    not_ready = []
+    for s in steps:
+        if s.get('launched_campaign_id'):
+            continue  # already scheduled/sent — not part of the batch
+        label = _step_send_label(s)
+        body = (s.get('body') or '').strip()
+        if not body:
+            not_ready.append({'label': label, 'reason': 'no message text'})
+            continue
+        criteria = s.get('audience_criteria') or {}
+        _, send_at = _resolve_step_send_at(s, org)
+        recipients = SMSCampaign(
+            organization=org, filter_criteria=criteria,
+        ).materialize(org, cap=cap + 1)
+        count = len(recipients)
+        if count == 0:
+            not_ready.append({'label': label, 'reason': 'audience has no recipients'})
+            continue
+        if count > cap:
+            not_ready.append({'label': label, 'reason': f'audience is over the {cap} recipient cap'})
+            continue
+        cost_cents, footer_plan = plan_campaign_footers(
+            org, body, [r['phone'] for r in recipients], as_of=send_at,
+        )
+        ready_count += 1
+        total_recipients += count
+        total_cost_cents += cost_cents
+        total_cost_tokens += sum(footer_plan[r['phone']][1] for r in recipients)
+
+    balance_cents = org.sms_credit_balance_cents
+    balance_tokens = _tokens(balance_cents)
+    shortfall_tokens = max(0, total_cost_tokens - balance_tokens)
+    topup_pack_tokens = next(
+        (p for p in SMS_CREDIT_PRESETS_TOKENS if p >= shortfall_tokens),
+        SMS_CREDIT_PRESETS_TOKENS[-1],
+    )
+    return JsonResponse({
+        'ok': True,
+        'ready_count': ready_count,
+        'total_recipients': total_recipients,
+        'total_cost_cents': total_cost_cents,
+        'total_cost_tokens': total_cost_tokens,
+        'balance_cents': balance_cents,
+        'balance_tokens': balance_tokens,
+        'insufficient': total_cost_cents > balance_cents,
+        'shortfall_tokens': shortfall_tokens,
+        'has_saved_card': bool(org.stripe_pm_id and org.stripe_customer_id),
+        'topup_pack_tokens': topup_pack_tokens,
+        'topup_pack_cents': int(topup_pack_tokens * price_per_segment_cents()),
+        'not_ready': not_ready,
+        'plan_enabled': plan.enabled,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_confirm_all(request, pk):
+    """Schedule/send every draft message in the plan in one action.
+
+    Skips messages that aren't ready and reports them (D1); a blank/past send time sends now
+    (D2). Charges the wallet per message via ``finalize_campaign_send``; the preview modal shows
+    the total first. Sets flash messages and asks the client to reload so the timeline reflects
+    the new Scheduled pills.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+    if not plan.enabled:
+        return JsonResponse(
+            {'ok': False, 'error': 'This plan is disabled. Enable it to send.'}, status=409,
+        )
+
+    steps = plan.steps or []
+    scheduled = sent = 0
+    skipped = []
+    for i, s in enumerate(steps):
+        if s.get('launched_campaign_id'):
+            continue  # already scheduled/sent
+        outcome = _finalize_plan_step(org, plan, steps, i, request.user)
+        status = outcome.get('status')
+        if status == 'scheduled':
+            scheduled += 1
+        elif status == 'sent':
+            sent += 1
+        else:  # skipped / error
+            skipped.append({'label': _step_send_label(s), 'reason': outcome.get('reason', '')})
+
+    done = scheduled + sent
+    if done:
+        parts = []
+        if scheduled:
+            parts.append(f'{scheduled} scheduled')
+        if sent:
+            parts.append(f'{sent} sent now')
+        messages.success(request, f'{done} message{"" if done == 1 else "s"} confirmed ({", ".join(parts)}).')
+    if skipped:
+        detail = '; '.join(f'{s["label"]} — {s["reason"]}' for s in skipped)
+        messages.warning(request, f'Skipped {len(skipped)}: {detail}')
+    if not done and not skipped:
+        messages.info(request, 'Nothing to schedule — every message is already scheduled or sent.')
+
+    return JsonResponse({
+        'ok': True, 'reload': True,
+        'scheduled': scheduled, 'sent': sent, 'skipped': skipped,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_add_step_after(request, pk, step):
+    """Insert a new draft message right after ``step`` in the plan's sequence.
+
+    Composed in the "Add a message" modal off the timeline connector "+": the posted body,
+    audience, and (optional) send time become the new step, inserted at ``step + 1``. Steps are
+    re-indexed so ``order`` stays equal to the list index (every per-step endpoint keys off it).
+    The new step is then editable/regenerable/sendable through the existing per-step machinery.
+
+    Allowed after any step: a new draft never touches the existing (possibly sent) messages, so
+    there's nothing to protect against. Missing values degrade gracefully (blank body, plan's
+    default audience, unscheduled) so the endpoint stays robust.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    from .services.sms_strategist import _build_step_criteria, plan_audience_label
+
+    # Audience — mirror sms_plan_update_audience (all/event/custom), never dead-ending on an
+    # empty custom pick: fall back to the plan's default audience.
+    mode = request.POST.get('audience_mode') or 'custom'
+    if mode == 'all' and plan.event_id:
+        criteria = {'all_subscribers': True}
+    elif mode == 'event' and plan.event_id:
+        criteria = {'event_id': str(plan.event_id)}
+    else:
+        criteria = _plan_criteria_from_post(request.POST)
+    if not criteria:
+        criteria = _build_step_criteria(
+            org, plan.filter_criteria, plan.event if plan.event_id else None,
+        )
+    label = plan_audience_label(org, criteria)
+
+    new_step = {
+        'order': step + 1,           # re-indexed below anyway
+        'purpose': 'follow_up',
+        'audience_label': label,
+        'audience_criteria': criteria,
+        'offset_days': 0,
+        'send_time': '',
+        'send_at': None,             # blank schedule — organizer picks a send time
+        'timing_label': 'Set a send time',
+        'body': '',
+        'rationale': '',
+        'launched_campaign_id': None,
+        'launched_at': None,
+    }
+    new_step = _apply_step_body(new_step, (request.POST.get('body') or '').strip())
+
+    # Optional send time; a bad value just leaves the step unscheduled rather than erroring.
+    send_at = (request.POST.get('send_at') or '').strip()
+    if send_at:
+        try:
+            new_step = _apply_step_schedule(
+                new_step, send_at, org, plan.event if plan.event_id else None,
+            )
+        except ValueError:
+            pass
+
+    steps.insert(step + 1, new_step)
+    for i, s in enumerate(steps):
+        s['order'] = i
+    # Recompute derived status: a fresh draft flips a fully-sent plan back to In progress.
+    _save_plan_steps(org, plan, steps)
+    messages.success(request, 'Message added to the plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+
+def _suggested_next_send_at(org, plan, after_step=None):
+    """A sensible send time for a message inserted after ``after_step`` (the "+" position).
+
+    Slots the suggestion **between the two messages the "+" sits between** — the midpoint of the
+    step-before's and step-after's send times. When there's no next message (appending at the
+    end) or a neighbor is unscheduled, falls back to a few days after the anchor touch (or the
+    plan's latest touch, or now). Always pulled before the event and never in the past, mirroring
+    the strategist's scheduling guards, so the slot is valid and the organizer can adjust it.
+    """
+    from datetime import datetime, time as dtime, timedelta
+
+    tz = org.get_timezone()
+    now = timezone.now().astimezone(tz)
+    steps = plan.steps or []
+
+    def send_at_of(i):
+        if i is None or i < 0 or i >= len(steps):
+            return None
+        raw = steps[i].get('send_at')
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw).astimezone(tz)
+        except (ValueError, TypeError):
+            return None
+
+    before_dt = send_at_of(after_step) if after_step is not None else None
+    next_dt = send_at_of(after_step + 1) if after_step is not None else None
+
+    if before_dt and next_dt and next_dt > before_dt:
+        # Midpoint between the two neighbors — right in the gap the "+" was opened from.
+        suggested = before_dt + (next_dt - before_dt) / 2
+    elif before_dt:
+        # Appending after this message (no scheduled next): a few days later at 6 PM.
+        suggested = datetime.combine((before_dt + timedelta(days=3)).date(), dtime(18, 0), tzinfo=tz)
+    else:
+        # No positional anchor — a few days after the plan's latest touch (or now).
+        latest = now
+        for s in steps:
+            raw = s.get('send_at')
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(raw).astimezone(tz)
+            except (ValueError, TypeError):
+                continue
+            if dt > latest:
+                latest = dt
+        suggested = datetime.combine((latest + timedelta(days=3)).date(), dtime(18, 0), tzinfo=tz)
+
+    event = plan.event if plan.event_id else None
+    if event is not None and event.start_date:
+        if getattr(event, 'start_time', None):
+            event_start = datetime.combine(event.start_date, event.start_time, tzinfo=tz)
+        else:
+            event_start = datetime.combine(event.start_date, dtime(23, 59), tzinfo=tz)
+        if suggested >= event_start:
+            suggested = datetime.combine(
+                event.start_date - timedelta(days=1), dtime(18, 0), tzinfo=tz,
+            )
+
+    earliest = (now + timedelta(minutes=15)).replace(second=0, microsecond=0)
+    if suggested < earliest:
+        suggested = earliest
+    return suggested
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_draft_message(request, pk):
+    """Draft one message for the "Add a message" modal with the AI, from the plan's context.
+
+    JSON endpoint for the modal's "Generate with AI" button. Reuses the strategist's
+    single-message drafter (as sms_plan_regenerate_step does) against a transient follow-up step,
+    so nothing is persisted — the organizer edits/confirms in the modal before it's inserted.
+    Also returns a suggested send time so the button fills in a schedule too.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    from .services.sms_strategist import (
+        regenerate_step_message, plan_audience_label, format_send_label, SMSStrategistError,
+    )
+    ticket_url = _event_ticket_url(request, org, plan.event) if plan.event else ''
+    transient = {
+        'purpose': 'follow_up',
+        'audience_label': plan_audience_label(org, plan.filter_criteria or {}),
+        'timing_label': 'Set a send time',
+        'body': '',
+    }
+    try:
+        result = regenerate_step_message(
+            org, event=plan.event, criteria=plan.filter_criteria or None,
+            objective=plan.objective, ticket_url=ticket_url,
+            step=transient, sibling_steps=plan.steps or [], user=request.user,
+        )
+    except SMSStrategistError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=503)
+
+    # The connector "+" position, so the suggested time lands between that gap's neighbors.
+    try:
+        after_step = int(request.POST.get('after_step'))
+    except (TypeError, ValueError):
+        after_step = None
+    suggested = _suggested_next_send_at(org, plan, after_step=after_step)
+    return JsonResponse({
+        'ok': True,
+        'body': result['body'],
+        'rationale': result['rationale'],
+        'segments': result['segments'],
+        'encoding': result['encoding'],
+        # datetime-local value for the modal's send-time field + a human label.
+        'send_local': suggested.strftime('%Y-%m-%dT%H:%M'),
+        'timing_label': format_send_label(suggested),
     })
 
 
