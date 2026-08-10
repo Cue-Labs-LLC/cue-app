@@ -71,7 +71,7 @@
 {% endblock %}
 
 {% block content %}
-{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='overview' subtitle='Channel performance across Meta Ads and Mailchimp email — with AI recommendations.' %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='overview' subtitle='Channel performance across Meta Ads and Mailchimp email.' %}
 
 <div class="window-selector mb-3">
     <div class="dropdown">
@@ -182,60 +182,6 @@
             });
         });
         </script>
-
-        <div class="ai-panel">
-            <div class="ai-panel-header">
-                <h2>AI insights</h2>
-                <button type="button" id="ai-analyze-btn" class="btn btn-sm btn-primary">Analyze with AI</button>
-            </div>
-            <p class="text-secondary small mb-0" id="ai-analyze-status">
-                Get a plain-language read on what's working, what isn't, and what to do next. Uses your configured AI model.
-            </p>
-            <div id="ai-analyze-result" hidden></div>
-        </div>
-
-        <div class="chart-card">
-            <div class="ai-panel-header">
-                <h2 style="margin:0;">Marketing recommendations</h2>
-                <a href="{% url 'tickets:action_center' %}?kind=marketing_attribution" class="btn btn-sm btn-outline-secondary">View all in Action Center</a>
-            </div>
-            {% if recommendations %}
-            <div class="recs-list">
-                {% for rec in recommendations %}
-                <div class="rec-row rec-row--{{ rec.priority }}">
-                    <div class="rec-row-header">
-                        <div class="rec-row-title">{{ rec.title }}</div>
-                        <div class="rec-row-priority">{{ rec.get_priority_display }}</div>
-                    </div>
-                    <div class="rec-row-summary">{{ rec.summary }}</div>
-                    <div class="rec-row-actions">
-                        {% if rec.recommended_action_json.url %}
-                        <form method="post" action="{% url 'tickets:ai_recommendation_review' rec.id %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                            <button type="submit" class="btn btn-sm btn-primary">{{ rec.recommended_action_json.label|default:"Take action" }}</button>
-                        </form>
-                        {% endif %}
-                        <form method="post" action="{% url 'tickets:ai_recommendation_resolve' rec.id %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                            <button type="submit" class="btn btn-sm btn-outline-success">Mark resolved</button>
-                        </form>
-                        <form method="post" action="{% url 'tickets:ai_recommendation_dismiss' rec.id %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                            <button type="submit" class="btn btn-sm btn-outline-secondary">Dismiss</button>
-                        </form>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <div class="empty-state">
-                <p>No open marketing recommendations &mdash; either you're caught up, or none have been generated yet. New recommendations appear here as data lands.</p>
-            </div>
-            {% endif %}
-        </div>
 
     {# ── Email ────────────────────────────────────────────────────────── #}
     {% elif active_tab == 'email' %}
@@ -408,72 +354,6 @@
                 });
             }
         }
-
-        // --- AI analyze (overview section only) ---------------------------
-        var btn = document.getElementById('ai-analyze-btn');
-        if (!btn) { return; }
-        var status = document.getElementById('ai-analyze-status');
-        var resultBox = document.getElementById('ai-analyze-result');
-        var windowKey = meta.window;
-
-        function severityClass(sev) {
-            if (sev === 'critical') return 'ai-insight ai-insight--critical';
-            if (sev === 'warning') return 'ai-insight ai-insight--warning';
-            return 'ai-insight';
-        }
-        function render(payload) {
-            resultBox.hidden = false;
-            resultBox.innerHTML = '';
-            if (payload.headline) {
-                var h = document.createElement('p');
-                h.style.fontWeight = '600';
-                h.style.marginBottom = '0.4rem';
-                h.textContent = payload.headline;
-                resultBox.appendChild(h);
-            }
-            (payload.insights || []).forEach(function(ins) {
-                var box = document.createElement('div');
-                box.className = severityClass(ins.severity);
-                box.innerHTML =
-                    '<div class="ai-insight-title"></div>' +
-                    '<div class="ai-insight-body"></div>' +
-                    '<div class="ai-insight-action"></div>';
-                box.querySelector('.ai-insight-title').textContent = ins.title || '';
-                box.querySelector('.ai-insight-body').textContent  = ins.body || '';
-                box.querySelector('.ai-insight-action').textContent = ins.recommended_action ? ('Next: ' + ins.recommended_action) : '';
-                resultBox.appendChild(box);
-            });
-        }
-        function getCsrf() {
-            var m = document.cookie.match(/csrftoken=([^;]+)/);
-            return m ? m[1] : '';
-        }
-        btn.addEventListener('click', function () {
-            btn.disabled = true;
-            status.innerHTML = '<span class="ai-spinner"></span> Generating insights&hellip;';
-            resultBox.hidden = true;
-            var form = new FormData();
-            form.append('window', windowKey);
-            fetch('{% url "tickets:marketing_ai_analyze" %}', {
-                method: 'POST',
-                headers: { 'X-CSRFToken': getCsrf() },
-                body: form,
-                credentials: 'same-origin'
-            }).then(function (r) {
-                return r.json().then(function (data) { return { ok: r.ok, data: data }; });
-            }).then(function (out) {
-                btn.disabled = false;
-                if (!out.ok) {
-                    status.textContent = (out.data && out.data.error) || 'Could not generate insights.';
-                    return;
-                }
-                status.textContent = out.data.cached ? 'Showing cached insights from the last 10 minutes.' : 'Insights generated.';
-                render(out.data);
-            }).catch(function () {
-                btn.disabled = false;
-                status.textContent = 'Could not reach the analysis service.';
-            });
-        });
     });
 })();
 </script>
