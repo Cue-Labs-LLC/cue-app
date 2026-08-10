@@ -1760,10 +1760,14 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             loadingEl.hidden = true; bodyEl.hidden = false;
 
+            // Show the distinct people (unique_recipients) alongside the totals: total_recipients
+            // is the SUM of each message's audience = the individual texts sent across all
+            // messages (e.g. 13 people × 5 messages = 65 texts), which drives the token cost.
             headlineEl.innerHTML = 'Schedule <b>' + data.ready_count + '</b> message' + pluralR(data.ready_count) +
-                ' to <b>' + data.total_recipients + '</b> recipient' + pluralR(data.total_recipients) +
-                ' for <b>' + tokensLabel(data.total_cost_tokens) + '</b>';
-            metaEl.textContent = 'Wallet balance ' + tokensLabel(data.balance_tokens);
+                ' to <b>' + data.unique_recipients + '</b> recipient' + pluralR(data.unique_recipients) +
+                ' · <b>' + data.total_recipients + '</b> text' + pluralR(data.total_recipients) +
+                ' · <b>' + tokensLabel(data.total_cost_tokens) + '</b>';
+            metaEl.textContent = 'Total across all messages · Wallet balance ' + tokensLabel(data.balance_tokens);
 
             if (data.not_ready && data.not_ready.length) {
                 notReadyList.innerHTML = '';

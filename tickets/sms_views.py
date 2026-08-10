@@ -3288,7 +3288,8 @@ def sms_plan_preview_all(request, pk):
     steps = plan.steps or []
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     ready_count = 0
-    total_recipients = 0
+    total_recipients = 0        # sum of each message's audience = total individual texts sent
+    unique_phones = set()       # distinct people across all messages (audiences may overlap)
     total_cost_cents = 0
     total_cost_tokens = 0
     not_ready = []
@@ -3317,6 +3318,7 @@ def sms_plan_preview_all(request, pk):
         )
         ready_count += 1
         total_recipients += count
+        unique_phones.update(r['phone'] for r in recipients)
         total_cost_cents += cost_cents
         total_cost_tokens += sum(footer_plan[r['phone']][1] for r in recipients)
 
@@ -3331,6 +3333,7 @@ def sms_plan_preview_all(request, pk):
         'ok': True,
         'ready_count': ready_count,
         'total_recipients': total_recipients,
+        'unique_recipients': len(unique_phones),
         'total_cost_cents': total_cost_cents,
         'total_cost_tokens': total_cost_tokens,
         'balance_cents': balance_cents,

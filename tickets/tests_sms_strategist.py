@@ -801,7 +801,8 @@ class SMSStrategistViewTests(TestCase):
         data = resp.json()
         self.assertTrue(data['ok'])
         self.assertEqual(data['ready_count'], 3)          # the three AI messages
-        self.assertEqual(data['total_recipients'], 3)     # one opted-in customer × 3
+        self.assertEqual(data['total_recipients'], 3)     # one opted-in customer × 3 messages
+        self.assertEqual(data['unique_recipients'], 1)    # ...but one distinct person
         self.assertGreaterEqual(data['total_cost_tokens'], 3)
         self.assertEqual(len(data['not_ready']), 1)
         self.assertIn('no message text', data['not_ready'][0]['reason'])
