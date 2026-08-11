@@ -38,6 +38,80 @@ def extract_first_url(text: str) -> str:
 # send_sms_chunk_task and twilio_sms_status_webhook. Compare as strings.
 TWILIO_OPT_OUT_ERROR_CODES = frozenset({'21610'})
 
+# Twilio error codes meaning the destination is permanently undeliverable for EVERY
+# sender: an unknown/unassigned handset (30005), a landline or unreachable carrier
+# (30006), a malformed/invalid 'To' (21211), or a number that can't receive SMS
+# (21614). Treated as a hard bounce → suppressed on first sight so no campaign wastes
+# credits or daily-cap budget re-texting a dead number. Compare as strings.
+TWILIO_HARD_BOUNCE_ERROR_CODES = frozenset({'30005', '30006', '21211', '21614'})
+
+# Twilio error codes meaning the send failed but the number MIGHT still be reachable
+# later — 30003 is a handset that was off / out of coverage. A single failure isn't
+# proof the number is dead, so these accrue "strikes" across distinct campaigns and
+# only suppress once SMS_BOUNCE_STRIKE_THRESHOLD blasts have failed the same number.
+# Deliberately excludes 30007 (carrier spam-filtering — a sender-reputation problem,
+# not the number's fault) and 21408 (geo-permission — a config/region concern handled
+# by sms_country_allowed, not a dead number). Compare as strings.
+TWILIO_TRANSIENT_FAIL_ERROR_CODES = frozenset({'30003'})
+
+
+def _suppress_phone(phone, reason):
+    """Idempotently record a GLOBAL PhoneSuppression for `phone`.
+
+    Global (organization=None) because a dead/opted-out number is undeliverable for
+    every org sharing the sender. Mirrors the get_or_create used by the opt-out paths.
+    """
+    from tickets.models import PhoneSuppression
+    PhoneSuppression.objects.get_or_create(
+        phone=phone, organization=None, defaults={'reason': reason},
+    )
+
+
+def handle_delivery_failure(phone, error_code):
+    """Suppress `phone` when a failed/undelivered send warrants it.
+
+    Single source of truth for failure → suppression, called from BOTH the send-path
+    failure branch (send_sms_chunk_task) and the async status callback
+    (twilio_sms_status_webhook) so the two agree. No-op unless the code is actionable:
+
+      - opt-out (21610)      → suppress as TWILIO_STOP (Twilio's block can outrun the
+                               inbound OptOutType webhook; learn from the block itself)
+      - hard bounce          → suppress as BOUNCE immediately
+      - transient fail       → suppress as BOUNCE only after enough per-campaign strikes
+
+    Codes outside these sets (30007 carrier-filtering, 21408 geo, etc.) are intentionally
+    left alone — they don't mean the number is dead.
+    """
+    from tickets.models import PhoneSuppression
+    if not phone or not error_code:
+        return
+    error_code = str(error_code)
+    if error_code in TWILIO_OPT_OUT_ERROR_CODES:
+        _suppress_phone(phone, PhoneSuppression.Reason.TWILIO_STOP)
+    elif error_code in TWILIO_HARD_BOUNCE_ERROR_CODES:
+        _suppress_phone(phone, PhoneSuppression.Reason.BOUNCE)
+    elif error_code in TWILIO_TRANSIENT_FAIL_ERROR_CODES:
+        _maybe_suppress_after_strikes(phone)
+
+
+def _maybe_suppress_after_strikes(phone):
+    """Suppress `phone` as a BOUNCE once it has failed a transient code across at
+    least SMS_BOUNCE_STRIKE_THRESHOLD *distinct* campaigns.
+
+    Counts distinct campaigns (not rows) so "failed one blast" never counts as many
+    strikes, and derives the tally from existing SMSMessageRecipient rows — no strike
+    counter to store or migrate. Runs only on the small fraction of sends that fail.
+    """
+    from tickets.models import PhoneSuppression, SMSMessageRecipient
+    threshold = getattr(settings, 'SMS_BOUNCE_STRIKE_THRESHOLD', 3)
+    strikes = (
+        SMSMessageRecipient.objects
+        .filter(phone=phone, error_code__in=TWILIO_TRANSIENT_FAIL_ERROR_CODES)
+        .values('campaign_id').distinct().count()
+    )
+    if strikes >= threshold:
+        _suppress_phone(phone, PhoneSuppression.Reason.BOUNCE)
+
 
 def sms_country_allowed(phone: str) -> bool:
     """True if `phone` (E.164) is in a country enabled for marketing SMS.
