@@ -4941,6 +4941,158 @@ class SMSComplianceGuardTests(TestCase):
             ).exists()
         )
 
+    # --- Learning from hard bounces (dead/invalid numbers) ---
+
+    def test_chunk_task_suppresses_number_on_hard_bounce(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550001111',
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        # 30005 = unknown handset; permanently undeliverable, suppress on first sight.
+        with patch('tickets.sms.send_sms', return_value=(False, None, '30005')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        suppression = PhoneSuppression.objects.filter(
+            phone='+15550001111', organization__isnull=True,
+        ).first()
+        self.assertIsNotNone(suppression)
+        self.assertEqual(suppression.reason, PhoneSuppression.Reason.BOUNCE)
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False)
+    def test_status_webhook_suppresses_number_on_hard_bounce(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550002222', twilio_sid='SM_test_30006',
+            status=SMSMessageRecipient.Status.SENT,
+        )
+        # 30006 = landline / unreachable carrier.
+        response = Client().post(
+            reverse('tickets:twilio_sms_status_webhook'),
+            {
+                'MessageSid': 'SM_test_30006',
+                'MessageStatus': 'undelivered',
+                'ErrorCode': '30006',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15550002222', organization__isnull=True,
+                reason=PhoneSuppression.Reason.BOUNCE,
+            ).exists()
+        )
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False)
+    def test_carrier_filtering_30007_never_suppresses(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550003333', twilio_sid='SM_test_30007',
+            status=SMSMessageRecipient.Status.SENT,
+        )
+        # 30007 = carrier spam-filtering — a sender-reputation problem, not a dead number.
+        Client().post(
+            reverse('tickets:twilio_sms_status_webhook'),
+            {'MessageSid': 'SM_test_30007', 'MessageStatus': 'undelivered',
+             'ErrorCode': '30007'},
+        )
+        self.assertFalse(
+            PhoneSuppression.objects.filter(phone='+15550003333').exists()
+        )
+
+    # --- Learning from repeated transient failures (strike threshold) ---
+
+    @override_settings(SMS_BOUNCE_STRIKE_THRESHOLD=3)
+    def test_transient_below_threshold_does_not_suppress(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        phone = '+15550004444'
+        # One prior 30003 failure in a separate campaign → 2 strikes total after this
+        # send, still under the threshold of 3.
+        prior = SMSCampaign.objects.create(
+            organization=self.org, name='Prior', body='Tickets!',
+        )
+        SMSMessageRecipient.objects.create(
+            campaign=prior, phone=phone,
+            status=SMSMessageRecipient.Status.UNDELIVERED, error_code='30003',
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone=phone,
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        with patch('tickets.sms.send_sms', return_value=(False, None, '30003')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        self.assertFalse(PhoneSuppression.objects.filter(phone=phone).exists())
+
+    @override_settings(SMS_BOUNCE_STRIKE_THRESHOLD=3)
+    def test_transient_at_threshold_suppresses(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        phone = '+15550005555'
+        # Two prior 30003 failures in two separate campaigns → this send is the 3rd
+        # distinct campaign, hitting the threshold.
+        for name in ('Prior A', 'Prior B'):
+            prior = SMSCampaign.objects.create(
+                organization=self.org, name=name, body='Tickets!',
+            )
+            SMSMessageRecipient.objects.create(
+                campaign=prior, phone=phone,
+                status=SMSMessageRecipient.Status.UNDELIVERED, error_code='30003',
+            )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone=phone,
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        with patch('tickets.sms.send_sms', return_value=(False, None, '30003')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone=phone, reason=PhoneSuppression.Reason.BOUNCE,
+            ).exists()
+        )
+
+    def test_suppress_sms_bounces_command_backfills(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Old Blast', body='Tickets!',
+        )
+        SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15550006666',
+            status=SMSMessageRecipient.Status.UNDELIVERED, error_code='30005',
+        )
+        # Dry run writes nothing.
+        call_command('suppress_sms_bounces', stdout=StringIO())
+        self.assertFalse(PhoneSuppression.objects.filter(phone='+15550006666').exists())
+        # --apply writes the suppression.
+        call_command('suppress_sms_bounces', '--apply', stdout=StringIO())
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15550006666', reason=PhoneSuppression.Reason.BOUNCE,
+            ).exists()
+        )
+
 
 class SMSThroughputGuardTests(TestCase):
     """Carrier-throughput guards on the send path: paced (staggered) dispatch to avoid
