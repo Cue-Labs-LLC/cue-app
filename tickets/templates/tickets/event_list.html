@@ -157,10 +157,26 @@
                 </ul>
             </nav>
         </div>
-        {% else %}
+        {% elif has_active_filter %}
         <div class="empty-state">
+            <i class="bi bi-search d-block"></i>
+            <p>No events match your search. <a href="?status=all">View all events</a>.</p>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 56px 24px;">
             <i class="bi bi-calendar-event d-block"></i>
-            <p>No events found.</p>
+            <p class="fw-semibold mb-1" style="font-size: 16px; color: var(--text-primary);">Create your first event</p>
+            <p>Start selling tickets natively, or import a past event's ticket data to see your customers.</p>
+            <div class="d-flex gap-2 justify-content-center flex-wrap">
+                <a href="{% url 'tickets:event_create' 'direct' %}" class="btn btn-primary">
+                    <i class="bi bi-plus-lg"></i> Create Event
+                </a>
+                {% if external_events_enabled %}
+                <a href="{% url 'tickets:event_create' 'external' %}" class="btn btn-outline-secondary">
+                    <i class="bi bi-cloud-upload"></i> Import Past Event CSV
+                </a>
+                {% endif %}
+            </div>
         </div>
         {% endif %}
     </div>

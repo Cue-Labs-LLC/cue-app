@@ -293,13 +293,13 @@ def _parse_window(request):
     return None, None, 'all'
 
 
-def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_count=0):
+def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_count=0, external_enabled=0):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
         version = django_cache.get(f'event_list_ver:{org_id}', 0)
     except Exception:
         version = 0
-    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:a{actions_count}'
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:a{actions_count}:x{external_enabled}'
 
 
 def _invalidate_event_list_cache(org):
@@ -4765,8 +4765,13 @@ def event_list(request):
     except Exception:
         actions_count = 0
 
+    external_events_enabled = bool(org and org.external_events_enabled)
+
     # Check cache first (skip gracefully when Redis is unavailable)
-    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter, actions_count)
+    cache_key = _event_list_cache_key(
+        org.pk, search_query, '', page_number, status_filter, actions_count,
+        external_enabled=int(external_events_enabled),
+    )
     try:
         cached = django_cache.get(cache_key)
     except Exception:
@@ -4860,6 +4865,8 @@ def event_list(request):
         'status_filter': status_filter,
         'event_ids_show_warning': event_ids_show_warning,
         'event_ids_show_placeholder': event_ids_show_placeholder,
+        'has_active_filter': bool(search_query) or status_filter != 'all',
+        'external_events_enabled': external_events_enabled,
     }
     response = render(request, 'tickets/event_list.html', context)
     try:
