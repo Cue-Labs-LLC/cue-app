@@ -22167,3 +22167,78 @@ class EventListEmptyStateTests(TestCase):
         self.assertNotContains(resp, 'Import CSV')
         # The header "Create Event" button stays visible for search/filter misses.
         self.assertContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
+
+
+class ExternalEventCreateCSVTests(TestCase):
+    """Inline CSV import on the external ('Import Event') create page."""
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self._SimpleUploadedFile = SimpleUploadedFile
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Import CSV Org', slug='import-csv-org', external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='importer', email='importer@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Import Hall', city='Austin', state='TX', country='US',
+        )
+        # A format that carries its own price column → no manual price-entry step.
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Priced Format', requires_manual_pricing=False,
+            column_mapping={'order_number': 'Order ID', 'total_amount': 'Price'},
+        )
+
+    def _base_payload(self):
+        return {
+            'name': 'Imported Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10', 'start_time': '20:00',
+            'end_date': '2025-03-10', 'end_time': '22:00',
+            'timezone': 'America/Chicago', 'ticket_link': '',
+            'talent-TOTAL_FORMS': '0', 'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0', 'talent-MAX_NUM_FORMS': '1000',
+        }
+
+    def test_create_with_csv_ingests_and_redirects_to_results(self):
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nA-1,10.00\n', content_type='text/csv',
+        )
+        payload = self._base_payload()
+        payload['csv_file'] = csv
+        payload['csv_format'] = str(self.csv_format.id)
+        with patch('tickets.tasks.process_csv_task.delay') as mock_delay:
+            resp = self.client.post(
+                reverse('tickets:event_create', args=['external']), payload,
+            )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        uploaded = UploadedFile.objects.get(organization=self.org)
+        self.assertEqual(uploaded.metadata.get('event_id'), str(event.id))
+        self.assertEqual(uploaded.csv_format, self.csv_format)
+        self.assertTrue(mock_delay.called)
+        self.assertRedirects(
+            resp, reverse('tickets:upload_results', args=[uploaded.id]),
+            fetch_redirect_response=False,
+        )
+
+    def test_create_without_csv_goes_to_event_detail(self):
+        resp = self.client.post(
+            reverse('tickets:event_create', args=['external']), self._base_payload(),
+        )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        self.assertEqual(UploadedFile.objects.filter(organization=self.org).count(), 0)
+        self.assertRedirects(
+            resp, reverse('tickets:event_detail', args=[event.id]),
+            fetch_redirect_response=False,
+        )
