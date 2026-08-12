@@ -1014,18 +1014,46 @@ def send_sms_campaign_task(self, campaign_id, force=False):
     from tickets.services.sms_limits import remaining_daily_budget, fit_within_budget
     budget = remaining_daily_budget()
     if budget is not None and fit_within_budget([seg for _, seg in queued], budget) < len(queued):
-        from tickets.services.sms_credits import refund_campaign
+        # Nothing has been charged yet (charge-at-send happens below), so there's nothing
+        # to refund — just fail the whole campaign so the shared cap is never exceeded.
         reason = ('Daily send limit for this date was reached before the campaign dispatched. '
                   'Reduce the recipient list and reschedule.')
         SMSCampaign.objects.filter(id=campaign.id).update(
             status=SMSCampaign.Status.FAILED, failure_reason=reason,
         )
-        refund_campaign(campaign, description='Daily send limit reached')
         logger.warning(
             "SMS campaign %s failed: daily cap reached at send time (%d recipient(s), budget %s)",
             campaign_id, len(queued), budget,
         )
         return
+
+    # Charge at SEND time (charge-at-send): debit the wallet for the frozen snapshot's
+    # segments now, right before the messages go out. Once per campaign — a recovery
+    # re-dispatch of a stuck 'sending' campaign must not double-charge, so skip if a CHARGE
+    # ledger row already exists. If the wallet can't cover it, fail the whole campaign
+    # (never send unpaid, never go negative); the organizer tops up and reschedules. Any
+    # recipients that opt out / fail at send are refunded in _finalize_sms_campaign, so the
+    # net debit equals what actually sent.
+    from django.db.models import Sum
+    from tickets.models import SMSCreditTransaction
+    from tickets.services.sms_credits import charge, segments_to_cents, InsufficientCreditsError
+    already_charged = SMSCreditTransaction.objects.filter(
+        campaign=campaign, kind=SMSCreditTransaction.Kind.CHARGE,
+    ).exists()
+    if not already_charged:
+        total_segments = SMSMessageRecipient.objects.filter(campaign=campaign).aggregate(
+            s=Sum('segments'))['s'] or 0
+        try:
+            charge(org.id, segments_to_cents(total_segments), campaign=campaign,
+                   description=f'Campaign: {campaign.name}')
+        except InsufficientCreditsError:
+            reason = 'Not enough SMS tokens to send. Top up your balance and reschedule.'
+            SMSCampaign.objects.filter(id=campaign.id).update(
+                status=SMSCampaign.Status.FAILED, failure_reason=reason,
+            )
+            logger.warning("SMS campaign %s failed: insufficient credits at send time", campaign_id)
+            return
+
     queued_ids = [str(rid) for rid, _ in queued]
 
     # Pace dispatch to roughly SMS_SEND_RATE_PER_SEC by staggering chunk start times,
@@ -1151,6 +1179,7 @@ def finalize_sms_campaign_task(results, campaign_id):
 
 
 def _finalize_sms_campaign(campaign_id):
+    from django.db.models import Sum
     from django.utils import timezone as tz
     from tickets.models import SMSCampaign, SMSMessageRecipient
 
@@ -1168,6 +1197,15 @@ def _finalize_sms_campaign(campaign_id):
     SMSCampaign.objects.filter(id=campaign.id).update(
         status=SMSCampaign.Status.SENT, sent_at=tz.now()
     )
+    # Charge-at-send settle-up: we debited the full frozen snapshot at send-start; refund
+    # the segments that didn't actually send (opt-outs / failures) so the net charge equals
+    # what went out. Idempotent + atomic, so the chord callback and a cron recovery pass both
+    # calling finalize is safe.
+    from tickets.services.sms_credits import settle_campaign_charge
+    sent_segments = SMSMessageRecipient.objects.filter(
+        campaign=campaign, status=SMSMessageRecipient.Status.SENT,
+    ).aggregate(s=Sum('segments'))['s'] or 0
+    settle_campaign_charge(campaign, sent_segments)
 
 
 # Regenerate at most once per ~day: skip an event whose summary was (re)generated

@@ -4952,6 +4952,9 @@ class SMSThroughputGuardTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(
             name='Throughput Org', slug='throughput-org', sms_marketing_enabled=True,
+            # Enough credit that the send-time charge (charge-at-send) succeeds; tests that
+            # exercise the empty-wallet path override this.
+            sms_credit_balance_cents=100000,
         )
         self.venue = Venue.objects.create(organization=self.org, name='Hall', city='LA')
 
@@ -5132,15 +5135,13 @@ class SMSThroughputGuardTests(TestCase):
     @override_settings(SMS_DAILY_SEGMENT_CAP=3)
     def test_split_fills_today_and_schedules_overflow_next_day(self):
         from .models import SMSCampaign
-        from .services.sms_credits import credit, plan_campaign_footers
+        from .services.sms_credits import credit
         credit(self.org.id, 100_000)
+        self.org.refresh_from_db()
+        before = self.org.sms_credit_balance_cents
         custs = self._opted_in(5)
         now = timezone.now()
         tomorrow = now + timedelta(days=1)
-        # Total cost of reaching all 5 (footer identical either day: all are first-ever
-        # phones) — the two batches together should charge exactly this.
-        cost_all, _ = plan_campaign_footers(
-            self.org, 'Tickets!', [c.phone for c in custs], as_of=now)
 
         result = self._split(custs, scheduled=False, send_at=now, batch2_send_at=tomorrow)
 
@@ -5153,10 +5154,12 @@ class SMSThroughputGuardTests(TestCase):
         self.assertEqual(result.batch1.status, SMSCampaign.Status.SCHEDULED)
         self.assertEqual(
             timezone.localdate(result.batch2.scheduled_at), timezone.localdate(tomorrow))
-        # No recipient dropped; charged once for all five across the two batches.
+        # No recipient dropped across the two batches.
         self.assertEqual(result.batch1_count + result.batch2_count, 5)
+        # Charge-at-send: creating the two scheduled batches doesn't debit the wallet — each is
+        # charged when it actually sends.
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_credit_balance_cents, 100_000 - cost_all)
+        self.assertEqual(self.org.sms_credit_balance_cents, before)
 
     @override_settings(SMS_DAILY_SEGMENT_CAP=5)
     def test_split_when_today_full_puts_everything_next_day(self):
@@ -5350,13 +5353,13 @@ class SMSThroughputGuardTests(TestCase):
         (batch 1's booking collapsed today's budget) and re-included batch-1 people."""
         from .models import SMSCampaign, SMSMessageRecipient
         from .services import sms_campaigns as svc
-        from .services.sms_credits import credit, plan_campaign_footers
+        from .services.sms_credits import credit
         credit(self.org.id, 100_000)
+        self.org.refresh_from_db()
+        before = self.org.sms_credit_balance_cents
         custs = self._opted_in(5)
         now = timezone.now()
         tomorrow = now + timedelta(days=1)
-        cost_all, _ = plan_campaign_footers(
-            self.org, 'Tickets!', [c.phone for c in custs], as_of=now)
 
         # First attempt: batch 1 (3 today) commits for real, batch 2 (2 tomorrow) raises.
         real_finalize = svc.finalize_campaign_send
@@ -5386,9 +5389,11 @@ class SMSThroughputGuardTests(TestCase):
             campaign__organization=self.org).values_list('customer_id', flat=True))
         self.assertEqual(len(all_ids), 5)
         self.assertEqual(len(set(all_ids)), 5)  # no duplicate recipient across batches
-        # Charged for exactly five recipients — batch-1 people not billed twice.
+        # Charge-at-send: scheduling the batches doesn't debit (each is billed at its own send;
+        # the send task's charge-once guard prevents a re-dispatch double-charge — see
+        # ChargeAtSendTests.test_recovery_redispatch_does_not_double_charge).
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_credit_balance_cents, 100_000 - cost_all)
+        self.assertEqual(self.org.sms_credit_balance_cents, before)
         self.assertEqual(result.batch1.id, batch1.id)  # original batch 1 reused
 
     @override_settings(SMS_DAILY_SEGMENT_CAP=3)
@@ -5416,22 +5421,23 @@ class SMSThroughputGuardTests(TestCase):
             len(SMSCampaign.objects.get(id=result.batch2.id).name), 200)
 
     @override_settings(SMS_DAILY_SEGMENT_CAP=3)
-    def test_split_insufficient_credits_precheck_creates_nothing(self):
-        """eng-review D5 / D1: if the wallet can't cover BOTH batches, the split raises
-        before any write — never charges batch 1 then fails batch 2."""
+    def test_split_schedules_even_with_empty_wallet(self):
+        """Charge-at-send: the split no longer pre-checks the wallet at schedule. Too little
+        credit still creates both batches; each is charged (and may fail) at its own send."""
         from .models import SMSCampaign
-        from .services.sms_credits import credit, InsufficientCreditsError
+        from .services.sms_credits import credit
+        # Start from a known-low balance (setUp grants a healthy balance for the send path).
+        self.org.sms_credit_balance_cents = 0
+        self.org.save(update_fields=['sms_credit_balance_cents'])
         credit(self.org.id, 3)  # far below the cost of five recipients
         custs = self._opted_in(5)
         now = timezone.now()
-        before = SMSCampaign.objects.filter(organization=self.org).count()
-        with self.assertRaises(InsufficientCreditsError):
-            self._split(custs, scheduled=False, send_at=now,
-                        batch2_send_at=now + timedelta(days=1))
-        self.assertEqual(
-            SMSCampaign.objects.filter(organization=self.org).count(), before)
+        result = self._split(custs, scheduled=False, send_at=now,
+                             batch2_send_at=now + timedelta(days=1))
+        self.assertEqual(result.batch1_count + result.batch2_count, 5)
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 2)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_credit_balance_cents, 3)  # untouched
+        self.assertEqual(self.org.sms_credit_balance_cents, 3)  # not charged at schedule
 
     def test_materialize_order_is_deterministic_for_criteria_audience(self):
         """eng-review D2 / Codex #5: split slicing must be stable, so materialize (via
@@ -5508,22 +5514,25 @@ class SMSThroughputGuardTests(TestCase):
         full = DailyCapExceededError(count=20, allowed=0, cap=100, send_date=timezone.localdate())
         self.assertIn('another day', full.user_message())
 
-    # --- Send-time last resort (fail + refund, no defer) ---
+    # --- Send-time last resort (fail, no defer) ---
 
     @override_settings(SMS_DAILY_SEGMENT_CAP=100)
-    def test_send_time_fails_and_refunds_when_over_budget(self):
-        from .models import SMSCampaign
+    def test_send_time_fails_when_over_budget(self):
+        # A rare race the composer can't see (the day fills between schedule and dispatch): fail
+        # the WHOLE campaign so the shared cap is never exceeded. The daily-cap check runs before
+        # the send-time charge, so nothing was debited — there's nothing to refund.
+        from .models import SMSCampaign, SMSCreditTransaction
         from .tasks import send_sms_campaign_task
         campaign = self._campaign(5, segments=1)
         with patch('tickets.services.sms_limits.remaining_daily_budget', return_value=2), \
-                patch('tickets.services.sms_credits.refund_campaign') as mock_refund, \
                 patch('celery.chord') as mock_chord:
             send_sms_campaign_task.apply(args=[str(campaign.id)])
         mock_chord.assert_not_called()  # never partially dispatched
-        mock_refund.assert_called_once()
         campaign.refresh_from_db()
         self.assertEqual(campaign.status, SMSCampaign.Status.FAILED)
         self.assertTrue(campaign.failure_reason)
+        # No charge (nor refund) — the cap check precedes the charge.
+        self.assertFalse(SMSCreditTransaction.objects.filter(campaign=campaign).exists())
 
     @override_settings(SMS_DAILY_SEGMENT_CAP=100)
     def test_send_time_dispatches_all_when_within_budget(self):

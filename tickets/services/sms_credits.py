@@ -30,6 +30,17 @@ def price_per_segment_cents() -> Decimal:
     return Decimal(getattr(settings, 'SMS_PRICE_PER_SEGMENT_CENTS', Decimal('3')))
 
 
+def segments_to_cents(total_segments: int) -> int:
+    """Whole-cent cost of ``total_segments`` SMS segments, rounded up once (never under-charge).
+
+    Shared by the send-time charge and the settle-up so both agree with the schedule-time
+    estimate (``plan_campaign_footers`` rounds the same way)."""
+    if total_segments <= 0:
+        return 0
+    return int((Decimal(total_segments) * price_per_segment_cents())
+               .to_integral_value(rounding=ROUND_CEILING))
+
+
 def estimate_campaign_cost_cents(recipient_count: int, body: str) -> int:
     """Cost in whole cents to send ``body`` to ``recipient_count`` recipients.
 
@@ -168,3 +179,31 @@ def refund_campaign(campaign, *, description='Campaign canceled'):
                 balance_after=org.sms_credit_balance_cents, campaign=campaign,
                 description=description)
     return refundable
+
+
+def settle_campaign_charge(campaign, sent_segments, *, description='Unsent recipients refunded'):
+    """Reduce a campaign's net charge to exactly ``sent_segments`` worth of cost, refunding any
+    overcharge (recipients that opted out / failed at send). Charge-at-send bills the full frozen
+    snapshot up front; this settles it down so the net debit == what actually went out.
+
+    Idempotent + atomic: locks the org, reads the campaign's ledger net, and only credits the
+    positive difference — a re-run (chord callback + cron recovery both finalizing) computes a 0
+    refund. Returns the refunded cents."""
+    from tickets.models import Organization, SMSCreditTransaction
+    target_cents = segments_to_cents(sent_segments)
+    with transaction.atomic():
+        org = Organization.objects.select_for_update().get(id=campaign.organization_id)
+        net = sum(
+            t.amount_cents for t in
+            SMSCreditTransaction.objects.filter(campaign=campaign)
+        )  # charges negative, refunds positive
+        charged = -net  # net outstanding debit
+        refund = charged - target_cents
+        if refund <= 0:
+            return 0
+        org.sms_credit_balance_cents += refund
+        org.save(update_fields=['sms_credit_balance_cents'])
+        _record(org, kind=SMSCreditTransaction.Kind.REFUND, amount_cents=refund,
+                balance_after=org.sms_credit_balance_cents, campaign=campaign,
+                description=description)
+    return refund

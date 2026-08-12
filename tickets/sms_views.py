@@ -1135,7 +1135,8 @@ def sms_campaign_cancel(request, pk):
         id=pk, organization=org, status=SMSCampaign.Status.SCHEDULED,
     ).update(status=SMSCampaign.Status.CANCELED)
     if updated:
-        # Refund the credits reserved at scheduling time (idempotent).
+        # Charge-at-send: a scheduled campaign hasn't been charged, so this is normally a
+        # no-op (returns 0). It stays for safety + idempotency in case any charge exists.
         from .services.sms_credits import refund_campaign
         campaign = SMSCampaign.objects.get(id=pk)
         refunded = refund_campaign(campaign, description='Scheduled send canceled')

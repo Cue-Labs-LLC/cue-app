@@ -1,12 +1,13 @@
-"""Create + charge + dispatch a marketing SMS campaign — the single money path.
+"""Create + dispatch a marketing SMS campaign — the single send path.
 
 Both the composer (``sms_views.sms_campaign_create``) and the AI plan page's inline
 confirm (``sms_views.sms_plan_confirm_step``) route their send through
-``finalize_campaign_send`` so "charged == sent" logic lives in exactly one place: the
-audience is materialized, the per-recipient STOP-footer/cost is planned, and the
-campaign + frozen recipient snapshot + wallet debit are written in one atomic
-transaction. A send-now campaign is dispatched on commit; a scheduled one is left for
-the */5 cron to pick up.
+``finalize_campaign_send``: the audience is materialized, the per-recipient
+STOP-footer/cost is planned, and the campaign + frozen recipient snapshot are written in
+one atomic transaction. The wallet is NOT debited here — charging happens at SEND time
+(``tasks.send_sms_campaign_task``) for the segments that actually go out, so the frozen
+snapshot's segments are what that charge is computed from. A send-now campaign is
+dispatched on commit; a scheduled one is left for the */5 cron to pick up.
 """
 
 import logging
@@ -86,19 +87,19 @@ class SplitResult:
 
 def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, event,
                            scheduled, send_at, user, idempotency_key, cap):
-    """Materialize → cost → atomically create+charge → dispatch. Returns a
+    """Materialize → estimate → atomically create + freeze snapshot → dispatch. Returns a
     ``CampaignSendResult``.
 
-    Raises ``AudienceTooLargeError`` / ``AudienceEmptyError`` for audience problems and
-    ``InsufficientCreditsError`` (from ``sms_credits.charge``) when the wallet can't
-    cover the cost — nothing is written in either case. Idempotent on
+    Does NOT charge the wallet: the debit happens at SEND time (``send_sms_campaign_task``)
+    for the segments that actually go out. Raises ``AudienceTooLargeError`` /
+    ``AudienceEmptyError`` for audience problems (nothing written). Idempotent on
     ``idempotency_key``: a duplicate returns the existing campaign with ``created=False``.
     """
     from django.utils import timezone
     from tickets.models import SMSCampaign, SMSMessageRecipient
     from tickets.sms import extract_first_url
     from tickets.sms_views import _mint_campaign_tracking_link, send_sms_campaign_task
-    from tickets.services.sms_credits import charge, plan_campaign_footers
+    from tickets.services.sms_credits import plan_campaign_footers
     from tickets.services.sms_limits import daily_capacity_for, daily_segment_cap, fit_within_budget
 
     # Resolve the audience up front so cap/empty are rejected before any write.
@@ -173,11 +174,10 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
                     segments=footer_plan[r['phone']][1],
                 ) for r in recipients
             ], batch_size=500)
-            # Charge inside the same transaction — campaign + snapshot + debit are
-            # all-or-nothing (no uncharged campaign can exist). Raises
-            # InsufficientCreditsError, which rolls the whole thing back.
-            charge(org.id, cost_cents, campaign=campaign,
-                   description=f'Campaign: {campaign.name}', created_by=user)
+            # No charge here: the wallet is debited at SEND time (see
+            # send_sms_campaign_task), for the segments that actually go out. The frozen
+            # per-recipient segments above are what that charge is computed from, so the
+            # send-time debit equals this schedule-time estimate (minus any opt-outs).
     except IntegrityError:
         # Concurrent duplicate confirm (same idempotency_key) — the other request won.
         existing = SMSCampaign.objects.filter(
@@ -230,8 +230,9 @@ def finalize_campaign_split(org, *, name, body, criteria, manual_include_ids, ev
     Each batch is created through ``finalize_campaign_send`` with an explicit
     ``manual_include_ids`` subset (criteria cleared), so "charged == sent",
     per-campaign idempotency, and the authoritative daily-cap check all still run in
-    one place. Raises ``InsufficientCreditsError`` (before any write) when the wallet
-    can't cover both batches, and the usual audience errors. Returns a ``SplitResult``.
+    one place. Each batch is charged at its own send (charge-at-send), so there is no
+    schedule-time wallet check here; the usual audience errors still apply. Returns a
+    ``SplitResult``.
 
     Replay safety (the two campaigns are NOT one atomic unit — batch 1 can commit while
     batch 2 fails on a race, and the organizer then retries): each batch is anchored to
@@ -243,8 +244,8 @@ def finalize_campaign_split(org, *, name, body, criteria, manual_include_ids, ev
     and double-sending them. Membership is also deterministic because
     ``candidate_customers`` orders by ``(created_at, id)``.
     """
-    from tickets.models import Organization, SMSCampaign
-    from tickets.services.sms_credits import plan_campaign_footers, InsufficientCreditsError
+    from tickets.models import SMSCampaign
+    from tickets.services.sms_credits import plan_campaign_footers
     from tickets.services.sms_limits import daily_capacity_for, fit_within_budget
 
     # Idempotency anchors: any campaign already created under each key on a prior
@@ -304,29 +305,9 @@ def finalize_campaign_split(org, *, name, body, criteria, manual_include_ids, ev
         batch2 = pool[:fits_next]
         leftover = len(pool) - len(batch2)
 
-    # Pre-check the combined wallet cost so we never charge batch 1 and then fail on
-    # batch 2. Only counts batches being newly created — an existing (already-charged)
-    # batch must not count against the balance on a replay.
-    #
-    # NOTE: cost is rounded up to whole cents per batch (plan_campaign_footers), so
-    # splitting can charge up to 1¢ more than an unsplit send — but only under sub-cent
-    # SMS_PRICE_PER_SEGMENT_CENTS; at the whole-cent default it's exact. Accepted (see
-    # /plan-eng-review D4): reconciling would couple the two per-campaign charges.
-    precheck_cost = 0
-    if batch1 and not existing1:
-        cost1, _ = plan_campaign_footers(
-            org, body, [r['phone'] for r in batch1], as_of=send_at)
-        precheck_cost += cost1
-    if batch2 and not existing2:
-        cost2, _ = plan_campaign_footers(
-            org, body, [r['phone'] for r in batch2], as_of=batch2_send_at)
-        precheck_cost += cost2
-    # Read the balance fresh — the passed org may be stale, and charge() is the
-    # authoritative in-transaction check regardless.
-    balance = Organization.objects.filter(id=org.id).values_list(
-        'sms_credit_balance_cents', flat=True).first() or 0
-    if precheck_cost > balance:
-        raise InsufficientCreditsError(precheck_cost, balance)
+    # No wallet pre-check: each batch is charged at its own SEND time (see
+    # send_sms_campaign_task), so there's no schedule-time debit to protect against a partial
+    # split. A batch whose wallet can't cover it at send fails then (never sends unpaid).
 
     # Create batch 1 (today), then batch 2 (next day). Each batch is pinned to its
     # explicit customer-id set; finalize's own cap check passes because each batch was

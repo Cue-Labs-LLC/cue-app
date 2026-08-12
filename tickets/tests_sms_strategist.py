@@ -12,7 +12,8 @@ from django.utils import timezone
 
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
-    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, AITokenUsage,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, SMSCreditTransaction, AITokenUsage,
+    PhoneSuppression,
     Venue, Event, EventSMSCampaign, TrackingLink, Market,
     MARKET_GEOGRAPHY_CITY,
     TICKETING_TYPE_EXTERNAL,
@@ -1217,9 +1218,11 @@ class SMSStrategistViewTests(TestCase):
         self.assertFalse(data['already_launched'])
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_plan_confirm_step_creates_campaign_charges_and_marks_launched(self, mock_openai):
+    def test_plan_confirm_step_schedules_without_charging(self, mock_openai):
+        # Charge-at-send: confirming a future-dated step schedules the campaign + freezes its
+        # recipient snapshot, but does NOT debit the wallet — that happens when it sends.
         mock_openai.return_value = _fake_structured_llm()
-        plan = self._make_event_plan()
+        plan = self._make_event_plan()   # step 0 is ~14 days out → scheduled, not sent now
         self.org.refresh_from_db()
         start_balance = self.org.sms_credit_balance_cents
 
@@ -1237,9 +1240,11 @@ class SMSStrategistViewTests(TestCase):
         # all_subscribers on an event plan keeps the campaign linked to the event.
         self.assertEqual(c.event_id, self.event.id)
         self.assertEqual(SMSMessageRecipient.objects.filter(campaign=c).count(), 1)
-        # The wallet was debited.
+        # Not charged yet: balance unchanged and no CHARGE ledger row for this campaign.
         self.org.refresh_from_db()
-        self.assertLess(self.org.sms_credit_balance_cents, start_balance)
+        self.assertEqual(self.org.sms_credit_balance_cents, start_balance)
+        self.assertFalse(SMSCreditTransaction.objects.filter(
+            campaign=c, kind=SMSCreditTransaction.Kind.CHARGE).exists())
         # The step is stamped launched + linked to the new campaign.
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
@@ -1298,9 +1303,12 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.org.sms_credit_balance_cents, after_first)
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_plan_confirm_step_insufficient_credits_blocks(self, mock_openai):
+    def test_plan_confirm_step_schedules_even_with_empty_wallet(self, mock_openai):
+        # Charge-at-send: confirming a future step no longer blocks on balance (the UI preview
+        # does that). With a $0 wallet the step still schedules; the debit — and any fail — is
+        # deferred to when it actually sends.
         mock_openai.return_value = _fake_structured_llm()
-        plan = self._make_event_plan()
+        plan = self._make_event_plan()   # step 0 is future-dated → scheduled, not sent now
         self.org.sms_credit_balance_cents = 0
         self.org.save(update_fields=['sms_credit_balance_cents'])
 
@@ -1308,11 +1316,14 @@ class SMSStrategistViewTests(TestCase):
             reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
             {'idempotency_key': 'k'},
         )
-        self.assertEqual(resp.status_code, 400)
-        self.assertFalse(resp.json()['ok'])
-        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        c = SMSCampaign.objects.get(organization=self.org)
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)   # not charged at schedule
         plan.refresh_from_db()
-        self.assertIsNone(plan.steps[0].get('launched_campaign_id'))
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
 
     @patch('langchain_openai.ChatOpenAI')
     def test_plan_confirm_step_past_time_sends_now(self, mock_openai):
@@ -1950,12 +1961,14 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(resp2.context['overdue_steps'], [])
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_overdue_skip_cancels_and_refunds(self, mock_openai):
+    def test_overdue_skip_cancels_scheduled_send(self, mock_openai):
+        # Skipping an overdue held send cancels the (still-scheduled, unsent) campaign. Under
+        # charge-at-send it was never charged, so there's nothing to refund — balance is unchanged.
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
         c = self._confirm_step(plan)
         self.org.refresh_from_db()
-        after_charge = self.org.sms_credit_balance_cents
+        before = self.org.sms_credit_balance_cents
         SMSCampaign.objects.filter(id=c.id).update(scheduled_at=timezone.now() - timedelta(days=1))
         plan.enabled = False
         plan.save(update_fields=['enabled'])
@@ -1967,7 +1980,7 @@ class SMSStrategistViewTests(TestCase):
         c.refresh_from_db()
         self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
         self.org.refresh_from_db()
-        self.assertGreater(self.org.sms_credit_balance_cents, after_charge)   # refunded
+        self.assertEqual(self.org.sms_credit_balance_cents, before)   # nothing charged → no refund
 
     @patch('langchain_openai.ChatOpenAI')
     def test_overdue_reschedule_updates_campaign_and_step(self, mock_openai):
@@ -2048,15 +2061,16 @@ class SMSStrategistViewTests(TestCase):
     # --- Scheduled step → "move back to draft" (draft-before-delete) -----------
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_unschedule_step_reverts_to_draft_and_refunds(self, mock_openai):
-        # Moving a scheduled step back to draft cancels + refunds its campaign and clears the
-        # step's launch linkage so it's a true draft again.
+    def test_unschedule_step_reverts_to_draft(self, mock_openai):
+        # Moving a scheduled step back to draft cancels its campaign and clears the step's launch
+        # linkage so it's a true draft again. Under charge-at-send the campaign was never charged,
+        # so the wallet is unchanged (nothing to refund).
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
         c = self._confirm_step(plan)
         self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
         self.org.refresh_from_db()
-        after_charge = self.org.sms_credit_balance_cents
+        before = self.org.sms_credit_balance_cents
 
         resp = self.client.post(
             reverse('tickets:sms_plan_unschedule_step', kwargs={'pk': plan.id, 'step': 0}),
@@ -2066,7 +2080,7 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
         self.assertIsNone(c.plan_id)                      # detached from the plan
         self.org.refresh_from_db()
-        self.assertGreater(self.org.sms_credit_balance_cents, after_charge)  # refunded
+        self.assertEqual(self.org.sms_credit_balance_cents, before)   # never charged → no refund
         plan.refresh_from_db()
         self.assertIsNone(plan.steps[0]['launched_campaign_id'])
         self.assertIsNone(plan.steps[0].get('launched_at'))

@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
-    SMSCampaign, SMSMessageRecipient, PhoneSuppression,
+    SMSCampaign, SMSMessageRecipient, SMSCreditTransaction, PhoneSuppression,
     Venue, Market, Event, CSVFormat, UploadedFile, TicketOrder,
 )
 
@@ -601,7 +601,11 @@ class SMSConditionalFooterTests(TestCase):
     cadence path this class is about; a dedicated test below covers the override."""
 
     def setUp(self):
-        self.org = Organization.objects.create(name='Org', slug='org-footer', sms_marketing_enabled=True)
+        # Balance covers the send-time charge (charge-at-send); these tests exercise the footer
+        # decision, not billing, so they just need enough credit for the send to proceed.
+        self.org = Organization.objects.create(
+            name='Org', slug='org-footer', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000)
 
     def _disclosed(self, phone, *, days_ago=1, status=None, stop_disclosed=True, org=None):
         """Create a prior SENT recipient (a past disclosure) for a phone."""
@@ -852,6 +856,104 @@ class SMSConditionalFooterTests(TestCase):
         SMSMessageRecipient.objects.create(campaign=c, phone='+13105559202', stop_disclosed=False, segments=1)
         sent = self._run_send(c)
         self.assertIn('Reply STOP to opt out', sent['+13105559202'])
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_ALWAYS_DISCLOSE_STOP=False, SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'),
+                   SMS_DAILY_SEGMENT_CAP=2000)
+class ChargeAtSendTests(TestCase):
+    """The wallet is debited at SEND time (not schedule), for the segments that actually go out."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Org', slug='org-cas', sms_marketing_enabled=True,
+            sms_credit_balance_cents=1000)
+
+    def _scheduled(self, body='Hello'):
+        return SMSCampaign.objects.create(
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body=body,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1))
+
+    def _recip(self, c, phone, segments=1):
+        return SMSMessageRecipient.objects.create(
+            campaign=c, phone=phone, stop_disclosed=True, segments=segments)
+
+    def _run(self, c, fail_phones=()):
+        def fake(to, body, status_callback=None):
+            if to in fail_phones:
+                return False, None, '30007'
+            return True, 'SM' + to[-4:], None
+        from .tasks import send_sms_campaign_task
+        with patch('tickets.sms.send_sms', side_effect=fake):
+            send_sms_campaign_task.delay(str(c.id))
+
+    def _charges(self, c):
+        return SMSCreditTransaction.objects.filter(
+            campaign=c, kind=SMSCreditTransaction.Kind.CHARGE).count()
+
+    def test_charge_happens_at_send_not_schedule(self):
+        c = self._scheduled()
+        self._recip(c, '+13105550001')
+        self._recip(c, '+13105550002')
+        # Scheduled but not sent → no debit, no CHARGE row.
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000)
+        self.assertEqual(self._charges(c), 0)
+
+        self._run(c)   # eager send
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 2 * 1 * 3)  # 2 segments × 3c
+        self.assertEqual(self._charges(c), 1)
+
+    def test_send_fails_when_wallet_short(self):
+        self.org.sms_credit_balance_cents = 2   # < the 6c needed
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        c = self._scheduled()
+        self._recip(c, '+13105550003')
+        self._recip(c, '+13105550004')
+
+        self._run(c)
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.FAILED)
+        self.assertIn('token', (c.failure_reason or '').lower())
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 2)   # never debited
+        self.assertEqual(SMSMessageRecipient.objects.filter(
+            campaign=c, status=SMSMessageRecipient.Status.SENT).count(), 0)   # nothing sent
+
+    def test_unsent_recipient_is_refunded_to_actual(self):
+        # Charged for the full snapshot at send-start, then refunded the segment that didn't
+        # actually send (a failed/opted-out recipient) so the net == what went out (C).
+        c = self._scheduled()
+        self._recip(c, '+13105550005')
+        self._recip(c, '+13105550006')
+        self._run(c, fail_phones={'+13105550006'})
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 3)   # charged 6c, refunded 3c
+        net = sum(t.amount_cents for t in SMSCreditTransaction.objects.filter(campaign=c))
+        self.assertEqual(net, -3)   # net debit == the one segment that sent
+
+    def test_recovery_redispatch_does_not_double_charge(self):
+        # A stuck 'sending' campaign that was already charged on its first (crashed) dispatch
+        # must not be charged again when a recovery pass re-dispatches it.
+        from .services.sms_credits import charge
+        c = self._scheduled()
+        SMSCampaign.objects.filter(id=c.id).update(status=SMSCampaign.Status.SENDING)
+        self._recip(c, '+13105550007')
+        charge(self.org.id, 3, campaign=c, description='first dispatch')   # simulate prior charge
+        self.org.refresh_from_db()
+        after_first = self.org.sms_credit_balance_cents
+
+        self._run(c)   # recovery re-dispatch
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+        self.assertEqual(self._charges(c), 1)   # still exactly one CHARGE row
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, after_first)   # 1 seg sent == already charged
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
@@ -1998,7 +2100,9 @@ class SMSCreditSendFlowTests(TestCase):
         self.assertFalse(resp.context['insufficient_credits'])
         self.assertEqual(SMSCampaign.objects.count(), 0)
 
-    def test_cancel_scheduled_refunds(self):
+    def test_cancel_scheduled_no_charge_no_refund(self):
+        # Charge-at-send: scheduling a future send doesn't debit the wallet, so canceling it
+        # before it sends has nothing to refund — the balance stays put throughout.
         self.org.sms_credit_balance_cents = 100
         self.org.save(update_fields=['sms_credit_balance_cents'])
         when = (timezone.now() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M')
@@ -2008,12 +2112,12 @@ class SMSCreditSendFlowTests(TestCase):
         })
         c = SMSCampaign.objects.get()
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_credit_balance_cents, 94)  # charged at schedule time
+        self.assertEqual(self.org.sms_credit_balance_cents, 100)  # not charged at schedule
         self.client.post(reverse('tickets:sms_campaign_cancel', kwargs={'pk': c.id}))
         c.refresh_from_db()
         self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_credit_balance_cents, 100)  # refunded
+        self.assertEqual(self.org.sms_credit_balance_cents, 100)  # never charged → no refund
 
     def test_credits_page_renders_token_balance(self):
         # 4200 cents at 3c/token = 1400 tokens.
