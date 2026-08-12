@@ -8,6 +8,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
+from django.utils.safestring import mark_safe
 from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint, AIRecommendation
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
@@ -1307,6 +1308,19 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
         self.fields['description'].required = False
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
+        # Show the capacity/timezone hints as label tooltips rather than subtext
+        # below the fields. Bootstrap tooltips are auto-initialised in base.html.
+        for name, tip in (
+            ('capacity', 'Total ticket capacity for the event (optional)'),
+            ('timezone', 'Timezone where the event takes place'),
+        ):
+            field = self.fields[name]
+            field.label = mark_safe(
+                f'{field.label or name.title()} '
+                f'<i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" '
+                f'title="{tip}"></i>'
+            )
+            field.help_text = ''
         # Combined start/end datetime inputs replace the four date/time fields.
         self._init_event_datetimes(end_required=True)
 
