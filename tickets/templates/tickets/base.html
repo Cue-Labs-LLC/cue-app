@@ -226,7 +226,11 @@
                 <div class="sidebar-divider" style="margin:4px 0 8px;"></div>
                 <div class="sidebar-user" id="sidebarUserToggle">
                     <div class="sidebar-user-avatar">
+                        {% if user.profile.profile_picture %}
+                        <img src="{{ user.profile.profile_picture.url }}" alt="">
+                        {% else %}
                         {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                        {% endif %}
                     </div>
                     <span>{{ user.get_full_name|default:user.get_username }}</span>
                     <i class="bi bi-chevron-expand ms-auto" style="font-size: 12px;"></i>
