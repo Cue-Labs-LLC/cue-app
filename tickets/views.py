@@ -13489,7 +13489,7 @@ def user_profile(request):
     """View and edit the logged-in user's profile information."""
     profile = request.user.profile
     if request.method == 'POST':
-        form = UserProfileForm(request.POST, user=request.user)
+        form = UserProfileForm(request.POST, request.FILES, user=request.user)
         if form.is_valid():
             form.save()
             messages.success(request, 'Profile updated.')

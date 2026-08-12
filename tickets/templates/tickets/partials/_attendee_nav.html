@@ -30,7 +30,11 @@
         <div class="nav-dropdown" id="navDropdown">
             <button class="nav-user-btn" id="navUserBtn" type="button">
                 <div class="nav-user-avatar">
+                    {% if user.profile.profile_picture %}
+                    <img src="{{ user.profile.profile_picture.url }}" alt="">
+                    {% else %}
                     {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                    {% endif %}
                 </div>
                 <span class="name-label">{{ user.get_full_name|default:user.get_username }}</span>
                 <i class="bi bi-chevron-down" style="font-size:10px; margin-left:2px;"></i>
