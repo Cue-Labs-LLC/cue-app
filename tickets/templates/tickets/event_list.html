@@ -129,7 +129,7 @@
                                 {% elif event.ticket_link %}
                                 <a href="{{ event.ticket_link }}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
                                 {% else %}
-                                <button type="button" class="btn btn-sm btn-icon disabled" disabled aria-disabled="true" title="No ticket page set"><i class="bi bi-link-45deg fs-6"></i></button>
+                                <span class="btn btn-sm btn-icon text-muted" aria-disabled="true" title="No ticket page set" style="opacity: 0.3; pointer-events: none; border: none;"><i class="bi bi-link-45deg fs-6"></i></span>
                                 {% endif %}
                                 <button type="button" class="btn btn-sm btn-icon js-duplicate-event" title="Duplicate event"
                                     data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
