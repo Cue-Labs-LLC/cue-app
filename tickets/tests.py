@@ -22149,6 +22149,8 @@ class EventListEmptyStateTests(TestCase):
         self.assertContains(resp, reverse('tickets:event_create', args=['direct']))
         self.assertContains(resp, reverse('tickets:event_create', args=['external']))
         self.assertContains(resp, 'Import Past Event CSV')
+        # The redundant header "Create Event" button is hidden in this empty state.
+        self.assertNotContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
 
     def test_import_cta_hidden_when_external_disabled(self):
         self._make_org_user(external_enabled=False)
@@ -22163,3 +22165,5 @@ class EventListEmptyStateTests(TestCase):
         self.assertContains(resp, 'No events match your search')
         self.assertNotContains(resp, 'Create your first event')
         self.assertNotContains(resp, 'Import Past Event CSV')
+        # The header "Create Event" button stays visible for search/filter misses.
+        self.assertContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
