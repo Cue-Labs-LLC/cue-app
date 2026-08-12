@@ -1274,6 +1274,10 @@ def become_organizer_view(request):
             status=OrganizerWaitlist.Status.APPROVED,
         ).exists():
             return redirect('tickets:create_organization')
+        # Already on the waitlist (pending/rejected) — show the confirmation
+        # state instead of the form so we don't imply they still need to sign up.
+        if OrganizerWaitlist.objects.filter(email=request.user.email).exists():
+            return render(request, 'tickets/auth/waitlist_success.html')
 
     if request.method == 'POST':
         form = OrganizerWaitlistForm(request.POST)
@@ -13490,6 +13494,7 @@ def user_profile(request):
             'phone_number':     profile.phone_number or '',
             'gender':           profile.gender or '',
             'marketing_opt_in': profile.marketing_opt_in,
+            'instagram_handle': profile.instagram_handle or '',
         })
     return render(request, 'tickets/account_profile.html', {
         'form':    form,

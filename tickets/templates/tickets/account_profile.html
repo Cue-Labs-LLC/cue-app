@@ -23,11 +23,53 @@
         flex-shrink: 0;
     }
 
-    .profile-layout {
-        display: grid;
-        grid-template-columns: 260px 1fr;
-        gap: 12px;
-        align-items: start;
+    /* Center the title + card as one column so their left edges align */
+    .profile-wrap {
+        max-width: 600px;
+        margin: 0 auto;
+    }
+
+    /* Lift the card off the page: lighter surface + layered shadow */
+    .profile-panel {
+        background: var(--surface-2);
+        border-color: var(--border-mid);
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.04) inset,
+            0 14px 32px -16px rgba(0, 0, 0, 0.7),
+            0 4px 10px -6px rgba(0, 0, 0, 0.45);
+    }
+
+    .identity-band {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+    .identity-name {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 1.15rem;
+        letter-spacing: -0.01em;
+        color: var(--text);
+    }
+    .identity-email {
+        font-family: var(--font-body);
+        font-size: 0.85rem;
+        color: var(--text-2);
+        margin-top: 2px;
+    }
+    .identity-sub {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+    }
+    .identity-since {
+        font-family: var(--font-mono);
+        font-size: 0.67rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-3);
     }
 
     .name-row {
@@ -41,17 +83,13 @@
     .iti { width: 100%; }
 
     @media (max-width: 640px) {
-        .profile-layout {
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }
         .name-row {
             grid-template-columns: 1fr;
         }
         .profile-avatar {
-            width: 88px;
-            height: 88px;
-            font-size: 32px;
+            width: 64px;
+            height: 64px;
+            font-size: 24px;
         }
         .form-control, .form-select {
             padding: 13px 13px;
@@ -136,67 +174,39 @@
 {% endblock %}
 
 {% block content %}
+<div class="profile-wrap">
 <div style="animation: fadeUp 0.4s ease both;">
     <h1 class="page-title">My Profile</h1>
     <p class="page-subtitle">View and update your personal information.</p>
 </div>
 
-<div class="profile-layout">
+<div class="profile-panel a-card" style="animation: fadeUp 0.4s 0.05s ease both;">
+    <div class="a-card-body">
 
-    <!-- Identity card -->
-    <div class="a-card" style="animation: fadeUp 0.4s 0.05s ease both;">
-        <div class="a-card-body" style="display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0;">
-            <div class="profile-avatar" style="margin-bottom: 14px;">
+        <!-- Identity band -->
+        <div class="identity-band">
+            <div class="profile-avatar">
                 {% with first=request.user.first_name|make_list|first|upper last=request.user.last_name|make_list|first|upper %}
                     {% if first %}{{ first }}{% if last %}{{ last }}{% endif %}{% else %}{{ request.user.get_username|make_list|first|upper }}{% endif %}
                 {% endwith %}
             </div>
-            <div style="font-family: var(--font-display); font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; color: var(--text); margin-bottom: 4px;">
-                {{ request.user.get_full_name|default:request.user.get_username }}
-            </div>
-            <div style="font-family: var(--font-body); font-size: 0.82rem; color: var(--text-2); margin-bottom: 14px;">
-                {{ request.user.email }}
-            </div>
-
-            <div style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-bottom: 16px;">
-                <span class="a-badge {% if profile.role == 'organizer' %}a-badge--muted{% else %}a-badge--success{% endif %}">
-                    {{ profile.get_role_display }}
-                </span>
-                {% if profile.org_role %}
-                <span class="a-badge a-badge--muted">{{ profile.get_org_role_display }}</span>
-                {% endif %}
-            </div>
-
-            <div class="rule" style="width: 100%; margin: 0 0 16px;"></div>
-
-            <dl style="width: 100%; text-align: left;">
-                {% if profile.phone_number %}
-                <div class="detail-row" style="padding: 8px 0;">
-                    <span class="detail-label">Phone</span>
-                    <span class="detail-value" style="font-family: var(--font-mono); font-size: 0.78rem;">{{ profile.phone_number }}</span>
+            <div class="identity-meta">
+                <div class="identity-name">{{ request.user.get_full_name|default:request.user.get_username }}</div>
+                <div class="identity-email">{{ request.user.email }}</div>
+                <div class="identity-sub">
+                    {% if profile.created_at %}
+                    <span class="identity-since">Member since {{ profile.created_at|date:"F Y" }}</span>
+                    {% endif %}
+                    {% if profile.org_role %}
+                    <span class="a-badge a-badge--muted">{{ profile.get_org_role_display }}</span>
+                    {% endif %}
                 </div>
-                {% endif %}
-                {% if profile.gender %}
-                <div class="detail-row" style="padding: 8px 0;">
-                    <span class="detail-label">Gender</span>
-                    <span class="detail-value">{{ profile.get_gender_display }}</span>
-                </div>
-                {% endif %}
-                {% if profile.created_at %}
-                <div class="detail-row" style="padding: 8px 0; border-bottom: none;">
-                    <span class="detail-label">Member since</span>
-                    <span class="detail-value">{{ profile.created_at|date:"F Y" }}</span>
-                </div>
-                {% endif %}
-            </dl>
+            </div>
         </div>
-    </div>
 
-    <!-- Edit form -->
-    <div class="a-card" style="animation: fadeUp 0.4s 0.1s ease both;">
-        <div class="a-card-header">Edit Profile</div>
-        <div class="a-card-body">
-            <form method="post" novalidate>
+        <div class="rule" style="width: 100%; margin: 20px 0;"></div>
+
+        <form method="post" novalidate>
                 {% csrf_token %}
 
                 <div class="name-row">
@@ -252,6 +262,17 @@
                     {% endfor %}
                 </div>
 
+                <div style="margin-bottom: 14px;">
+                    <label class="form-label" for="id_instagram_handle">Instagram handle</label>
+                    <input type="text" name="instagram_handle" id="id_instagram_handle" maxlength="30"
+                           value="{{ form.instagram_handle.value|default:'' }}"
+                           class="form-control{% if form.instagram_handle.errors %} is-invalid{% endif %}"
+                           placeholder="@yourhandle">
+                    {% for error in form.instagram_handle.errors %}
+                    <div class="invalid-feedback">{{ error }}</div>
+                    {% endfor %}
+                </div>
+
                 <div style="margin-bottom: 24px;">
                     <div class="form-check">
                         <input type="checkbox" name="marketing_opt_in" id="id_marketing_opt_in"
@@ -265,9 +286,8 @@
 
                 <button type="submit" class="btn-primary-dark">Save changes</button>
             </form>
-        </div>
     </div>
-
+</div>
 </div>
 {% endblock %}
 

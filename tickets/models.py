@@ -704,6 +704,7 @@ class UserProfile(models.Model):
         null=True,
     )
     marketing_opt_in = models.BooleanField(default=False)
+    instagram_handle = models.CharField(max_length=30, blank=True, default='')
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
     stripe_customer_id = models.CharField(
