@@ -7,6 +7,9 @@
 <style>
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
+.tt-drag-handle { user-select: none; }
+.tt-drag-handle:hover { color: var(--bs-body-color) !important; }
+.tt-row-drag { cursor: grabbing !important; }
 /* The <form> sits between .modal-content and .modal-body, breaking the flex
    chain modal-dialog-scrollable relies on. Re-establish it so the body scrolls
    and the header/footer stay pinned. */
@@ -133,6 +136,7 @@
                         <table class="table table-hover mb-0" id="tt-display-table">
                             <thead>
                                 <tr>
+                                    <th style="width:32px;"></th>
                                     <th>Ticket Name</th>
                                     <th>Display&nbsp;Price / You&nbsp;Receive</th>
                                     <th>Inventory</th>
@@ -174,6 +178,7 @@
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js" defer></script>
+{% if ticketing_type == 'direct' %}<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js" defer></script>{% endif %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var textarea = document.getElementById('id_description');
@@ -322,6 +327,7 @@ document.addEventListener('DOMContentLoaded', function () {
         var tr = document.createElement('tr');
         tr.dataset.idx = String(idx);
         tr.innerHTML =
+            '<td class="tt-drag-handle text-muted" style="cursor:grab;width:32px;" title="Drag to reorder"><i class="bi bi-grip-vertical"></i></td>' +
             '<td><strong>' + escHtml(name) + '</strong>' +
                 (description ? '<br><small class="text-muted">' + escHtml(description) + '</small>' : '') + '</td>' +
             '<td>' + priceHtml + '</td>' +
@@ -386,6 +392,28 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Populate display table from server-rendered hidden rows (handles validation resubmit)
     rebuildDisplayTable();
+
+    // Drag-and-drop reordering of draft ticket types. Reorders both the visible
+    // rows and the underlying hidden formset (DOM order + `order` field) so the
+    // new sequence persists on submit.
+    if (typeof Sortable !== 'undefined') {
+        Sortable.create(displayTbody, {
+            handle: '.tt-drag-handle',
+            animation: 150,
+            dragClass: 'tt-row-drag',
+            onEnd: function () {
+                var position = 0;
+                Array.from(displayTbody.querySelectorAll('tr')).forEach(function (tr) {
+                    var hiddenRow = getHiddenRow(tr.dataset.idx);
+                    if (!hiddenRow) return;
+                    setHiddenField(hiddenRow, 'order', position);
+                    hiddenRow.dataset.order = position;
+                    hiddenFormset.appendChild(hiddenRow); // re-append in new visual order
+                    position++;
+                });
+            }
+        });
+    }
 
     // Wire price <-> gross calculator in modal
     var addPrice = document.getElementById('add_price');
