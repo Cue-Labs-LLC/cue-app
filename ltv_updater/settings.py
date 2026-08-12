@@ -316,6 +316,13 @@ SMS_CHUNK_SIZE = int(os.environ.get('SMS_CHUNK_SIZE', '10'))
 # segments conservatively (we can't cheaply tell which recipients are T-Mobile). Set to 0 to
 # disable the guard. Raise as the brand's trust score / cap grows.
 SMS_DAILY_SEGMENT_CAP = int(os.environ.get('SMS_DAILY_SEGMENT_CAP', '2000'))
+# How many DISTINCT campaigns must fail a transient Twilio code (30003 — handset off /
+# out of coverage) against the same number before it's auto-suppressed as a bounce.
+# Hard-bounce codes (unknown/invalid/landline) suppress on the first failure regardless;
+# this threshold only governs the "might recover" transient codes, so a temporary outage
+# doesn't permanently blacklist a live number. Lower = scrub dead numbers faster; higher
+# = more forgiving of transient outages.
+SMS_BOUNCE_STRIKE_THRESHOLD = int(os.environ.get('SMS_BOUNCE_STRIKE_THRESHOLD', '3'))
 # Lookback window (days) for the daily AI event-summary auto-regeneration scan. Only
 # events that ended within this many days are re-examined for data changes; changes to
 # older events stop triggering regeneration. Bounds daily cost/work — widen if organizers

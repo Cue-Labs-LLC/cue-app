@@ -41,7 +41,7 @@ from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
-    with_stop_footer, TWILIO_OPT_OUT_ERROR_CODES,
+    with_stop_footer, handle_delivery_failure,
 )
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
@@ -1233,19 +1233,21 @@ def twilio_sms_status_webhook(request):
     recipient.status = new_status
     if new_status == SMSMessageRecipient.Status.DELIVERED and not recipient.delivered_at:
         recipient.delivered_at = timezone.now()
-    if new_status in (SMSMessageRecipient.Status.FAILED, SMSMessageRecipient.Status.UNDELIVERED):
+    is_failure = new_status in (
+        SMSMessageRecipient.Status.FAILED, SMSMessageRecipient.Status.UNDELIVERED,
+    )
+    if is_failure:
         recipient.error_code = request.POST.get('ErrorCode', '') or recipient.error_code
         recipient.error_message = request.POST.get('ErrorMessage', '') or recipient.error_message
-        # A carrier/Twilio opt-out block (21610) arriving via callback rather than the
-        # inbound OptOutType webhook: mirror it into suppression so we never re-attempt.
-        if recipient.error_code in TWILIO_OPT_OUT_ERROR_CODES and recipient.phone:
-            PhoneSuppression.objects.get_or_create(
-                phone=recipient.phone, organization=None,
-                defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
-            )
     recipient.save(update_fields=[
         'status', 'delivered_at', 'error_code', 'error_message', 'updated_at',
     ])
+    # Suppress opted-out (21610), hard-bounced, or repeatedly-transient numbers so no
+    # campaign re-attempts a dead/blocked handset. This callback can arrive instead of
+    # the inbound OptOutType webhook, so it must learn from the block itself. Runs AFTER
+    # save so the strike tally for transient codes includes this failure.
+    if is_failure:
+        handle_delivery_failure(recipient.phone, recipient.error_code)
     return HttpResponse(status=200)
 
 

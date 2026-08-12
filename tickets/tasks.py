@@ -1082,7 +1082,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     from django.urls import reverse, NoReverseMatch
     from django.utils import timezone as tz
     from tickets.models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
-    from tickets.sms import send_sms, TWILIO_OPT_OUT_ERROR_CODES
+    from tickets.sms import send_sms, handle_delivery_failure
 
     campaign = SMSCampaign.objects.filter(id=campaign_id).select_related('organization').first()
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
@@ -1161,15 +1161,12 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
             r.status = SMSMessageRecipient.Status.FAILED
             r.error_code = err_code or ''
             r.error_message = 'send failed'
-            # Twilio rejected because the number is opted out (21610). The inbound
-            # OptOutType webhook can miss opt-outs, so learn from the block itself and
-            # suppress the number globally — no campaign ever re-attempts it.
-            if err_code in TWILIO_OPT_OUT_ERROR_CODES:
-                PhoneSuppression.objects.get_or_create(
-                    phone=r.phone, organization=None,
-                    defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
-                )
         r.save(update_fields=update_fields)
+        # Suppress opted-out (21610), hard-bounced, or repeatedly-transient numbers so
+        # no campaign re-attempts a dead/blocked handset. Runs AFTER save so the strike
+        # tally for transient codes includes this failure. See handle_delivery_failure.
+        if not ok:
+            handle_delivery_failure(r.phone, err_code)
 
 
 @shared_task
