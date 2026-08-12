@@ -364,6 +364,43 @@ button.detail-meta-weather--severe:focus-visible {
     </ol>
 </nav>
 
+{% if importing_upload_id %}
+<div id="csv-importing-banner" class="alert alert-info d-flex align-items-center gap-2"
+     role="status" data-status-url="{% url 'tickets:upload_status_api' importing_upload_id %}">
+    <span class="spinner-border spinner-border-sm flex-shrink-0" aria-hidden="true"></span>
+    <span>Importing your CSV — customers and orders will appear here once it finishes.</span>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var banner = document.getElementById('csv-importing-banner');
+    if (!banner) return;
+    var statusUrl = banner.getAttribute('data-status-url');
+    function cleanUrl() {
+        var u = new URL(window.location.href);
+        u.searchParams.delete('importing');
+        return u.pathname + u.search;
+    }
+    function poll() {
+        fetch(statusUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.status === 'completed') {
+                    window.location.replace(cleanUrl());
+                } else if (data.status === 'failed') {
+                    banner.classList.remove('alert-info');
+                    banner.classList.add('alert-danger');
+                    banner.innerHTML = "We couldn't import that CSV. Please review the file and try again.";
+                } else {
+                    setTimeout(poll, 2000);
+                }
+            })
+            .catch(function () { setTimeout(poll, 4000); });
+    }
+    setTimeout(poll, 2000);
+});
+</script>
+{% endif %}
+
 <div class="page-header">
     <div>
         <h1 class="d-flex flex-wrap align-items-center gap-1" style="line-height: 1.4;">

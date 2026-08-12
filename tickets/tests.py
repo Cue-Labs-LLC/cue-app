@@ -22211,7 +22211,9 @@ class ExternalEventCreateCSVTests(TestCase):
             'talent-MIN_NUM_FORMS': '0', 'talent-MAX_NUM_FORMS': '1000',
         }
 
-    def test_create_with_csv_ingests_and_redirects_to_results(self):
+    def test_create_with_csv_still_processing_redirects_to_event(self):
+        # delay() patched to a no-op → upload stays 'pending' (mimics async prod),
+        # so we land on the event with the ?importing banner param.
         csv = self._SimpleUploadedFile(
             'orders.csv', b'Order ID,Price\nA-1,10.00\n', content_type='text/csv',
         )
@@ -22228,7 +22230,49 @@ class ExternalEventCreateCSVTests(TestCase):
         self.assertEqual(uploaded.csv_format, self.csv_format)
         self.assertTrue(mock_delay.called)
         self.assertRedirects(
-            resp, reverse('tickets:upload_results', args=[uploaded.id]),
+            resp,
+            f"{reverse('tickets:event_detail', args=[event.id])}?importing={uploaded.id}",
+            fetch_redirect_response=False,
+        )
+
+    def test_create_with_csv_completed_redirects_to_event(self):
+        # delay() marks the upload completed (mimics eager/finished) → land on the
+        # event detail page with no ?importing param.
+        def _complete(file_id, *a, **kw):
+            UploadedFile.objects.filter(id=file_id).update(status='completed')
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nA-1,10.00\n', content_type='text/csv',
+        )
+        payload = self._base_payload()
+        payload['csv_file'] = csv
+        payload['csv_format'] = str(self.csv_format.id)
+        with patch('tickets.tasks.process_csv_task.delay', side_effect=_complete):
+            resp = self.client.post(
+                reverse('tickets:event_create', args=['external']), payload,
+            )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        self.assertRedirects(
+            resp, reverse('tickets:event_detail', args=[event.id]),
+            fetch_redirect_response=False,
+        )
+
+    def test_per_event_upload_redirects_to_event(self):
+        event = Event.objects.create(
+            organization=self.org, name='Upload Target', venue=self.venue,
+            ticketing_type='external', start_date=date(2025, 3, 10), start_time=time(20, 0),
+        )
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nB-1,12.00\n', content_type='text/csv',
+        )
+        with patch('tickets.tasks.process_csv_task.delay'):
+            resp = self.client.post(
+                reverse('tickets:event_upload_csv', args=[event.id]),
+                {'csv_file': csv, 'csv_format': str(self.csv_format.id)},
+            )
+        uploaded = UploadedFile.objects.get(organization=self.org)
+        self.assertRedirects(
+            resp,
+            f"{reverse('tickets:event_detail', args=[event.id])}?importing={uploaded.id}",
             fetch_redirect_response=False,
         )
 

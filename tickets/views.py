@@ -2639,7 +2639,28 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
         manual_prices=serialized_prices,
         tier_definitions=serialized_tiers,
     )
-    return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    # Return to the event the upload belongs to rather than the standalone results
+    # page. Every upload is event-linked via metadata['event_id']; fall back to the
+    # results page defensively if it isn't.
+    uploaded_file.refresh_from_db()
+    event_id = uploaded_file.metadata.get('event_id')
+    if not event_id:
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    if uploaded_file.status == 'failed':
+        messages.error(request, "We couldn't import that CSV. Review the details and try again.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    if uploaded_file.status in ('pending', 'processing'):
+        # Async (prod): still importing — the event page shows a live banner via ?importing.
+        return redirect(
+            f"{reverse('tickets:event_detail', args=[event_id])}?importing={uploaded_file.id}"
+        )
+
+    # Completed (dev eager, or a fast import): orders are already attached to the event.
+    messages.success(request, "Your CSV has been imported.")
+    return redirect('tickets:event_detail', event_id=event_id)
 
 
 @login_required
@@ -6398,6 +6419,18 @@ def event_detail(request, event_id):
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
+        # A just-queued CSV import (?importing=<file_id>) drives a live "still
+        # importing" banner that polls upload_status_api until processing finishes.
+        context['importing_upload_id'] = None
+        importing_id = request.GET.get('importing')
+        if importing_id:
+            try:
+                _uuid.UUID(str(importing_id))
+            except (ValueError, TypeError):
+                pass
+            else:
+                if UploadedFile.objects.filter(organization=org, id=importing_id).exists():
+                    context['importing_upload_id'] = importing_id
     if event.ticketing_type == 'direct':
         _mrp_total = Decimal('0.00')
         _mrp_has_limit = False
