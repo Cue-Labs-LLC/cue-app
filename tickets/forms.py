@@ -1895,12 +1895,30 @@ class UserProfileForm(forms.Form):
         required=False,
     )
     marketing_opt_in = forms.BooleanField(required=False, label='Marketing emails')
+    instagram_handle = forms.CharField(
+        max_length=30, required=False, label='Instagram handle',
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': '@yourhandle',
+        }),
+    )
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.user = user
         self.helper = FormHelper()
         self.helper.form_tag = False
+
+    def clean_instagram_handle(self):
+        raw = (self.cleaned_data.get('instagram_handle') or '').strip()
+        handle = raw.lstrip('@').strip()
+        if not handle:
+            return ''
+        if not _re.match(r'^[A-Za-z0-9._]{1,30}$', handle):
+            raise forms.ValidationError(
+                'Use only letters, numbers, periods, and underscores.'
+            )
+        return handle
 
     def clean_phone_number(self):
         raw = self.cleaned_data.get('phone_number', '').strip()
@@ -1927,7 +1945,10 @@ class UserProfileForm(forms.Form):
         profile.phone_number     = data.get('phone_number') or None
         profile.gender           = data.get('gender') or ''
         profile.marketing_opt_in = data.get('marketing_opt_in', False)
-        profile.save(update_fields=['phone_number', 'gender', 'marketing_opt_in'])
+        profile.instagram_handle = data.get('instagram_handle', '')
+        profile.save(update_fields=[
+            'phone_number', 'gender', 'marketing_opt_in', 'instagram_handle',
+        ])
 
 
 class WaitlistJoinForm(forms.Form):

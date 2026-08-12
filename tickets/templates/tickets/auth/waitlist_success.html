@@ -1,6 +1,6 @@
 {% extends 'tickets/attendee_base.html' %}
 
-{% block title %}You're on the list - Cue Up{% endblock %}
+{% block title %}You're on the list - Cue{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -77,7 +77,7 @@
       <i class="bi bi-check-lg"></i>
     </div>
     <h1>You're on the list</h1>
-    <p class="mb-4">We'll reach out as soon as your spot opens up. Thanks for your interest in Cue Up.</p>
+    <p class="mb-4">We'll reach out as soon as your spot opens up. Thanks for your interest in Cue.</p>
     {% if browse_events_enabled %}
     <a href="{% url 'tickets:explore' %}" class="btn-outline-dark">
       <i class="bi bi-arrow-left"></i> Explore public events
