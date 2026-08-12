@@ -297,6 +297,33 @@ def _event_context(event):
     }
 
 
+def _step_send_timing(step, event):
+    """This step's send timing relative to its event, for the single-message prompt.
+
+    Returns ``{'label', 'days_before_event', 'is_day_of'}`` derived from the step's stored
+    ``send_at`` and the event's start date, or ``None`` when either is missing (e.g. a segment
+    plan with no event, or a not-yet-scheduled step). Lets the drafter write copy whose urgency
+    matches when THIS message actually goes out, not the plan-wide days-until-event.
+    """
+    from datetime import datetime
+
+    if event is None or not getattr(event, 'start_date', None):
+        return None
+    raw = step.get('send_at')
+    if not raw:
+        return None
+    try:
+        send_date = datetime.fromisoformat(raw).date()
+    except (ValueError, TypeError):
+        return None
+    days_before = (event.start_date - send_date).days
+    return {
+        'label': step.get('timing_label'),
+        'days_before_event': days_before,
+        'is_day_of': days_before == 0,
+    }
+
+
 def _build_step_criteria(organization, base_criteria, event):
     """The filter_criteria a launched step should prefill the composer with.
 
@@ -529,11 +556,20 @@ def regenerate_step_message(organization, *, event=None, criteria=None, objectiv
         'current_message': step.get('body'),
         'other_messages_in_sequence': others or '(this is the only message)',
     }
+    # Tell the model how THIS message sits relative to the event, so its urgency matches the
+    # actual send date (e.g. day-of -> "tonight"/"last chance") rather than the plan-wide
+    # days_until_event (which is measured from today, not from this touch's send date).
+    send_timing = _step_send_timing(step, event)
+    if send_timing is not None:
+        focus['send_timing'] = send_timing
     user_content = (
         "Rewrite ONE message in an existing SMS campaign sequence, in this organizer's own "
         "brand voice (see brand_voice_samples). Keep the same purpose, audience, and send "
         "timing shown in 'regenerate_step'; produce a fresh take on the wording that is clearly "
         "different from 'current_message' and does not repeat the 'other_messages_in_sequence'. "
+        "Match the urgency to 'regenerate_step.send_timing' when present — for a day-of-event "
+        "send lean into tonight/last-chance framing, and for one still days out avoid "
+        "false urgency; prefer it over the plan-wide 'days_until_event'. "
         "Use only the data provided — do not invent dates, prices, or links.\n\n"
         f"{json.dumps({'context': context, 'regenerate_step': focus}, default=_json_default)}"
     )

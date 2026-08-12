@@ -729,6 +729,64 @@ class SMSStrategistViewTests(TestCase):
         self.assertLess(before, suggested)
         self.assertLess(suggested, after)
 
+    @patch('langchain_openai.ChatOpenAI')
+    def test_draft_message_appends_one_day_after_last(self, mock_openai):
+        # Appending at the bottom defaults to a day after the last message, same time of day —
+        # not the same date (the reported bug), and not the old "+3 days".
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        mock_openai.return_value = _fake_regen_llm()
+
+        from datetime import datetime, time as dtime
+        tz = self.org.get_timezone()
+        # One step, comfortably before the event (10 days out) at 6 PM.
+        last = datetime.combine(self.event.start_date - timedelta(days=10), dtime(18, 0), tzinfo=tz)
+        plan.steps = [plan.steps[0]]
+        plan.steps[0]['send_at'] = last.isoformat()
+        plan.steps[0]['send_time'] = '18:00'
+        plan.save(update_fields=['steps', 'updated_at'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_draft_message', kwargs={'pk': plan.id}),
+            {'after_step': '0'},
+        )
+        suggested = datetime.strptime(resp.json()['send_local'], '%Y-%m-%dT%H:%M')
+        self.assertEqual(suggested.date(), last.date() + timedelta(days=1))
+        self.assertEqual(suggested.time(), dtime(18, 0))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_draft_message_day_of_slot_when_next_day_is_event(self, mock_openai):
+        # When +1 day lands on the event day, keep it on the event day at a LATER time, before
+        # doors — instead of collapsing onto the previous (day-before) message's date.
+        mock_openai.return_value = _fake_structured_llm()
+        self._gen({'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        mock_openai.return_value = _fake_regen_llm()
+
+        from datetime import datetime, time as dtime
+        tz = self.org.get_timezone()
+        self.event.start_time = dtime(21, 0)   # 9 PM doors
+        self.event.save(update_fields=['start_time'])
+        # Last message is the day before the event at 6 PM (the reported "last chance" case).
+        day_before = datetime.combine(
+            self.event.start_date - timedelta(days=1), dtime(18, 0), tzinfo=tz,
+        )
+        plan.steps = [plan.steps[0]]
+        plan.steps[0]['send_at'] = day_before.isoformat()
+        plan.steps[0]['send_time'] = '18:00'
+        plan.save(update_fields=['steps', 'updated_at'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_draft_message', kwargs={'pk': plan.id}),
+            {'after_step': '0'},
+        )
+        suggested = datetime.strptime(resp.json()['send_local'], '%Y-%m-%dT%H:%M')
+        # On the event DAY (not the day-before date), later than 6 PM, before 9 PM doors.
+        self.assertEqual(suggested.date(), self.event.start_date)
+        self.assertGreater(suggested.time(), dtime(18, 0))
+        self.assertLess(suggested.time(), dtime(21, 0))
+
     # --- Confirm & schedule all -----------------------------------------------
 
     @patch('langchain_openai.ChatOpenAI')
