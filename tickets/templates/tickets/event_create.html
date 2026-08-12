@@ -63,11 +63,13 @@
                                     <i class="bi bi-image fs-1 mb-2"></i>
                                     <p class="mb-0">Click or drop an image to add a flyer</p>
                                 </div>
-                                <div id="flyer-preview" class="d-none h-100 position-relative">
+                                <div id="flyer-preview" class="d-none h-100">
                                     <img id="flyer-preview-img" src="" alt="Event flyer preview" style="width: 100%; height: 100%; object-fit: cover;">
-                                    <p class="small text-muted position-absolute bottom-0 start-50 translate-middle-x pb-2">Click or drag to replace</p>
                                 </div>
                             </div>
+                            <p class="small text-muted mt-2 mb-1 text-center d-none" id="flyer-replace-hint">
+                                <i class="bi bi-arrow-repeat"></i> Click or drag to replace
+                            </p>
                             <p class="small text-muted mt-2 mb-1 text-center">
                                 <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
                             </p>
@@ -220,6 +222,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var flyerPlaceholder = document.getElementById('flyer-placeholder');
     var flyerPreview = document.getElementById('flyer-preview');
     var flyerPreviewImg = document.getElementById('flyer-preview-img');
+    var flyerReplaceHint = document.getElementById('flyer-replace-hint');
     if (flyerZone && flyerInput) {
         function showPreview(file) {
             if (!file || !file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name)) return;
@@ -228,6 +231,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 flyerPreviewImg.src = e.target.result;
                 flyerPlaceholder.classList.add('d-none');
                 flyerPreview.classList.remove('d-none');
+                if (flyerReplaceHint) flyerReplaceHint.classList.remove('d-none');
             };
             reader.readAsDataURL(file);
         }
