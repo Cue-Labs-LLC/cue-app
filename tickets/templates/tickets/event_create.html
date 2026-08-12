@@ -7,12 +7,13 @@
 <style>
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
-/* Compact field spacing for the import (external) create form. */
-.compact-form .mb-3 { margin-bottom: 0.6rem; }
-.compact-form .form-label { margin-bottom: 0.2rem; }
-.compact-form .form-control, .compact-form .form-select { padding-top: 0.35rem; padding-bottom: 0.35rem; }
-.compact-form .form-text { margin-top: 0.15rem; font-size: 0.75rem; }
-.compact-form .row { --bs-gutter-y: 0; }
+/* Size short fields to their content instead of stretching the full container. */
+.import-form #id_name { max-width: 560px; }
+.import-form #id_start_datetime,
+.import-form #id_end_datetime { max-width: 260px; }
+.import-form #id_capacity { max-width: 220px; }
+.import-form #id_timezone { max-width: 320px; }
+.import-form #id_ticket_link { max-width: 480px; }
 .tt-drag-handle { user-select: none; }
 .tt-drag-handle:hover { color: var(--bs-body-color) !important; }
 .tt-row-drag { cursor: grabbing !important; }
@@ -163,7 +164,7 @@
         {% else %}
         <div class="row">
         <div class="col-lg-8 mx-auto">
-        <form method="post" enctype="multipart/form-data" class="compact-form">
+        <form method="post" enctype="multipart/form-data" class="import-form">
             {% csrf_token %}
             <div class="card">
                 <div class="card-body">
