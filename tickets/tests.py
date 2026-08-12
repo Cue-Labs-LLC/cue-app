@@ -22242,3 +22242,68 @@ class ExternalEventCreateCSVTests(TestCase):
             resp, reverse('tickets:event_detail', args=[event.id]),
             fetch_redirect_response=False,
         )
+
+
+class EventDateTimeFieldTests(TestCase):
+    """Combined start/end datetime-local inputs on the event forms."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='DT Form Org', slug='dt-form-org', external_events_enabled=True,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='DT Venue', city='Austin', state='TX', country='US',
+        )
+
+    def _external_form(self, **overrides):
+        from .forms import EventForm
+        data = {
+            'name': 'DT Show', 'ticketing_type': 'external', 'venue': str(self.venue.id),
+            'start_datetime': '2025-03-10T20:00', 'end_datetime': '2025-03-10T23:00',
+            'timezone': 'America/Chicago', 'ticket_link': '',
+        }
+        data.update(overrides)
+        return EventForm(data=data, organization=self.org, ticketing_type_locked=True)
+
+    def test_combined_datetime_splits_into_model_fields(self):
+        form = self._external_form()
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['start_date'], date(2025, 3, 10))
+        self.assertEqual(form.cleaned_data['start_time'], time(20, 0))
+        self.assertEqual(form.cleaned_data['end_date'], date(2025, 3, 10))
+        self.assertEqual(form.cleaned_data['end_time'], time(23, 0))
+
+    def test_rejects_end_before_start(self):
+        form = self._external_form(end_datetime='2025-03-10T19:00')
+        self.assertFalse(form.is_valid())
+        self.assertIn('end_datetime', form.errors)
+
+    def test_missing_start_is_required(self):
+        form = self._external_form(start_datetime='')
+        self.assertFalse(form.is_valid())
+        self.assertIn('start_datetime', form.errors)
+
+    def test_legacy_separate_date_time_still_accepted(self):
+        # Programmatic posts that still send the split fields keep working.
+        from .forms import EventForm
+        form = EventForm(
+            data={
+                'name': 'Legacy', 'ticketing_type': 'external', 'venue': str(self.venue.id),
+                'start_date': '2025-03-10', 'start_time': '20:00',
+                'end_date': '2025-03-10', 'end_time': '23:00',
+                'timezone': 'America/Chicago', 'ticket_link': '',
+            }, organization=self.org, ticketing_type_locked=True,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['start_time'], time(20, 0))
+
+    def test_edit_prefills_combined_datetime(self):
+        from .forms import EventForm
+        event = Event.objects.create(
+            organization=self.org, name='Edit DT', venue=self.venue, ticketing_type='external',
+            start_date=date(2025, 3, 10), start_time=time(20, 0),
+            end_date=date(2025, 3, 10), end_time=time(23, 0),
+        )
+        form = EventForm(instance=event, organization=self.org, ticketing_type_locked=True)
+        self.assertEqual(form.initial.get('start_datetime'), datetime(2025, 3, 10, 20, 0))
+        self.assertEqual(form.initial.get('end_datetime'), datetime(2025, 3, 10, 23, 0))
