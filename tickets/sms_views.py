@@ -3489,16 +3489,53 @@ def sms_plan_add_step_after(request, pk, step):
     return redirect('tickets:sms_plan_detail', pk=plan.id)
 
 
+def _event_start_dt(event, tz):
+    """The event's start as an aware datetime, or ``None`` when it has no date.
+
+    Falls back to end-of-day when the event has a date but no start time, so an
+    all-day/unspecified event still gives the scheduler a sane "before doors" ceiling.
+    """
+    from datetime import datetime, time as dtime
+
+    if event is None or not event.start_date:
+        return None
+    start_time = getattr(event, 'start_time', None) or dtime(23, 59)
+    return datetime.combine(event.start_date, start_time, tzinfo=tz)
+
+
+def _event_day_send_slot(anchor, event, tz):
+    """A day-of-event send slot: later than ``anchor``, but safely before doors.
+
+    Used when a new message would otherwise land on (or past) the event day. Keeps the
+    message on the event day at ``anchor``'s time of day, then nudges it halfway toward a
+    ~1-hour-before-doors ceiling — so repeatedly adding day-of touches creeps each one closer
+    to the start without ever passing it. Returns ``None`` when the event has no date.
+    """
+    from datetime import datetime, timedelta
+
+    from .services.sms_strategist import EVENT_START_LEAD_MINUTES
+
+    event_start = _event_start_dt(event, tz)
+    if event_start is None:
+        return None
+    cap = event_start - timedelta(minutes=EVENT_START_LEAD_MINUTES)
+    day_base = datetime.combine(event.start_date, anchor.time(), tzinfo=tz)
+    if day_base >= cap:
+        return cap
+    return day_base + (cap - day_base) / 2
+
+
 def _suggested_next_send_at(org, plan, after_step=None):
     """A sensible send time for a message inserted after ``after_step`` (the "+" position).
 
     Slots the suggestion **between the two messages the "+" sits between** — the midpoint of the
-    step-before's and step-after's send times. When there's no next message (appending at the
-    end) or a neighbor is unscheduled, falls back to a few days after the anchor touch (or the
-    plan's latest touch, or now). Always pulled before the event and never in the past, mirroring
-    the strategist's scheduling guards, so the slot is valid and the organizer can adjust it.
+    step-before's and step-after's send times. When appending at the end, defaults to **one day
+    after** the previous message at the same time of day; if that lands on/after the event day,
+    it becomes a day-of slot (later than the previous message, before doors — see
+    ``_event_day_send_slot``). Always kept before the event and never in the past, mirroring the
+    strategist's scheduling guards, so the slot is valid and the organizer can adjust it.
     """
-    from datetime import datetime, time as dtime, timedelta
+    from datetime import datetime, timedelta
 
     tz = org.get_timezone()
     now = timezone.now().astimezone(tz)
@@ -3522,10 +3559,12 @@ def _suggested_next_send_at(org, plan, after_step=None):
         # Midpoint between the two neighbors — right in the gap the "+" was opened from.
         suggested = before_dt + (next_dt - before_dt) / 2
     elif before_dt:
-        # Appending after this message (no scheduled next): a few days later at 6 PM.
-        suggested = datetime.combine((before_dt + timedelta(days=3)).date(), dtime(18, 0), tzinfo=tz)
+        # Appending after this message (no scheduled next): one day later, same time of day.
+        suggested = datetime.combine(
+            (before_dt + timedelta(days=1)).date(), before_dt.time(), tzinfo=tz,
+        )
     else:
-        # No positional anchor — a few days after the plan's latest touch (or now).
+        # No positional anchor — a day after the plan's latest touch (or now), same time.
         latest = now
         for s in steps:
             raw = s.get('send_at')
@@ -3537,18 +3576,19 @@ def _suggested_next_send_at(org, plan, after_step=None):
                 continue
             if dt > latest:
                 latest = dt
-        suggested = datetime.combine((latest + timedelta(days=3)).date(), dtime(18, 0), tzinfo=tz)
+        suggested = datetime.combine(
+            (latest + timedelta(days=1)).date(), latest.time(), tzinfo=tz,
+        )
 
     event = plan.event if plan.event_id else None
-    if event is not None and event.start_date:
-        if getattr(event, 'start_time', None):
-            event_start = datetime.combine(event.start_date, event.start_time, tzinfo=tz)
-        else:
-            event_start = datetime.combine(event.start_date, dtime(23, 59), tzinfo=tz)
-        if suggested >= event_start:
-            suggested = datetime.combine(
-                event.start_date - timedelta(days=1), dtime(18, 0), tzinfo=tz,
-            )
+    event_start = _event_start_dt(event, tz)
+    if event_start is not None:
+        appending = not (before_dt and next_dt and next_dt > before_dt)
+        # Appending onto the event day (the day-after landed there) — or any slot that spilled
+        # past doors — collapses to a day-of slot: on the event day, later than the previous
+        # message, before the show starts (see _event_day_send_slot).
+        if (appending and suggested.date() >= event.start_date) or suggested >= event_start:
+            suggested = _event_day_send_slot(before_dt or suggested, event, tz)
 
     earliest = (now + timedelta(minutes=15)).replace(second=0, microsecond=0)
     if suggested < earliest:
@@ -3580,12 +3620,31 @@ def sms_plan_draft_message(request, pk):
         regenerate_step_message, plan_audience_label, format_send_label, SMSStrategistError,
     )
     ticket_url = _event_ticket_url(request, org, plan.event) if plan.event else ''
+
+    # Compute the suggested send time FIRST so the AI drafts copy for the message's ACTUAL
+    # timing (e.g. day-of), not the plan-wide days-until-event. The connector "+" position
+    # lands the slot between that gap's neighbors (or a day after the last touch).
+    try:
+        after_step = int(request.POST.get('after_step'))
+    except (TypeError, ValueError):
+        after_step = None
+    suggested = _suggested_next_send_at(org, plan, after_step=after_step)
+
     transient = {
         'purpose': 'follow_up',
         'audience_label': plan_audience_label(org, plan.filter_criteria or {}),
-        'timing_label': 'Set a send time',
+        'timing_label': format_send_label(suggested),
         'body': '',
     }
+    # Stamp the schedule (send_at/send_time/offset_days/timing_label) so the strategist can
+    # surface this message's real position relative to the event to the model.
+    try:
+        transient = _apply_step_schedule(
+            transient, suggested.strftime('%Y-%m-%dT%H:%M'), org,
+            plan.event if plan.event_id else None,
+        )
+    except ValueError:
+        pass
     try:
         result = regenerate_step_message(
             org, event=plan.event, criteria=plan.filter_criteria or None,
@@ -3595,12 +3654,6 @@ def sms_plan_draft_message(request, pk):
     except SMSStrategistError as exc:
         return JsonResponse({'ok': False, 'error': str(exc)}, status=503)
 
-    # The connector "+" position, so the suggested time lands between that gap's neighbors.
-    try:
-        after_step = int(request.POST.get('after_step'))
-    except (TypeError, ValueError):
-        after_step = None
-    suggested = _suggested_next_send_at(org, plan, after_step=after_step)
     return JsonResponse({
         'ok': True,
         'body': result['body'],
