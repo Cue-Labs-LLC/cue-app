@@ -7619,7 +7619,6 @@ def event_create(request, ticketing_type):
                 prefix='ticket_type',
             )
             _configure_direct_create_unlock_fields(ticket_formset)
-        no_venues = not Venue.objects.filter(organization=org).exists()
         venue_capacities = {
             str(v.id): v.capacity
             for v in Venue.objects.filter(organization=org)
@@ -7629,7 +7628,6 @@ def event_create(request, ticketing_type):
             'form': form,
             'ticket_formset': ticket_formset,
             'ticketing_type': ticketing_type,
-            'no_venues': no_venues,
             'venue_capacities_json': json.dumps(venue_capacities),
             'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
