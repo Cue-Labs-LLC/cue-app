@@ -125,19 +125,19 @@
                             <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
                                 {# View → public ticket page (disabled when a CSV-imported event has none) #}
                                 {% if event.ticketing_type == 'direct' %}
-                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-eye fs-6"></i></a>
+                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
                                 {% elif event.ticket_link %}
-                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-eye fs-6"></i></a>
+                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
                                 {% else %}
-                                <button type="button" class="btn btn-sm btn-secondary btn-icon disabled" disabled aria-disabled="true" title="No ticket page set"><i class="bi bi-eye fs-6"></i></button>
+                                <button type="button" class="btn btn-sm btn-icon disabled" disabled aria-disabled="true" title="No ticket page set"><i class="bi bi-link-45deg fs-6"></i></button>
                                 {% endif %}
-                                <button type="button" class="btn btn-sm btn-secondary btn-icon js-duplicate-event" title="Duplicate event"
+                                <button type="button" class="btn btn-sm btn-icon js-duplicate-event" title="Duplicate event"
                                     data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
                                     data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
                                     data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
                                     data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
                                     data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files fs-6"></i></button>
-                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-secondary btn-icon" title="Edit event"><i class="bi bi-pencil fs-6"></i></a>
+                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-icon" title="Edit event"><i class="bi bi-pencil fs-6"></i></a>
                             </div>
                         </td>
                     </tr>
