@@ -618,7 +618,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var applyBtn = document.getElementById('pricing-apply-btn');
     var eventVenueInput = document.getElementById('id_venue');
     var eventCapacityInput = document.getElementById('id_capacity');
-    var eventStartDateInput = document.getElementById('id_start_date');
+    var eventStartDateInput = document.getElementById('id_start_datetime');
     var feedback = document.getElementById('pricing-reco-feedback');
     var loading = document.getElementById('pricing-reco-loading');
     var results = document.getElementById('pricing-reco-results');
@@ -696,7 +696,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var params = new URLSearchParams();
       if (eventVenueInput && eventVenueInput.value) params.set('venue_id', eventVenueInput.value);
       if (eventCapacityInput && eventCapacityInput.value) params.set('capacity', eventCapacityInput.value);
-      if (eventStartDateInput && eventStartDateInput.value) params.set('start_date', eventStartDateInput.value);
+      if (eventStartDateInput && eventStartDateInput.value) params.set('start_date', eventStartDateInput.value.split('T')[0]);
       var url = endpoint + (params.toString() ? ('?' + params.toString()) : '');
       fetch(url, {
         headers: {

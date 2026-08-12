@@ -2639,7 +2639,28 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
         manual_prices=serialized_prices,
         tier_definitions=serialized_tiers,
     )
-    return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    # Return to the event the upload belongs to rather than the standalone results
+    # page. Every upload is event-linked via metadata['event_id']; fall back to the
+    # results page defensively if it isn't.
+    uploaded_file.refresh_from_db()
+    event_id = uploaded_file.metadata.get('event_id')
+    if not event_id:
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    if uploaded_file.status == 'failed':
+        messages.error(request, "We couldn't import that CSV. Review the details and try again.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    if uploaded_file.status in ('pending', 'processing'):
+        # Async (prod): still importing — the event page shows a live banner via ?importing.
+        return redirect(
+            f"{reverse('tickets:event_detail', args=[event_id])}?importing={uploaded_file.id}"
+        )
+
+    # Completed (dev eager, or a fast import): orders are already attached to the event.
+    messages.success(request, "Your CSV has been imported.")
+    return redirect('tickets:event_detail', event_id=event_id)
 
 
 @login_required
@@ -6398,6 +6419,18 @@ def event_detail(request, event_id):
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
+        # A just-queued CSV import (?importing=<file_id>) drives a live "still
+        # importing" banner that polls upload_status_api until processing finishes.
+        context['importing_upload_id'] = None
+        importing_id = request.GET.get('importing')
+        if importing_id:
+            try:
+                _uuid.UUID(str(importing_id))
+            except (ValueError, TypeError):
+                pass
+            else:
+                if UploadedFile.objects.filter(organization=org, id=importing_id).exists():
+                    context['importing_upload_id'] = importing_id
     if event.ticketing_type == 'direct':
         _mrp_total = Decimal('0.00')
         _mrp_has_limit = False
@@ -7633,14 +7666,20 @@ def event_create(request, ticketing_type):
         }
         return render(request, 'tickets/event_create.html', context)
 
-    # External ticketing path (unchanged)
+    # External ticketing path — optionally imports a CSV of past orders inline.
     if request.method == 'POST':
         form = EventForm(
             request.POST, organization=org,
             ticketing_type_locked=True,
             hide_ticket_link=False,
         )
-        if form.is_valid():
+        # CSV is optional: only validate/ingest it when a file was actually dropped.
+        csv_provided = bool(request.FILES.get('csv_file'))
+        csv_form = (
+            EventCSVUploadForm(request.POST, request.FILES, organization=org)
+            if csv_provided else EventCSVUploadForm(organization=org)
+        )
+        if form.is_valid() and (not csv_provided or csv_form.is_valid()):
             event = form.save(commit=False)
             event.organization = org
             event.created_by = request.user
@@ -7665,6 +7704,16 @@ def event_create(request, ticketing_type):
             messages.success(request, f"Event '{event.name}' created successfully.")
             _sync_event_to_google_calendar(event)
             fire_event_created(event)
+            if csv_provided:
+                csv_format = csv_form.cleaned_data['csv_format']
+                uploaded_file = _create_event_upload(
+                    org, event,
+                    csv_form.cleaned_data['csv_file'], csv_format,
+                    notes=csv_form.cleaned_data.get('notes', ''),
+                )
+                if csv_format.requires_manual_pricing:
+                    return redirect('tickets:price_entry', file_id=uploaded_file.id)
+                return process_csv_file(request, uploaded_file)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(
@@ -7673,6 +7722,7 @@ def event_create(request, ticketing_type):
             hide_ticket_link=False,
             initial={'ticketing_type': ticketing_type},
         )
+        csv_form = EventCSVUploadForm(organization=org)
 
     venue_capacities = {
         str(v.id): v.capacity
@@ -7681,6 +7731,7 @@ def event_create(request, ticketing_type):
     }
     context = {
         'form': form,
+        'csv_form': csv_form,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
         'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
@@ -7784,6 +7835,33 @@ def event_edit(request, event_id):
     return render(request, 'tickets/event_edit.html', context)
 
 
+def _create_event_upload(org, event, csv_file, csv_format, notes=''):
+    """Create + store an UploadedFile linked to `event` via metadata['event_id'].
+
+    Shared by the per-event upload page (event_upload_csv) and the inline CSV
+    drop on the external event-create page.
+    """
+    uploaded_file = UploadedFile.objects.create(
+        organization=org,
+        csv_format=csv_format,
+        filename=csv_file.name,
+        description='',
+        source='',
+        metadata={
+            'notes': notes,
+            'event_id': str(event.id),
+            'event_name': event.name,
+            'event_start_date': event.start_date.isoformat() if event.start_date else '',
+            'event_start_time': event.start_time.isoformat() if event.start_time else '',
+            'venue_id': str(event.venue.id) if event.venue else '',
+            'venue_name': event.venue.name if event.venue else '',
+            'venue_city': event.venue.city if event.venue else '',
+        },
+    )
+    uploaded_file.csv_file.save(csv_file.name, csv_file, save=True)
+    return uploaded_file
+
+
 @login_required
 @require_org
 @require_host
@@ -7802,25 +7880,10 @@ def event_upload_csv(request, event_id):
             csv_file = form.cleaned_data['csv_file']
             csv_format = form.cleaned_data['csv_format']
 
-            uploaded_file = UploadedFile.objects.create(
-                organization=org,
-                csv_format=csv_format,
-                filename=csv_file.name,
-                description='',
-                source='',
-                metadata={
-                    'notes': form.cleaned_data.get('notes', ''),
-                    'event_id': str(event.id),
-                    'event_name': event.name,
-                    'event_start_date': event.start_date.isoformat() if event.start_date else '',
-                    'event_start_time': event.start_time.isoformat() if event.start_time else '',
-                    'venue_id': str(event.venue.id) if event.venue else '',
-                    'venue_name': event.venue.name if event.venue else '',
-                    'venue_city': event.venue.city if event.venue else '',
-                }
+            uploaded_file = _create_event_upload(
+                org, event, csv_file, csv_format,
+                notes=form.cleaned_data.get('notes', ''),
             )
-
-            uploaded_file.csv_file.save(csv_file.name, csv_file, save=True)
 
             if csv_format.requires_manual_pricing:
                 if is_ajax:

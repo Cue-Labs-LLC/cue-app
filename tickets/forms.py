@@ -1,5 +1,6 @@
 import json
 import re as _re
+from datetime import datetime, time as _time
 from django import forms
 from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
@@ -7,6 +8,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
+from django.utils.safestring import mark_safe
 from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint, AIRecommendation
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
@@ -1192,7 +1194,82 @@ EventTalentFormSet = modelformset_factory(
 )
 
 
-class EventForm(forms.ModelForm):
+class EventDateTimeFormMixin:
+    """Render an event's start/end as two ``datetime-local`` inputs.
+
+    The Event model keeps separate ``start_date``/``start_time``/``end_date``/
+    ``end_time`` fields; this mixin adds combined ``start_datetime`` /
+    ``end_datetime`` form fields, prefills them from the instance on edit, and
+    splits them back into the model fields in ``clean()``. The underlying
+    date/time fields are kept on the form (optional) so legacy/programmatic
+    posts that still send them separately continue to work as a fallback.
+    """
+
+    _DT_INPUT_FORMATS = ['%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S']
+
+    def _init_event_datetimes(self, *, end_required):
+        self._end_datetime_required = end_required
+        self.fields['start_datetime'] = forms.DateTimeField(
+            label='Start date & time', required=False,
+            input_formats=self._DT_INPUT_FORMATS,
+            widget=forms.DateTimeInput(
+                attrs={'type': 'datetime-local', 'class': 'form-control', 'required': True},
+                format='%Y-%m-%dT%H:%M',
+            ),
+        )
+        self.fields['end_datetime'] = forms.DateTimeField(
+            label='End date & time', required=False,
+            input_formats=self._DT_INPUT_FORMATS,
+            widget=forms.DateTimeInput(
+                attrs={'type': 'datetime-local', 'class': 'form-control',
+                       **({'required': True} if end_required else {})},
+                format='%Y-%m-%dT%H:%M',
+            ),
+        )
+        # The split fields are populated in clean(); they're no longer rendered.
+        for name in ('start_date', 'start_time', 'end_date', 'end_time'):
+            if name in self.fields:
+                self.fields[name].required = False
+        # Prefill the combined inputs from the instance on edit.
+        if not self.is_bound:
+            inst = getattr(self, 'instance', None)
+            if inst is not None and getattr(inst, 'pk', None):
+                if inst.start_date and self.initial.get('start_datetime') is None:
+                    self.initial['start_datetime'] = datetime.combine(
+                        inst.start_date, inst.start_time or _time(0, 0))
+                if inst.end_date and self.initial.get('end_datetime') is None:
+                    self.initial['end_datetime'] = datetime.combine(
+                        inst.end_date, inst.end_time or _time(0, 0))
+
+    def _resolve_event_datetimes(self, cleaned_data):
+        """Split the combined datetimes into the model's date/time fields and
+        run start/end ordering validation. Falls back to any separately-posted
+        date/time values when the combined inputs are absent."""
+        start_dt = cleaned_data.get('start_datetime')
+        end_dt = cleaned_data.get('end_datetime')
+        if start_dt:
+            cleaned_data['start_date'] = start_dt.date()
+            cleaned_data['start_time'] = start_dt.time()
+        if end_dt:
+            cleaned_data['end_date'] = end_dt.date()
+            cleaned_data['end_time'] = end_dt.time()
+
+        if not cleaned_data.get('start_date'):
+            self.add_error('start_datetime', 'Start date & time is required.')
+        if getattr(self, '_end_datetime_required', False) and not cleaned_data.get('end_date'):
+            self.add_error('end_datetime', 'End date & time is required.')
+
+        s_date, s_time = cleaned_data.get('start_date'), cleaned_data.get('start_time')
+        e_date, e_time = cleaned_data.get('end_date'), cleaned_data.get('end_time')
+        if s_date and e_date:
+            if e_date < s_date:
+                self.add_error('end_datetime', 'End cannot be before the start.')
+            elif e_date == s_date and s_time and e_time and e_time <= s_time:
+                self.add_error('end_datetime', 'End must be after the start.')
+        return cleaned_data
+
+
+class EventForm(EventDateTimeFormMixin, forms.ModelForm):
     """Form for creating events."""
 
     class Meta:
@@ -1231,8 +1308,21 @@ class EventForm(forms.ModelForm):
         self.fields['description'].required = False
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
-        self.fields['start_time'].required = True
-        self.fields['end_time'].required = True
+        # Show the capacity/timezone hints as label tooltips rather than subtext
+        # below the fields. Bootstrap tooltips are auto-initialised in base.html.
+        for name, tip in (
+            ('capacity', 'Total ticket capacity for the event (optional)'),
+            ('timezone', 'Timezone where the event takes place'),
+        ):
+            field = self.fields[name]
+            field.label = mark_safe(
+                f'{field.label or name.title()} '
+                f'<i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" '
+                f'title="{tip}"></i>'
+            )
+            field.help_text = ''
+        # Combined start/end datetime inputs replace the four date/time fields.
+        self._init_event_datetimes(end_required=True)
 
         if ticketing_type_locked:
             self.fields['ticketing_type'].widget = forms.HiddenInput()
@@ -1250,15 +1340,13 @@ class EventForm(forms.ModelForm):
             Field('name'),
             Field('ticketing_type'),
             Row(
-                Column('venue', css_class='form-group col-md-4 mb-0'),
-                Column('start_date', css_class='form-group col-md-4 mb-0'),
-                Column('start_time', css_class='form-group col-md-4 mb-0'),
+                Column('start_datetime', css_class='form-group col-md-4 mb-0'),
+                Column('end_datetime', css_class='form-group col-md-4 mb-0'),
+                Column('timezone', css_class='form-group col-md-4 mb-0'),
             ),
             Row(
-                Column('end_date', css_class='form-group col-md-3 mb-0'),
-                Column('end_time', css_class='form-group col-md-3 mb-0'),
-                Column('capacity', css_class='form-group col-md-3 mb-0'),
-                Column('timezone', css_class='form-group col-md-3 mb-0'),
+                Column('venue', css_class='form-group col-md-6 mb-0'),
+                Column('capacity', css_class='form-group col-md-6 mb-0'),
             ),
             Field('description'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
@@ -1313,22 +1401,7 @@ class EventForm(forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
-        start_date = cleaned_data.get('start_date')
-        start_time = cleaned_data.get('start_time')
-        end_date = cleaned_data.get('end_date')
-        end_time = cleaned_data.get('end_time')
-
-        if end_time and not end_date:
-            self.add_error('end_date', 'End date is required when end time is provided.')
-
-        if end_date and start_date:
-            if end_date < start_date:
-                self.add_error('end_date', 'End date cannot be before start date.')
-            elif end_date == start_date and end_time and start_time:
-                if end_time <= start_time:
-                    self.add_error('end_time', 'End time must be after start time on the same date.')
-
-        return cleaned_data
+        return self._resolve_event_datetimes(cleaned_data)
 
 
 
@@ -1577,7 +1650,7 @@ class VenueChoiceField(forms.ModelChoiceField):
         return " — ".join(parts)
 
 
-class DirectEventForm(forms.ModelForm):
+class DirectEventForm(EventDateTimeFormMixin, forms.ModelForm):
     """Form for creating a direct-ticketing event with venue selection."""
     venue = VenueChoiceField(
         queryset=Venue.objects.none(),
@@ -1609,9 +1682,8 @@ class DirectEventForm(forms.ModelForm):
         self.fields['summary'].required = False
         self.fields['description'].required = False
         self.fields['capacity'].required = False
-        self.fields['start_time'].required = True
-        self.fields['end_date'].required = True
-        self.fields['end_time'].required = True
+        # Combined start/end datetime inputs replace the four date/time fields.
+        self._init_event_datetimes(end_required=True)
         self.fields['flyer'].required = False
         self.fields['facebook_pixel_id'].required = False
 
@@ -1633,10 +1705,8 @@ class DirectEventForm(forms.ModelForm):
             Field('name'),
             Field('summary'),
             Row(
-                Column('start_date', css_class='form-group col-md-3 mb-0'),
-                Column('start_time', css_class='form-group col-md-3 mb-0'),
-                Column('end_date', css_class='form-group col-md-3 mb-0'),
-                Column('end_time', css_class='form-group col-md-3 mb-0'),
+                Column('start_datetime', css_class='form-group col-md-6 mb-0'),
+                Column('end_datetime', css_class='form-group col-md-6 mb-0'),
             ),
             Field('description'),
             Row(
@@ -1679,19 +1749,7 @@ class DirectEventForm(forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
-        start_date = cleaned_data.get('start_date')
-        start_time = cleaned_data.get('start_time')
-        end_date = cleaned_data.get('end_date')
-        end_time = cleaned_data.get('end_time')
-
-        if end_date and start_date:
-            if end_date < start_date:
-                self.add_error('end_date', 'End date cannot be before start date.')
-            elif end_date == start_date and end_time and start_time:
-                if end_time <= start_time:
-                    self.add_error('end_time', 'End time must be after start time on the same date.')
-
-        return cleaned_data
+        return self._resolve_event_datetimes(cleaned_data)
 
 
 class SaleableTicketTypeInlineForm(forms.ModelForm):

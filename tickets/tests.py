@@ -22167,3 +22167,187 @@ class EventListEmptyStateTests(TestCase):
         self.assertNotContains(resp, 'Import CSV')
         # The header "Create Event" button stays visible for search/filter misses.
         self.assertContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
+
+
+class ExternalEventCreateCSVTests(TestCase):
+    """Inline CSV import on the external ('Import Event') create page."""
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self._SimpleUploadedFile = SimpleUploadedFile
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Import CSV Org', slug='import-csv-org', external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='importer', email='importer@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Import Hall', city='Austin', state='TX', country='US',
+        )
+        # A format that carries its own price column → no manual price-entry step.
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Priced Format', requires_manual_pricing=False,
+            column_mapping={'order_number': 'Order ID', 'total_amount': 'Price'},
+        )
+
+    def _base_payload(self):
+        return {
+            'name': 'Imported Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10', 'start_time': '20:00',
+            'end_date': '2025-03-10', 'end_time': '22:00',
+            'timezone': 'America/Chicago', 'ticket_link': '',
+            'talent-TOTAL_FORMS': '0', 'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0', 'talent-MAX_NUM_FORMS': '1000',
+        }
+
+    def test_create_with_csv_still_processing_redirects_to_event(self):
+        # delay() patched to a no-op → upload stays 'pending' (mimics async prod),
+        # so we land on the event with the ?importing banner param.
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nA-1,10.00\n', content_type='text/csv',
+        )
+        payload = self._base_payload()
+        payload['csv_file'] = csv
+        payload['csv_format'] = str(self.csv_format.id)
+        with patch('tickets.tasks.process_csv_task.delay') as mock_delay:
+            resp = self.client.post(
+                reverse('tickets:event_create', args=['external']), payload,
+            )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        uploaded = UploadedFile.objects.get(organization=self.org)
+        self.assertEqual(uploaded.metadata.get('event_id'), str(event.id))
+        self.assertEqual(uploaded.csv_format, self.csv_format)
+        self.assertTrue(mock_delay.called)
+        self.assertRedirects(
+            resp,
+            f"{reverse('tickets:event_detail', args=[event.id])}?importing={uploaded.id}",
+            fetch_redirect_response=False,
+        )
+
+    def test_create_with_csv_completed_redirects_to_event(self):
+        # delay() marks the upload completed (mimics eager/finished) → land on the
+        # event detail page with no ?importing param.
+        def _complete(file_id, *a, **kw):
+            UploadedFile.objects.filter(id=file_id).update(status='completed')
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nA-1,10.00\n', content_type='text/csv',
+        )
+        payload = self._base_payload()
+        payload['csv_file'] = csv
+        payload['csv_format'] = str(self.csv_format.id)
+        with patch('tickets.tasks.process_csv_task.delay', side_effect=_complete):
+            resp = self.client.post(
+                reverse('tickets:event_create', args=['external']), payload,
+            )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        self.assertRedirects(
+            resp, reverse('tickets:event_detail', args=[event.id]),
+            fetch_redirect_response=False,
+        )
+
+    def test_per_event_upload_redirects_to_event(self):
+        event = Event.objects.create(
+            organization=self.org, name='Upload Target', venue=self.venue,
+            ticketing_type='external', start_date=date(2025, 3, 10), start_time=time(20, 0),
+        )
+        csv = self._SimpleUploadedFile(
+            'orders.csv', b'Order ID,Price\nB-1,12.00\n', content_type='text/csv',
+        )
+        with patch('tickets.tasks.process_csv_task.delay'):
+            resp = self.client.post(
+                reverse('tickets:event_upload_csv', args=[event.id]),
+                {'csv_file': csv, 'csv_format': str(self.csv_format.id)},
+            )
+        uploaded = UploadedFile.objects.get(organization=self.org)
+        self.assertRedirects(
+            resp,
+            f"{reverse('tickets:event_detail', args=[event.id])}?importing={uploaded.id}",
+            fetch_redirect_response=False,
+        )
+
+    def test_create_without_csv_goes_to_event_detail(self):
+        resp = self.client.post(
+            reverse('tickets:event_create', args=['external']), self._base_payload(),
+        )
+        event = Event.objects.get(organization=self.org, name='Imported Show')
+        self.assertEqual(UploadedFile.objects.filter(organization=self.org).count(), 0)
+        self.assertRedirects(
+            resp, reverse('tickets:event_detail', args=[event.id]),
+            fetch_redirect_response=False,
+        )
+
+
+class EventDateTimeFieldTests(TestCase):
+    """Combined start/end datetime-local inputs on the event forms."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='DT Form Org', slug='dt-form-org', external_events_enabled=True,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='DT Venue', city='Austin', state='TX', country='US',
+        )
+
+    def _external_form(self, **overrides):
+        from .forms import EventForm
+        data = {
+            'name': 'DT Show', 'ticketing_type': 'external', 'venue': str(self.venue.id),
+            'start_datetime': '2025-03-10T20:00', 'end_datetime': '2025-03-10T23:00',
+            'timezone': 'America/Chicago', 'ticket_link': '',
+        }
+        data.update(overrides)
+        return EventForm(data=data, organization=self.org, ticketing_type_locked=True)
+
+    def test_combined_datetime_splits_into_model_fields(self):
+        form = self._external_form()
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['start_date'], date(2025, 3, 10))
+        self.assertEqual(form.cleaned_data['start_time'], time(20, 0))
+        self.assertEqual(form.cleaned_data['end_date'], date(2025, 3, 10))
+        self.assertEqual(form.cleaned_data['end_time'], time(23, 0))
+
+    def test_rejects_end_before_start(self):
+        form = self._external_form(end_datetime='2025-03-10T19:00')
+        self.assertFalse(form.is_valid())
+        self.assertIn('end_datetime', form.errors)
+
+    def test_missing_start_is_required(self):
+        form = self._external_form(start_datetime='')
+        self.assertFalse(form.is_valid())
+        self.assertIn('start_datetime', form.errors)
+
+    def test_legacy_separate_date_time_still_accepted(self):
+        # Programmatic posts that still send the split fields keep working.
+        from .forms import EventForm
+        form = EventForm(
+            data={
+                'name': 'Legacy', 'ticketing_type': 'external', 'venue': str(self.venue.id),
+                'start_date': '2025-03-10', 'start_time': '20:00',
+                'end_date': '2025-03-10', 'end_time': '23:00',
+                'timezone': 'America/Chicago', 'ticket_link': '',
+            }, organization=self.org, ticketing_type_locked=True,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['start_time'], time(20, 0))
+
+    def test_edit_prefills_combined_datetime(self):
+        from .forms import EventForm
+        event = Event.objects.create(
+            organization=self.org, name='Edit DT', venue=self.venue, ticketing_type='external',
+            start_date=date(2025, 3, 10), start_time=time(20, 0),
+            end_date=date(2025, 3, 10), end_time=time(23, 0),
+        )
+        form = EventForm(instance=event, organization=self.org, ticketing_type_locked=True)
+        self.assertEqual(form.initial.get('start_datetime'), datetime(2025, 3, 10, 20, 0))
+        self.assertEqual(form.initial.get('end_datetime'), datetime(2025, 3, 10, 23, 0))
