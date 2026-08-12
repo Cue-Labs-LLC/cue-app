@@ -705,6 +705,12 @@ class UserProfile(models.Model):
     )
     marketing_opt_in = models.BooleanField(default=False)
     instagram_handle = models.CharField(max_length=30, blank=True, default='')
+    profile_picture = models.ImageField(
+        upload_to='user_avatars/',
+        storage=_get_media_storage,
+        blank=True,
+        null=True,
+    )
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
     stripe_customer_id = models.CharField(

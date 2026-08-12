@@ -1902,12 +1902,41 @@ class UserProfileForm(forms.Form):
             'placeholder': '@yourhandle',
         }),
     )
+    profile_picture = forms.ImageField(required=False, label='Profile picture')
+    remove_profile_picture = forms.BooleanField(required=False)
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.user = user
         self.helper = FormHelper()
         self.helper.form_tag = False
+
+    def clean_profile_picture(self):
+        file = self.cleaned_data.get('profile_picture')
+        if not file or not hasattr(file, 'name'):
+            return file
+        if getattr(file, 'content_type', '') and not file.content_type.startswith('image/'):
+            raise forms.ValidationError('Upload an image file.')
+        if file.size > 5 * 1024 * 1024:
+            raise forms.ValidationError('Image must be 5 MB or smaller.')
+        # Convert HEIC/HEIF (common from iPhones) to JPEG for browser compatibility.
+        heic_types = {'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'}
+        is_heic = (
+            getattr(file, 'content_type', '') in heic_types
+            or file.name.lower().endswith(('.heic', '.heif'))
+        )
+        if is_heic:
+            import io
+            from PIL import Image
+            from django.core.files.uploadedfile import InMemoryUploadedFile
+            img = Image.open(file)
+            img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=90)
+            buf.seek(0)
+            name = file.name.rsplit('.', 1)[0] + '.jpg'
+            file = InMemoryUploadedFile(buf, 'profile_picture', name, 'image/jpeg', buf.getbuffer().nbytes, None)
+        return file
 
     def clean_instagram_handle(self):
         raw = (self.cleaned_data.get('instagram_handle') or '').strip()
@@ -1946,8 +1975,15 @@ class UserProfileForm(forms.Form):
         profile.gender           = data.get('gender') or ''
         profile.marketing_opt_in = data.get('marketing_opt_in', False)
         profile.instagram_handle = data.get('instagram_handle', '')
+        if data.get('remove_profile_picture'):
+            if profile.profile_picture:
+                profile.profile_picture.delete(save=False)
+            profile.profile_picture = None
+        elif data.get('profile_picture'):
+            profile.profile_picture = data['profile_picture']
         profile.save(update_fields=[
             'phone_number', 'gender', 'marketing_opt_in', 'instagram_handle',
+            'profile_picture',
         ])
 
 

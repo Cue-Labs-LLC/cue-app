@@ -21,6 +21,68 @@
         font-weight: 800;
         letter-spacing: -0.02em;
         flex-shrink: 0;
+        overflow: hidden;
+    }
+    .profile-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    /* Avatar + remove button stacked and centered together */
+    .avatar-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        flex-shrink: 0;
+    }
+
+    /* Click-to-change avatar control */
+    .avatar-upload {
+        position: relative;
+        display: inline-flex;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .avatar-upload__overlay {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 0.58rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+    .avatar-upload:hover .avatar-upload__overlay,
+    .avatar-upload:focus-within .avatar-upload__overlay {
+        opacity: 1;
+    }
+    .avatar-remove-btn {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 5px 12px;
+        background: transparent;
+        border: 1px solid var(--border-mid);
+        border-radius: var(--radius);
+        font-family: var(--font-mono);
+        font-size: 0.62rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-2);
+        cursor: pointer;
+        transition: border-color 0.15s, color 0.15s;
+    }
+    .avatar-remove-btn:hover {
+        border-color: var(--danger);
+        color: var(--danger);
     }
 
     /* Center the title + card as one column so their left edges align */
@@ -50,12 +112,6 @@
         font-size: 1.15rem;
         letter-spacing: -0.01em;
         color: var(--text);
-    }
-    .identity-email {
-        font-family: var(--font-body);
-        font-size: 0.85rem;
-        color: var(--text-2);
-        margin-top: 2px;
     }
     .identity-sub {
         display: flex;
@@ -182,17 +238,36 @@
 
 <div class="profile-panel a-card" style="animation: fadeUp 0.4s 0.05s ease both;">
     <div class="a-card-body">
+        <form method="post" enctype="multipart/form-data" novalidate>
+                {% csrf_token %}
 
         <!-- Identity band -->
         <div class="identity-band">
-            <div class="profile-avatar">
-                {% with first=request.user.first_name|make_list|first|upper last=request.user.last_name|make_list|first|upper %}
-                    {% if first %}{{ first }}{% if last %}{{ last }}{% endif %}{% else %}{{ request.user.get_username|make_list|first|upper }}{% endif %}
-                {% endwith %}
+            <div class="avatar-col">
+                <label class="avatar-upload" for="id_profile_picture" title="Change photo">
+                    {% if profile.profile_picture %}
+                    <span class="profile-avatar"><img id="avatar-preview" src="{{ profile.profile_picture.url }}" alt="Profile picture"></span>
+                    {% else %}
+                    <span class="profile-avatar" id="avatar-initials">
+                        {% with first=request.user.first_name|make_list|first|upper last=request.user.last_name|make_list|first|upper %}
+                            {% if first %}{{ first }}{% if last %}{{ last }}{% endif %}{% else %}{{ request.user.get_username|make_list|first|upper }}{% endif %}
+                        {% endwith %}
+                    </span>
+                    <span class="profile-avatar" id="avatar-preview-wrap" style="display: none;"><img id="avatar-preview" src="" alt="Profile picture"></span>
+                    {% endif %}
+                    <span class="avatar-upload__overlay">Change<br>photo</span>
+                </label>
+                <input type="file" name="profile_picture" id="id_profile_picture" accept="image/*" class="visually-hidden" style="position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden;">
+                {% for error in form.profile_picture.errors %}
+                <div class="invalid-feedback" style="max-width: 140px;">{{ error }}</div>
+                {% endfor %}
+                {% if profile.profile_picture %}
+                <button type="button" class="avatar-remove-btn" id="removePhotoBtn">Remove photo</button>
+                <input type="hidden" name="remove_profile_picture" id="removePhotoField" value="">
+                {% endif %}
             </div>
             <div class="identity-meta">
                 <div class="identity-name">{{ request.user.get_full_name|default:request.user.get_username }}</div>
-                <div class="identity-email">{{ request.user.email }}</div>
                 <div class="identity-sub">
                     {% if profile.created_at %}
                     <span class="identity-since">Member since {{ profile.created_at|date:"F Y" }}</span>
@@ -205,9 +280,6 @@
         </div>
 
         <div class="rule" style="width: 100%; margin: 20px 0;"></div>
-
-        <form method="post" novalidate>
-                {% csrf_token %}
 
                 <div class="name-row">
                     <div>
@@ -302,6 +374,20 @@ document.addEventListener('DOMContentLoaded', function () {
         preferredCountries: ['us', 'gb', 'ca', 'au'],
         useFullscreenPopup: false,
     });
+
+    // The field is pre-filled with the saved E.164 number (e.g. +13018020379).
+    // Show it as a national number so the country dropdown owns the dial code —
+    // the user never types the "+1", exactly like the sign-in page.
+    var initial = input.value.trim();
+    if (initial.charAt(0) === '+') {
+        var initDial = iti.getSelectedCountryData().dialCode || '1';
+        var initDigits = initial.replace(/[^0-9]/g, '');
+        if (initDigits.indexOf(initDial) === 0) {
+            initDigits = initDigits.slice(initDial.length);
+        }
+        input.value = initDigits;
+    }
+
     var form = input.closest('form');
     if (form) {
         var hidden = document.createElement('input');
@@ -310,10 +396,53 @@ document.addEventListener('DOMContentLoaded', function () {
         input.removeAttribute('name');
         form.appendChild(hidden);
         form.addEventListener('submit', function () {
+            var digits = input.value.replace(/[^0-9]/g, '');
+            if (!digits) {
+                hidden.value = '';
+                return;
+            }
             var dialCode = iti.getSelectedCountryData().dialCode || '1';
-            hidden.value = '+' + dialCode + input.value.replace(/[^0-9]/g, '');
+            hidden.value = '+' + dialCode + digits;
         });
     }
+});
+
+// Live preview when a new profile picture is selected.
+document.addEventListener('DOMContentLoaded', function () {
+    var fileInput = document.getElementById('id_profile_picture');
+    if (!fileInput) return;
+
+    // "Remove photo" submits immediately (type=button so Enter in a text
+    // field can't trigger it and accidentally delete the picture).
+    var removeBtn = document.getElementById('removePhotoBtn');
+    if (removeBtn) {
+        removeBtn.addEventListener('click', function () {
+            document.getElementById('removePhotoField').value = '1';
+            var form = removeBtn.closest('form');
+            if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+        });
+    }
+
+    function showPreview(url) {
+        var img = document.getElementById('avatar-preview');
+        var initials = document.getElementById('avatar-initials');
+        var wrap = document.getElementById('avatar-preview-wrap');
+        if (img && !wrap) {
+            // A picture already existed — just swap its src.
+            img.src = url;
+        } else if (img && wrap && initials) {
+            // Switch from initials to the preview image.
+            initials.style.display = 'none';
+            wrap.style.display = '';
+            img.src = url;
+        }
+    }
+
+    fileInput.addEventListener('change', function () {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        showPreview(URL.createObjectURL(file));
+    });
 });
 </script>
 {% endblock %}
