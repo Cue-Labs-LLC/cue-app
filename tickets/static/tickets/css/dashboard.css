@@ -613,7 +613,7 @@ a:hover {
 .card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     box-shadow: none;
     overflow: hidden;
 }
@@ -828,7 +828,7 @@ a:hover {
     letter-spacing: 0.07em;
     text-transform: uppercase;
     padding: 8px 16px;
-    border-radius: 3px;
+    border-radius: var(--radius-lg);
     transition: opacity 0.12s, background 0.12s, border-color 0.12s, color 0.12s;
     display: inline-flex;
     align-items: center;
