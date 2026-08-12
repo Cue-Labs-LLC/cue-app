@@ -1326,13 +1326,13 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
             Field('name'),
             Field('ticketing_type'),
             Row(
-                Column('start_datetime', css_class='form-group col-md-6 mb-0'),
-                Column('end_datetime', css_class='form-group col-md-6 mb-0'),
+                Column('start_datetime', css_class='form-group col-md-4 mb-0'),
+                Column('end_datetime', css_class='form-group col-md-4 mb-0'),
+                Column('timezone', css_class='form-group col-md-4 mb-0'),
             ),
             Row(
-                Column('venue', css_class='form-group col-md-4 mb-0'),
-                Column('capacity', css_class='form-group col-md-4 mb-0'),
-                Column('timezone', css_class='form-group col-md-4 mb-0'),
+                Column('venue', css_class='form-group col-md-6 mb-0'),
+                Column('capacity', css_class='form-group col-md-6 mb-0'),
             ),
             Field('description'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
