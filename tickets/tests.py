@@ -22148,7 +22148,7 @@ class EventListEmptyStateTests(TestCase):
         self.assertContains(resp, 'Create your first event')
         self.assertContains(resp, reverse('tickets:event_create', args=['direct']))
         self.assertContains(resp, reverse('tickets:event_create', args=['external']))
-        self.assertContains(resp, 'Import Past Event CSV')
+        self.assertContains(resp, 'Import CSV')
         # The redundant header "Create Event" button is hidden in this empty state.
         self.assertNotContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
 
@@ -22157,13 +22157,13 @@ class EventListEmptyStateTests(TestCase):
         resp = self.client.get(reverse('tickets:event_list'))
         self.assertContains(resp, 'Create your first event')
         self.assertContains(resp, reverse('tickets:event_create', args=['direct']))
-        self.assertNotContains(resp, 'Import Past Event CSV')
+        self.assertNotContains(resp, 'Import CSV')
 
     def test_search_miss_shows_lighter_message_not_ctas(self):
         self._make_org_user(external_enabled=True)
         resp = self.client.get(reverse('tickets:event_list'), {'search': 'zzz-no-match'})
         self.assertContains(resp, 'No events match your search')
         self.assertNotContains(resp, 'Create your first event')
-        self.assertNotContains(resp, 'Import Past Event CSV')
+        self.assertNotContains(resp, 'Import CSV')
         # The header "Create Event" button stays visible for search/filter misses.
         self.assertContains(resp, 'href="%s"' % reverse('tickets:event_type_select'))
