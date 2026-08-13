@@ -1116,7 +1116,9 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
         update_fields = ['status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at']
         if track_links:
             token = secrets.token_urlsafe(8)
-            tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}"
+            # Scheme-less like the link stored in the body (dropped to save SMS chars);
+            # sms_click_redirect re-adds the scheme server-side for the actual 302.
+            tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}".split('://', 1)[-1]
             base_body = campaign.body.replace(campaign.link_url, tracked, 1)
             r.click_token = token
             update_fields.append('click_token')
