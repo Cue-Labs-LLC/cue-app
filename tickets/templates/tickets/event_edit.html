@@ -72,6 +72,7 @@
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1080px; margin: 0 auto;">
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
         <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
@@ -249,9 +250,7 @@
                             <tr>
                                 <th style="width:32px;"></th>
                                 <th>Ticket Type</th><th>Display&nbsp;Price / Gross</th><th>Sold</th>
-                                <th class="d-none d-md-table-cell">Inventory</th><th class="d-none d-md-table-cell">Max / Customer</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
-
                                 <th class="d-none d-md-table-cell">Status</th><th></th>
                             </tr>
                         </thead>
@@ -261,10 +260,7 @@
                                 <td class="tt-drag-handle text-muted" style="cursor:grab;width:32px;" title="Drag to reorder"><i class="bi bi-grip-vertical"></i></td>
                                 <td><strong>{{ tt.name }}</strong></td>
                                 <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}<br><small class="text-muted">Gross: ${{ tt.gross_price|currency }}</small></td>
-                                <td>{{ tt.quantity_sold }}</td>
-                                <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
-                                <td class="d-none d-md-table-cell">{% if tt.max_per_customer %}{{ tt.max_per_customer }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
-                                <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
+                                <td>{{ tt.quantity_sold }}/{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">-</span>{% endif %}
                                 </td>
@@ -294,12 +290,6 @@
                             </tr>
                             {% endfor %}
                         </tbody>
-                        <tfoot>
-                            <tr class="table-light">
-                                <td colspan="6"><strong>Total Revenue</strong></td>
-                                <td colspan="4"><strong>${{ direct_total_revenue|currency }}</strong></td>
-                            </tr>
-                        </tfoot>
                     </table>
                 </div>
                 {% else %}
@@ -393,6 +383,7 @@
             {% endif %}
         </div>
     </div>
+</div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js" defer></script>
 <script>
