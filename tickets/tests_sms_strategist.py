@@ -1637,10 +1637,10 @@ class SMSStrategistViewTests(TestCase):
     # --- Discover / discard plans ---------------------------------------------
 
     def test_sms_page_links_to_plan_list(self):
-        # The SMS marketing page must surface a "Plans" link so past plans are reachable.
+        # The SMS marketing page must surface a "Campaign Plans" link so past plans are reachable.
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertContains(resp, reverse('tickets:sms_plan_list'))
-        self.assertContains(resp, '>Plans</a>')
+        self.assertContains(resp, '>Campaign Plans</a>')
 
     @patch('langchain_openai.ChatOpenAI')
     def test_plan_list_and_detail_expose_delete(self, mock_openai):
