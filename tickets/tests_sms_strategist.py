@@ -2308,7 +2308,8 @@ class ExternalTicketLinkTests(TestCase):
     def test_event_ticket_url_creates_targeted_link(self):
         from tickets.sms_views import _event_ticket_url
         url = _event_ticket_url(None, self.org, self.event)
-        self.assertTrue(url.startswith('https://cue.test/t/'))
+        # Tracked SMS links are rendered scheme-less to save GSM-7 chars (see #443).
+        self.assertTrue(url.startswith('cue.test/t/'))
         link = TrackingLink.objects.get(organization=self.org, event=self.event, name='SMS')
         self.assertEqual(link.target_url, 'https://tix.example.com/e/123')
         self.assertIn(link.token, url)
