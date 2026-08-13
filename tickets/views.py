@@ -10996,6 +10996,60 @@ def event_flyer_upload(request, event_id):
     return JsonResponse({'success': True, 'url': event.flyer.url})
 
 
+_DESCRIPTION_IMAGE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def event_description_image_upload(request):
+    """Upload a photo for embedding in an event description (rich-text editor).
+
+    Org-scoped, not event-scoped: the create page has no event yet, so this must
+    work before the event exists. Saves the image to media storage and returns
+    its URL for the editor to insert as an <img> tag (avoids base64-inlining).
+    """
+    from django.utils.text import get_valid_filename
+    from .models import _get_media_storage
+
+    org = get_organization(request)
+    file = request.FILES.get('image')
+    if not file:
+        return JsonResponse({'success': False, 'error': 'No file provided.'}, status=400)
+    if not file.content_type.startswith('image/'):
+        return JsonResponse({'success': False, 'error': 'File must be an image.'}, status=400)
+    if file.size > _DESCRIPTION_IMAGE_MAX_BYTES:
+        return JsonResponse({'success': False, 'error': 'Image must be 8 MB or smaller.'}, status=400)
+    # Convert HEIC/HEIF → JPEG for browser compatibility
+    if (file.content_type in _HEIC_CONTENT_TYPES
+            or file.name.lower().endswith(('.heic', '.heif'))):
+        try:
+            file = _convert_heic_to_jpeg(file)
+        except Exception as e:
+            logger.warning("HEIC conversion failed: %s", e)
+            return JsonResponse({'success': False, 'error': 'Could not process HEIC image.'}, status=400)
+
+    storage = _get_media_storage()
+    safe_name = get_valid_filename(file.name) or 'image'
+    path = f"orgs/{org.slug}/event_description_images/{_uuid.uuid4().hex}_{safe_name}"
+    try:
+        saved_name = storage.save(path, file)
+    except Exception as e:
+        logger.warning("Description image upload failed: %s", e, exc_info=True)
+        try:
+            from botocore.exceptions import ClientError
+            if isinstance(e, ClientError):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Storage upload failed. Check AWS credentials and S3 permissions (s3:PutObject, s3:PutObjectAcl).',
+                }, status=503)
+        except ImportError:
+            pass
+        return JsonResponse({'success': False, 'error': 'Invalid or unsupported image.'}, status=400)
+    return JsonResponse({'success': True, 'url': storage.url(saved_name)})
+
+
 # ---------------------------------------------------------------------------
 # Direct Ticket Selling - Public Views
 # ---------------------------------------------------------------------------

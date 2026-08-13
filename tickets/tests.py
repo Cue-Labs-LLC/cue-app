@@ -22423,3 +22423,53 @@ class OrganizerWaitlistAcceptedEmailTests(TestCase):
         # Re-saving an already-approved entry must not send again.
         self.admin.save_model(self._request(), entry, form=None, change=True)
         self.assertEqual(len(mail.outbox), 1)
+
+
+class EventDescriptionImageUploadTests(TestCase):
+    """Tests for the event_description_image_upload endpoint (rich-text photos)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Desc Img Org', slug='desc-img-org')
+        self.user = User.objects.create_user(
+            username='descimg', email='descimg@test.com', password='testpass123')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='descimg@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id for @require_org
+        self.url = reverse('tickets:event_description_image_upload')
+
+    def _png_upload(self, name='photo.png'):
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+        buf = BytesIO()
+        Image.new('RGB', (4, 4), (200, 30, 30)).save(buf, format='PNG')
+        buf.seek(0)
+        return SimpleUploadedFile(name, buf.read(), content_type='image/png')
+
+    def test_upload_success_returns_url(self):
+        import tempfile
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            resp = self.client.post(self.url, {'image': self._png_upload()})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertIn('event_description_images', data['url'])
+
+    def test_missing_file_400(self):
+        resp = self.client.post(self.url, {})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['success'])
+
+    def test_non_image_400(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        bad = SimpleUploadedFile('notes.txt', b'hello', content_type='text/plain')
+        resp = self.client.post(self.url, {'image': bad})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'File must be an image.')
+
+    def test_requires_login(self):
+        self.client.logout()
+        resp = self.client.post(self.url, {'image': self._png_upload()})
+        self.assertIn(resp.status_code, (302, 403))

@@ -16,6 +16,8 @@
 .tt-quill-wrap { display: flex; flex-direction: column; height: 260px; margin-bottom: 1rem; }
 .tt-quill-wrap .ql-container { flex: 1 1 auto; min-height: 0; }
 .tt-quill-wrap .ql-editor { overflow-y: auto; }
+#quill-editor-description .ql-editor img { display: block; margin: 10px auto; max-width: 100%; max-height: 360px; height: auto; border-radius: 6px; }
+#quill-editor-description.ql-drop-hover { outline: 2px dashed var(--bs-primary); outline-offset: 2px; }
 #addTicketTypeModal .modal-body .form-label,
 #editTicketTypeModal .modal-body .form-label {
     font-weight: 500;
@@ -407,12 +409,61 @@ document.addEventListener('DOMContentLoaded', function() {
     var quill = new Quill('#quill-editor-description', {
         theme: 'snow',
         placeholder: 'Optional event description\u2026',
-        modules: { toolbar: [
-            ['bold', 'italic', 'underline'],
-            [{ list: 'ordered' }, { list: 'bullet' }],
-            ['link'],
-            ['clean']
-        ]}
+        modules: {
+            toolbar: [
+                ['bold', 'italic', 'underline'],
+                [{ list: 'ordered' }, { list: 'bullet' }],
+                ['link', 'image'],
+                ['clean']
+            ],
+            uploader: { mimetypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/heic', 'image/heif'] }
+        }
+    });
+    // Upload an image file to storage and embed its URL (avoids base64-inlining).
+    function uploadDescriptionImage(file, index) {
+        if (!file || !/^image\//.test(file.type)) return;
+        var tokenEl = document.querySelector('[name=csrfmiddlewaretoken]');
+        var fd = new FormData();
+        fd.append('image', file);
+        fetch('{% url "tickets:event_description_image_upload" %}', {
+            method: 'POST',
+            headers: tokenEl ? { 'X-CSRFToken': tokenEl.value } : {},
+            body: fd
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (!d.success) { alert(d.error || 'Image upload failed.'); return; }
+            var at = (typeof index === 'number') ? index : quill.getLength();
+            quill.insertEmbed(at, 'image', d.url, 'user');
+            quill.setSelection(at + 1);
+        })
+        .catch(function () { alert('Image upload failed.'); });
+    }
+    // Toolbar image button \u2192 file picker.
+    quill.getModule('toolbar').addHandler('image', function () {
+        var input = document.createElement('input');
+        input.setAttribute('type', 'file');
+        input.setAttribute('accept', 'image/*,.heic,.heif');
+        input.click();
+        input.onchange = function () {
+            var range = quill.getSelection(true);
+            uploadDescriptionImage(input.files && input.files[0], range ? range.index : quill.getLength());
+        };
+    });
+    // Drag-and-drop / paste of image files \u2192 upload instead of base64-inlining.
+    var uploader = quill.getModule('uploader');
+    if (uploader) {
+        uploader.upload = function (range, files) {
+            Array.prototype.forEach.call(files, function (file, i) {
+                uploadDescriptionImage(file, (range ? range.index : quill.getLength()) + i);
+            });
+        };
+    }
+    ['dragenter', 'dragover'].forEach(function (ev) {
+        quill.root.addEventListener(ev, function () { container.classList.add('ql-drop-hover'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+        quill.root.addEventListener(ev, function () { container.classList.remove('ql-drop-hover'); });
     });
     if (textarea.value) quill.root.innerHTML = textarea.value;
     var form = textarea.closest('form');
