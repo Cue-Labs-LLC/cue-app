@@ -64,8 +64,9 @@ tr.campaign-row { cursor: pointer; }
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 {% if sms_native_enabled %}
-{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track native SMS — and top up the tokens that pay for sends.' %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' %}
 {% else %}
 {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Track results from SlickText broadcasts linked to your events.' %}
 {% endif %}
@@ -104,7 +105,7 @@ tr.campaign-row { cursor: pointer; }
        href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
     {% if org.ai_sms_strategist_enabled %}
-    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_plan_list' %}">Plans</a>
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_plan_list' %}">Campaign Plans</a>
     {% endif %}
 </nav>
 
@@ -373,6 +374,7 @@ tr.campaign-row { cursor: pointer; }
   </div>
 </div>
 {% endif %}
+</div>
 {% endblock %}
 
 {% block extra_js %}

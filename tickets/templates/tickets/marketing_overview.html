@@ -71,6 +71,7 @@
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='overview' subtitle='Channel performance across Meta Ads and Mailchimp email.' %}
 
 <div class="window-selector mb-3">
@@ -291,6 +292,7 @@
         </div>
     {% endif %}
 
+</div>
 </div>
 
 <script type="application/json" id="trend-chart-data">{{ trend_chart_json|safe }}</script>

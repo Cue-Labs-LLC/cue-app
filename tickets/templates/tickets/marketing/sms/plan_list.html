@@ -1,26 +1,48 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
 
-{% block title %}AI campaign plans{% endblock %}
+{% block title %}Campaign plans{% endblock %}
+
+{% block extra_head %}
+<style>
+/* Pill sub-nav (Sends / Audience / Campaign Plans) — matches the SMS page. */
+.marketing-subnav {
+    display: inline-flex; gap: 2px; margin-bottom: 22px;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px;
+}
+.marketing-subnav-btn {
+    display: inline-flex; align-items: center; text-decoration: none;
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+    letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
+    padding: 7px 18px; border-radius: 999px;
+    transition: background 0.12s, color 0.12s;
+}
+.marketing-subnav-btn:hover { color: var(--text-primary); }
+.marketing-subnav-btn.active,
+.marketing-subnav-btn.active:hover { background: var(--accent); color: var(--text-inverse); }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <h1 class="page-title"><i class="bi bi-stars"></i> AI campaign plans</h1>
-        <p class="page-subtitle">Saved AI-recommended SMS sequences.</p>
-    </div>
-    <div class="d-flex gap-2">
-        <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> SMS</a>
-        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
-    </div>
-</div>
+<div style="max-width: 1200px; margin: 0 auto;">
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' %}
 
-<div class="btn-group btn-group-sm mb-3" role="group" aria-label="Filter plans by status">
-    <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
-    <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
-    <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
-    <a href="?status=scheduled" class="btn btn-outline-secondary{% if status_filter == 'scheduled' %} active{% endif %}">Scheduled</a>
-    <a href="?status=sent" class="btn btn-outline-secondary{% if status_filter == 'sent' %} active{% endif %}">Sent</a>
+<nav class="marketing-subnav" role="tablist" aria-label="SMS views">
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=campaigns">Sends</a>
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=audience">Audience</a>
+    <a class="marketing-subnav-btn active" href="{% url 'tickets:sms_plan_list' %}" aria-current="page">Campaign Plans</a>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div class="btn-group btn-group-sm" role="group" aria-label="Filter plans by status">
+        <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
+        <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
+        <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
+        <a href="?status=scheduled" class="btn btn-outline-secondary{% if status_filter == 'scheduled' %} active{% endif %}">Scheduled</a>
+        <a href="?status=sent" class="btn btn-outline-secondary{% if status_filter == 'sent' %} active{% endif %}">Sent</a>
+    </div>
+    <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
 </div>
 
 <div class="card">
@@ -113,6 +135,7 @@
             </div>
         </div>
     </div>
+</div>
 </div>
 {% endblock %}
 
