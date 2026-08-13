@@ -22351,3 +22351,75 @@ class EventDateTimeFieldTests(TestCase):
         form = EventForm(instance=event, organization=self.org, ticketing_type_locked=True)
         self.assertEqual(form.initial.get('start_datetime'), datetime(2025, 3, 10, 20, 0))
         self.assertEqual(form.initial.get('end_datetime'), datetime(2025, 3, 10, 23, 0))
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    CELERY_TASK_ALWAYS_EAGER=True,
+    SITE_URL='https://cueup.co',
+)
+class OrganizerWaitlistAcceptedEmailTests(TestCase):
+    """Approving a waitlisted organizer sends the acceptance email exactly once."""
+
+    def setUp(self):
+        from .models import OrganizerWaitlist
+        from .admin import OrganizerWaitlistAdmin
+        from django.contrib.admin.sites import AdminSite
+        self.OrganizerWaitlist = OrganizerWaitlist
+        self.admin = OrganizerWaitlistAdmin(OrganizerWaitlist, AdminSite())
+        self.factory = RequestFactory()
+        self.staff = User.objects.create_user(
+            username='admin@test.com', email='admin@test.com', password='pass123', is_staff=True,
+        )
+
+    def _request(self):
+        request = self.factory.post('/admin/')
+        request.user = self.staff
+        setattr(request, 'session', {})
+        setattr(request, '_messages', FallbackStorage(request))
+        return request
+
+    def test_bulk_action_sends_email_and_stamps_fields(self):
+        from django.core import mail
+        entry = self.OrganizerWaitlist.objects.create(
+            name='Ada Lovelace', email='ada@example.com', organization_name='Analytical Events',
+        )
+        qs = self.OrganizerWaitlist.objects.filter(pk=entry.pk)
+        self.admin.approve_selected(self._request(), qs)
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, self.OrganizerWaitlist.Status.APPROVED)
+        self.assertIsNotNone(entry.approved_at)
+        self.assertEqual(entry.approved_by, self.staff)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ['ada@example.com'])
+        self.assertIn('https://cueup.co/create-organization/', sent.body)
+
+    def test_bulk_action_skips_already_approved(self):
+        from django.core import mail
+        entry = self.OrganizerWaitlist.objects.create(
+            name='Grace Hopper', email='grace@example.com', organization_name='COBOL Nights',
+            status=self.OrganizerWaitlist.Status.APPROVED,
+        )
+        qs = self.OrganizerWaitlist.objects.filter(pk=entry.pk)
+        self.admin.approve_selected(self._request(), qs)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_change_form_transition_sends_email_once(self):
+        from django.core import mail
+        entry = self.OrganizerWaitlist.objects.create(
+            name='Alan Turing', email='alan@example.com', organization_name='Enigma Shows',
+        )
+        entry.status = self.OrganizerWaitlist.Status.APPROVED
+        self.admin.save_model(self._request(), entry, form=None, change=True)
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, self.OrganizerWaitlist.Status.APPROVED)
+        self.assertIsNotNone(entry.approved_at)
+        self.assertEqual(entry.approved_by, self.staff)
+        self.assertEqual(len(mail.outbox), 1)
+
+        # Re-saving an already-approved entry must not send again.
+        self.admin.save_model(self._request(), entry, form=None, change=True)
+        self.assertEqual(len(mail.outbox), 1)
