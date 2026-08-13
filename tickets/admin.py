@@ -1387,12 +1387,37 @@ class OrganizerWaitlistAdmin(admin.ModelAdmin):
     @admin.action(description='Approve selected entries')
     def approve_selected(self, request, queryset):
         from django.utils import timezone
+        from tickets.tasks import send_waitlist_accepted_email_task
+        transitioning_ids = list(
+            queryset.exclude(status=OrganizerWaitlist.Status.APPROVED)
+                    .values_list('id', flat=True)
+        )
         updated = queryset.update(
             status=OrganizerWaitlist.Status.APPROVED,
             approved_at=timezone.now(),
             approved_by=request.user,
         )
+        for entry_id in transitioning_ids:
+            send_waitlist_accepted_email_task.delay(str(entry_id))
         self.message_user(request, f'{updated} entr{"y" if updated == 1 else "ies"} approved.')
+
+    def save_model(self, request, obj, form, change):
+        from django.utils import timezone
+        from tickets.tasks import send_waitlist_accepted_email_task
+        was_approved = False
+        if change:
+            was_approved = (
+                OrganizerWaitlist.objects.filter(pk=obj.pk)
+                .values_list('status', flat=True).first()
+                == OrganizerWaitlist.Status.APPROVED
+            )
+        now_approved = obj.status == OrganizerWaitlist.Status.APPROVED
+        if now_approved and not was_approved:
+            obj.approved_at = timezone.now()
+            obj.approved_by = request.user
+        super().save_model(request, obj, form, change)
+        if now_approved and not was_approved:
+            send_waitlist_accepted_email_task.delay(str(obj.pk))
 
 
 @admin.register(SMSCampaign)

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <meta name="supported-color-schemes" content="dark">
+    <!-- Progressive enhancement: DM Sans loads in clients that honor <style> web fonts (e.g. Apple Mail). Others fall back to the system stack. -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700;800&display=swap');
+    </style>
+</head>
+<body style="font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0F0E0D; margin: 0; padding: 0;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0F0E0D" style="background-color: #0F0E0D; margin: 0; padding: 0;">
+        <tr>
+            <td align="center" style="padding: 20px;">
+                <div style="max-width: 480px; margin: 0 auto; background: #191817; border: 1px solid #2E2C2A; border-radius: 3px; padding: 40px;">
+                    <h2 style="margin: 0 0 6px; color: #EDE8E3; text-align: center; font-weight: 800; letter-spacing: -0.02em;">Cue</h2>
+                    <p style="color: #7A7672; margin: 0 0 32px; text-align: center; font-size: 12px; text-transform: uppercase; letter-spacing: 0.15em;">You're in</p>
+
+                    <p style="color: #EDE8E3; margin: 0 0 8px;">Hi{% if name %} {{ name }}{% endif %},</p>
+                    <p style="color: #EDE8E3; margin: 0 0 24px;">Great news - you've been accepted from the Cue waiting list. Your account is ready, and you can now set up{% if organization_name %} <strong style="color: #FFFFFF;">{{ organization_name }}</strong>{% endif %} and start selling tickets.</p>
+
+                    <div style="text-align: center; margin: 0 0 24px;">
+                        <a href="{{ start_url }}" style="display: inline-block; background: #EDE8E3; color: #0F0E0D; text-decoration: none; font-size: 14px; font-weight: 700; padding: 14px 32px; border-radius: 3px;">Create your organization</a>
+                    </div>
+
+                    <p style="color: #A8A5A1; font-size: 13px; margin: 0 0 4px; text-align: center;">If the button doesn't work, copy and paste this link into your browser:</p>
+                    <p style="color: #A8A5A1; font-size: 12px; margin: 0; text-align: center; word-break: break-all;"><a href="{{ start_url }}" style="color: #EDE8E3;">{{ start_url }}</a></p>
+
+                    <p style="color: #A8A5A1; font-size: 13px; margin: 32px 0 0; text-align: center;">
+                        Questions? Reply to this email and we'll be happy to help.
+                    </p>
+                </div>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
