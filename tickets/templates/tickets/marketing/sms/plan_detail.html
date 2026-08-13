@@ -198,7 +198,7 @@
             <span class="align-middle" id="planDisabledBadge"{% if plan.enabled %} hidden{% endif %}><span class="badge bg-secondary">Disabled</span></span>
         </h1>
         <p class="page-subtitle">
-            AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
+            Campaign plan · {{ plan.generated_at|date:'M d, Y' }}
             {% if plan.event %} · for {{ plan.event.name }}{% endif %}
         </p>
         {% include 'tickets/marketing/sms/_plan_progress.html' with step_count=progress.total sent_count=progress.sent scheduled_count=progress.scheduled draft_count=progress.draft %}
