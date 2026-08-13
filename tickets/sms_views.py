@@ -1287,6 +1287,16 @@ def twilio_sms_inbound_webhook(request):
                         content_type='text/xml')
 
 
+def _absolutize_redirect_target(url):
+    """SMS links drop the http(s):// scheme to save characters, but a redirect target
+    must be absolute. Re-add the SITE_URL scheme to a scheme-less link; leave an
+    already-absolute (e.g. pasted external) URL untouched."""
+    if not url or '://' in url:
+        return url
+    scheme = (getattr(settings, 'SITE_URL', '') or 'https://').split('://', 1)[0] or 'https'
+    return f"{scheme}://{url}"
+
+
 def sms_click_redirect(request, token):
     """Public: record a click on a tracked SMS link, then 302 to the target.
 
@@ -1302,7 +1312,7 @@ def sms_click_redirect(request, token):
         click_count=F('click_count') + 1,
         first_clicked_at=Coalesce(F('first_clicked_at'), Now()),
     )
-    return redirect(target)
+    return redirect(_absolutize_redirect_target(target))
 
 
 # ---------------------------------------------------------------------------
@@ -1789,10 +1799,14 @@ def _plan_form_context(org, event=None, selected_criteria=None):
 
 
 def _tracking_link_absolute_url(request, link):
-    """Absolute /t/<token>/ URL, using SITE_URL so it resolves for recipients off-site."""
+    """Scheme-less host + /t/<token>/ link, using SITE_URL so it resolves for recipients
+    off-site. The http(s):// scheme is intentionally dropped to save SMS characters —
+    phones still linkify a bare host/path, and the click/redirect handlers re-add it
+    server-side (see _absolutize_redirect_target)."""
     path = reverse('tickets:track_link_redirect', kwargs={'token': link.token})
     site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
-    return f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+    full = f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+    return full.split('://', 1)[-1]
 
 
 def _event_is_ticketable(event):

@@ -1,0 +1,11 @@
+You're in - welcome to Cue.
+
+{% if name %}Hi {{ name }},{% else %}Hi there,{% endif %}
+
+Great news - you've been accepted from the Cue waiting list. Your account is ready, and you can now set up{% if organization_name %} {{ organization_name }}{% endif %} and start selling tickets.
+
+Create your organization here:
+{{ start_url }}
+
+---
+You received this email because you joined the Cue organizer waiting list. If you didn't request this, you can safely ignore it.

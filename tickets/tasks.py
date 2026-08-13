@@ -335,6 +335,43 @@ def send_org_invite_email_task(self, invitation_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_waitlist_accepted_email_task(self, entry_id):
+    """Notify an organizer that they've been accepted off the waitlist."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from tickets.models import OrganizerWaitlist
+
+    try:
+        entry = OrganizerWaitlist.objects.get(id=entry_id)
+    except OrganizerWaitlist.DoesNotExist:
+        logger.warning("OrganizerWaitlist %s not found, skipping acceptance email", entry_id)
+        return
+
+    site_url = settings.SITE_URL.rstrip('/')
+    start_url = f"{site_url}/create-organization/"
+    context = {
+        'name': entry.name,
+        'organization_name': entry.organization_name,
+        'start_url': start_url,
+    }
+    html_body = render_to_string('tickets/auth/waitlist_accepted_email.html', context)
+    text_body = render_to_string('tickets/auth/waitlist_accepted_email.txt', context)
+
+    try:
+        send_mail(
+            subject="You're in - welcome to Cue",
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[entry.email],
+            html_message=html_body,
+        )
+    except Exception as exc:
+        logger.exception("Failed to send waitlist acceptance email to %s", entry.email)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_order_confirmation_email_task(self, order_id):
     """Send an order confirmation email to the customer."""
     from email.mime.image import MIMEImage
@@ -1116,7 +1153,9 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
         update_fields = ['status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at']
         if track_links:
             token = secrets.token_urlsafe(8)
-            tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}"
+            # Scheme-less like the link stored in the body (dropped to save SMS chars);
+            # sms_click_redirect re-adds the scheme server-side for the actual 302.
+            tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}".split('://', 1)[-1]
             base_body = campaign.body.replace(campaign.link_url, tracked, 1)
             r.click_token = token
             update_fields.append('click_token')

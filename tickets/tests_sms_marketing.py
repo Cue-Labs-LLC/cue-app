@@ -1475,6 +1475,9 @@ class SMSLinkExtractionTests(TestCase):
         self.assertEqual(extract_first_url('Two https://a.co/1 and http://b.co/2'), 'https://a.co/1')
         self.assertEqual(extract_first_url('no link here, visit shop.co'), '')
         self.assertEqual(extract_first_url('end https://a.co/p.'), 'https://a.co/p')
+        # Scheme-less tracked short links (dropped scheme saves SMS chars) are matched.
+        self.assertEqual(extract_first_url('Tickets cueup.co/t/ABC123/ now'), 'cueup.co/t/ABC123/')
+        self.assertEqual(extract_first_url('go localhost:8000/c/xY_9-z/'), 'localhost:8000/c/xY_9-z/')
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
@@ -1550,6 +1553,16 @@ class SMSClickRedirectTests(TestCase):
         self.recipient.refresh_from_db()
         self.assertEqual(self.recipient.click_count, 1)
         self.assertIsNotNone(self.recipient.first_clicked_at)
+
+    @override_settings(SITE_URL='https://app.example.com')
+    def test_scheme_less_link_url_redirect_is_absolutized(self):
+        # Cue-composed links drop the scheme in the body; the redirect target must be
+        # re-absolutized so it 302s to a valid URL, not a same-host relative path.
+        self.campaign.link_url = 'app.example.com/t/abc/'
+        self.campaign.save(update_fields=['link_url'])
+        resp = self.client.get(reverse('tickets:sms_click_redirect', kwargs={'token': 'tok123'}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], 'https://app.example.com/t/abc/')
 
     def test_repeat_clicks_total_up_unique_once(self):
         url = reverse('tickets:sms_click_redirect', kwargs={'token': 'tok123'})
@@ -2523,10 +2536,10 @@ class SMSTicketLinkTests(TestCase):
         resp = self.client.post(self.url, {'event': str(self.live.id)})
         self.assertEqual(resp.status_code, 200)
         link = TrackingLink.objects.get(organization=self.org, event=self.live, name='SMS')
-        # URL must use SITE_URL (the public/tunnel host), not the request host,
-        # so the link stored in the body resolves for recipients.
+        # URL must use SITE_URL (the public/tunnel host), not the request host, so the
+        # link stored in the body resolves for recipients. Scheme is dropped to save chars.
         self.assertEqual(
-            resp.json()['url'], 'https://example.ngrok.app/t/' + link.token + '/',
+            resp.json()['url'], 'example.ngrok.app/t/' + link.token + '/',
         )
 
     def test_endpoint_idempotent(self):
@@ -2555,7 +2568,7 @@ class SMSTicketLinkTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         link = TrackingLink.objects.get(organization=self.org, event=self.external, name='SMS')
         self.assertEqual(link.target_url, 'https://tix.example.com/e/42')
-        self.assertEqual(resp.json()['url'], 'https://example.ngrok.app/t/' + link.token + '/')
+        self.assertEqual(resp.json()['url'], 'example.ngrok.app/t/' + link.token + '/')
 
     def test_foreign_event_404(self):
         from datetime import date

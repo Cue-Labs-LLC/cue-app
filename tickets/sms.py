@@ -15,13 +15,20 @@ _GSM7_BASIC = (
 _GSM7_EXTENDED = "^{}\\[~]|€"
 _GSM7_CHARS = set(_GSM7_BASIC) | set(_GSM7_EXTENDED)
 
-# First http(s) URL in a string. v1 link-click tracking rewrites this one URL;
-# bare domains without a scheme are intentionally not matched.
-_URL_RE = re.compile(r'https?://\S+')
+# First link in a string that v1 link-click tracking should rewrite: an explicit
+# http(s):// URL a user pasted, OR one of our own tracked short links (/t/, /track/
+# or /c/<token>/) whose scheme was dropped to save SMS characters. The scheme-full
+# alternative is listed first so pasted URLs are captured verbatim; bare domains
+# without a recognized tracking path are still not matched.
+_URL_RE = re.compile(
+    r'https?://\S+'
+    r'|(?:[\w-]+\.)+[\w-]+(?::\d+)?/(?:t|track|c)/[A-Za-z0-9_-]+/?'
+    r'|localhost(?::\d+)?/(?:t|track|c)/[A-Za-z0-9_-]+/?'
+)
 
 
 def extract_first_url(text: str) -> str:
-    """Return the first http(s):// URL in text (trailing punctuation stripped), or ''."""
+    """Return the first tracked/http(s) link in text (trailing punctuation stripped), or ''."""
     if not text:
         return ''
     match = _URL_RE.search(text)
