@@ -30,6 +30,10 @@
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1080px; margin: 0 auto;">
+<a href="{% url 'tickets:event_type_select' %}" class="btn btn-outline-secondary btn-sm mb-3">
+    <i class="bi bi-arrow-left"></i> Back
+</a>
 <div class="page-header">
     <div>
         {% if ticketing_type == 'direct' %}
@@ -55,32 +59,7 @@
                             {% crispy form %}
                         </div>
                     </div>
-                </div>
-                <div class="col-lg-4">
-                    {# Flyer drag-and-drop card (upload happens on submit) #}
-                    <div class="card" id="event-flyer-card">
-                        <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
-                        <div class="card-body p-0 text-center">
-                            <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="aspect-ratio: 4/5; cursor: pointer;">
-                                <div class="d-flex flex-column align-items-center justify-content-center h-100 text-muted" id="flyer-placeholder">
-                                    <i class="bi bi-image fs-1 mb-2"></i>
-                                    <p class="mb-0">Click or drop an image to add a flyer</p>
-                                </div>
-                                <div id="flyer-preview" class="d-none h-100">
-                                    <img id="flyer-preview-img" src="" alt="Event flyer preview" style="width: 100%; height: 100%; object-fit: cover;">
-                                </div>
-                            </div>
-                            <p class="small text-muted mt-2 mb-1 text-center d-none" id="flyer-replace-hint">
-                                <i class="bi bi-arrow-repeat"></i> Click or drag to replace
-                            </p>
-                            <p class="small text-muted mt-2 mb-1 text-center">
-                                <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="card mb-4">
+            <div class="card mt-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Ticket Types</h5>
                     <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal">
@@ -150,39 +129,71 @@
                     </div>
                 </div>
             </div>
+                </div>
+                <div class="col-lg-4">
+                    {# Flyer drag-and-drop card (upload happens on submit) #}
+                    <div class="card" id="event-flyer-card">
+                        <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
+                        <div class="card-body p-0 text-center">
+                            <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="aspect-ratio: 4/5; cursor: pointer;">
+                                <div class="d-flex flex-column align-items-center justify-content-center h-100 text-muted" id="flyer-placeholder">
+                                    <i class="bi bi-image fs-1 mb-2"></i>
+                                    <p class="mb-0">Click or drop an image to add a flyer</p>
+                                </div>
+                                <div id="flyer-preview" class="d-none h-100">
+                                    <img id="flyer-preview-img" src="" alt="Event flyer preview" style="width: 100%; height: 100%; object-fit: cover;">
+                                </div>
+                            </div>
+                            <p class="small text-muted mt-2 mb-1 text-center d-none" id="flyer-replace-hint">
+                                <i class="bi bi-arrow-repeat"></i> Click or drag to replace
+                            </p>
+                            <p class="small text-muted mt-2 mb-1 text-center">
+                                <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="mb-3">
                 <button type="submit" class="btn btn-primary">Create Event</button>
             </div>
         </form>
         {% else %}
-        <div class="row">
-        <div class="col-12 mx-auto" style="max-width: 720px;">
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
-            <div class="card">
-                <div class="card-body">
-                    {% crispy form %}
-                    <hr class="my-4">
-                    <h6 class="fw-semibold mb-1">Ticket Data (CSV)</h6>
-                    <p class="text-muted small mb-3">Upload a CSV of orders to import now, or add it later from the event page.</p>
-                    <input type="file" id="csv-file-input" name="csv_file" accept=".csv" class="d-none">
-                    <div id="csv-drop-zone" class="flyer-drop-zone text-center p-4" style="cursor: pointer;">
-                        <div id="csv-placeholder" class="text-muted">
-                            <i class="bi bi-filetype-csv fs-1 d-block mb-2"></i>
-                            Click or drop a .csv file
-                        </div>
-                        <div id="csv-selected" class="d-none">
-                            <i class="bi bi-file-earmark-check fs-4 text-success me-2"></i>
-                            <span id="csv-filename" class="fw-semibold"></span>
-                            <button type="button" id="csv-clear" class="btn btn-sm btn-link">Remove</button>
+            <input type="file" id="csv-file-input" name="csv_file" accept=".csv" class="d-none">
+            <div class="row g-4 mb-4">
+                <div class="col-lg-7">
+                    <div class="card">
+                        <div class="card-body">
+                            {% crispy form %}
                         </div>
                     </div>
-                    {% if csv_form.csv_file.errors %}<div class="text-danger small mt-2">{{ csv_form.csv_file.errors|join:", " }}</div>{% endif %}
-                    <div class="mt-3">
-                        <label class="form-label fw-semibold">CSV Format</label>
-                        {{ csv_form.csv_format }}
-                        <div class="form-text text-muted">How your CSV columns map to Cue. Defaults to your organization's format.</div>
-                        {% if csv_form.csv_format.errors %}<div class="text-danger small">{{ csv_form.csv_format.errors|join:", " }}</div>{% endif %}
+                </div>
+                <div class="col-lg-5">
+                    <div class="card">
+                        <div class="card-header"><h5 class="mb-0">Ticket Data (CSV)</h5></div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">Upload a CSV of orders to import now, or add it later from the event page.</p>
+                            <div id="csv-drop-zone" class="flyer-drop-zone text-center p-4" style="cursor: pointer;">
+                                <div id="csv-placeholder" class="text-muted">
+                                    <i class="bi bi-filetype-csv fs-1 d-block mb-2"></i>
+                                    Click or drop a .csv file
+                                </div>
+                                <div id="csv-selected" class="d-none">
+                                    <i class="bi bi-file-earmark-check fs-4 text-success me-2"></i>
+                                    <span id="csv-filename" class="fw-semibold"></span>
+                                    <button type="button" id="csv-clear" class="btn btn-sm btn-link">Remove</button>
+                                </div>
+                            </div>
+                            {% if csv_form.csv_file.errors %}<div class="text-danger small mt-2">{{ csv_form.csv_file.errors|join:", " }}</div>{% endif %}
+                            <div class="mt-3">
+                                <label class="form-label fw-semibold">CSV Format</label>
+                                {{ csv_form.csv_format }}
+                                <div class="form-text text-muted">How your CSV columns map to Cue. Defaults to your organization's format.</div>
+                                {% if csv_form.csv_format.errors %}<div class="text-danger small">{{ csv_form.csv_format.errors|join:", " }}</div>{% endif %}
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -190,16 +201,9 @@
                 <button type="submit" class="btn btn-primary">Create Event</button>
             </div>
         </form>
-        </div>
-        </div>
         {% endif %}
-
-        <div class="mt-3">
-            <a href="{% url 'tickets:event_type_select' %}" class="btn btn-outline-secondary">
-                <i class="bi bi-arrow-left"></i> Back
-            </a>
-        </div>
     </div>
+</div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js" defer></script>
 {% if ticketing_type == 'direct' %}<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js" defer></script>{% endif %}
