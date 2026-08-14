@@ -3,6 +3,7 @@
 {% block title %}Webhook Delivery Log{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
         <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_endpoint_list' %}">Webhooks</a></li>
@@ -88,4 +89,5 @@
     <a href="{% url 'tickets:webhook_endpoint_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Webhooks</a>
 </div>
 {% endif %}
+</div>
 {% endblock %}
