@@ -19,9 +19,6 @@
         <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-outline-secondary">
             <i class="bi bi-plug"></i> Typeform sync
         </a>
-        <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-primary">
-            <i class="bi bi-upload"></i> Upload CSV
-        </a>
     </div>
 </div>
 
@@ -56,9 +53,7 @@
                                 {{ source.name }}
                             </a>
                             {% else %}
-                            <a href="{% url 'tickets:survey_upload_detail' source.upload_id %}">
-                                {{ source.name }}
-                            </a>
+                            {{ source.name }}
                             {% endif %}
                         </td>
                         <td>{{ source.date|naturaltime }}</td>
@@ -83,8 +78,6 @@
                             {% else %}
                             <a href="{% url 'tickets:survey_analytics' %}?upload={{ source.upload_id }}"
                                class="btn btn-sm btn-outline-primary">Analytics</a>
-                            <a href="{% url 'tickets:survey_event_link' source.upload_id %}"
-                               class="btn btn-sm btn-outline-secondary">Link Events</a>
                             {% endif %}
                         </td>
                     </tr>
@@ -98,13 +91,13 @@
 <div class="empty-state">
     <i class="bi bi-clipboard-data d-block"></i>
     <h3>No survey responses yet</h3>
-    <p>Cue collects responses through your built-in event surveys, or you can import a Typeform (or compatible) CSV export.</p>
+    <p>Cue collects responses through your built-in event surveys, or sync them automatically from a connected Typeform form.</p>
     <div class="d-flex gap-2 justify-content-center">
         <a href="{% url 'tickets:survey_hub' %}" class="btn btn-primary">
             <i class="bi bi-clipboard-check"></i> Set up a survey
         </a>
-        <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-outline-secondary">
-            <i class="bi bi-upload"></i> Import a CSV
+        <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-plug"></i> Connect Typeform
         </a>
     </div>
 </div>

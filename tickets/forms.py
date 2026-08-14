@@ -1888,54 +1888,6 @@ class PromoCodeForm(forms.ModelForm):
         return cleaned_data
 
 
-class SurveyUploadForm(forms.Form):
-    """Upload a CSV survey export from Typeform or similar."""
-
-    csv_file = forms.FileField(
-        label='Survey CSV file',
-        widget=forms.ClearableFileInput(attrs={'class': 'form-control', 'accept': '.csv'}),
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.helper = FormHelper()
-        self.helper.form_method = 'post'
-        self.helper.form_enctype = 'multipart/form-data'
-        self.helper.layout = Layout(
-            Field('csv_file'),
-            Submit('submit', 'Upload Survey', css_class='btn btn-primary mt-2'),
-        )
-
-    def clean_csv_file(self):
-        f = self.cleaned_data['csv_file']
-        if not f.name.lower().endswith('.csv'):
-            raise forms.ValidationError('Only .csv files are accepted.')
-        if f.size > 5 * 1024 * 1024:
-            raise forms.ValidationError('File must be under 5 MB.')
-        # Peek at the first line to check column count
-        import csv as _csv
-        import io
-        try:
-            f.seek(0)
-            first_line = f.readline()
-            if isinstance(first_line, bytes):
-                first_line = first_line.decode('utf-8-sig')
-            reader = _csv.reader(io.StringIO(first_line))
-            headers = next(reader, [])
-            if len(headers) < 13:
-                raise forms.ValidationError(
-                    f'Expected at least 13 columns, found {len(headers)}. '
-                    'Please check that this is a valid survey export.'
-                )
-        except forms.ValidationError:
-            raise
-        except Exception:
-            raise forms.ValidationError('Could not read the file. Please check it is a valid CSV.')
-        finally:
-            f.seek(0)
-        return f
-
-
 class UserProfileForm(forms.Form):
     first_name = forms.CharField(max_length=150, required=False, label='First name')
     last_name  = forms.CharField(max_length=150, required=False, label='Last name')
