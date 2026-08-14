@@ -3,6 +3,7 @@
 {% block title %}Pick Typeform forms{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1>Pick forms to sync</h1>
@@ -63,4 +64,5 @@
         <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-outline-secondary">Cancel</a>
     </div>
 </form>
+</div>
 {% endblock %}

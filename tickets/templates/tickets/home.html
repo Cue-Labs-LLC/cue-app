@@ -4,6 +4,7 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1>Dashboard</h1>
@@ -84,20 +85,20 @@
 
 {% if total_customers %}
 <div class="stats-grid">
-    <div class="stat-card stat-card--accent">
+    <div class="stat-card">
         <div class="stat-label">Total Customers</div>
         <div class="stat-value">{{ total_customers|default:0|intcomma }}</div>
         <a href="{% url 'tickets:customer_list' %}" class="stat-link">View all <i class="bi bi-arrow-right"></i></a>
     </div>
-    <div class="stat-card stat-card--success">
+    <div class="stat-card">
         <div class="stat-label">Total Orders</div>
         <div class="stat-value">{{ total_orders|default:0|intcomma }}</div>
     </div>
-    <div class="stat-card stat-card--info">
+    <div class="stat-card">
         <div class="stat-label">Total Revenue</div>
         <div class="stat-value">${{ total_revenue|currency }}</div>
     </div>
-    <div class="stat-card stat-card--warning">
+    <div class="stat-card">
         <div class="stat-label">Total Tickets</div>
         <div class="stat-value">{{ total_tickets|default:0|intcomma }}</div>
     </div>
@@ -320,6 +321,7 @@
         </div>
         {% endif %}
     </div>
+</div>
 </div>
 
 {% include 'tickets/partials/_link_campaigns_modal.html' %}

@@ -5,6 +5,7 @@
 {% block title %}{{ tier.name }} members{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <nav aria-label="breadcrumb" class="mb-3">
     <ol class="breadcrumb" style="font-size: 13px;">
         <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_list' %}">Loyalty</a></li>
@@ -157,4 +158,5 @@
     <p>No customers currently meet this tier's rules. Try recalculating, or adjust the thresholds.</p>
 </div>
 {% endif %}
+</div>
 {% endblock %}

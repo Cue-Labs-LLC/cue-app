@@ -179,6 +179,7 @@
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1 class="page-title">
@@ -204,7 +205,7 @@
         {% include 'tickets/marketing/sms/_plan_progress.html' with step_count=progress.total sent_count=progress.sent scheduled_count=progress.scheduled draft_count=progress.draft %}
     </div>
     <div class="d-flex gap-2 align-items-center">
-        <div class="form-check form-switch d-flex align-items-center gap-2 m-0 me-1" title="Enable or disable this plan">
+        <div class="form-check form-switch d-flex align-items-center gap-2 m-0 me-1" title="Enable or disable this sequence">
             <input class="form-check-input" type="checkbox" role="switch" id="planEnableToggle"
                    data-toggle-url="{% url 'tickets:sms_plan_toggle_enabled' pk=plan.id %}"
                    {% if plan.enabled %}checked{% endif %}>
@@ -214,7 +215,7 @@
         <button type="button" class="btn btn-primary btn-sm" id="planConfirmAllBtn"
                 data-preview-url="{% url 'tickets:sms_plan_preview_all' pk=plan.id %}"
                 data-confirm-url="{% url 'tickets:sms_plan_confirm_all' pk=plan.id %}"
-                {% if not plan.enabled %}disabled title="Enable the plan to send"{% endif %}>
+                {% if not plan.enabled %}disabled title="Enable the sequence to send"{% endif %}>
             <i class="bi bi-send-check"></i> Confirm &amp; schedule all
         </button>
         {% endif %}
@@ -235,13 +236,13 @@
 </div>
 
 <div class="alert alert-warning py-2 px-3" id="planDisabledBanner"{% if plan.enabled %} hidden{% endif %}>
-    <i class="bi bi-pause-circle me-2"></i>This plan is <strong>disabled</strong> — its scheduled messages are paused and won't send until you enable it.
+    <i class="bi bi-pause-circle me-2"></i>This sequence is <strong>disabled</strong> — its scheduled messages are paused and won't send until you enable it.
 </div>
 
 {% if overdue_steps %}
 <div class="alert alert-warning d-flex align-items-center justify-content-between gap-2 py-2 px-3" id="overdueBanner">
     <div><i class="bi bi-exclamation-triangle-fill"></i>
-        {{ overdue_steps|length }} scheduled message{{ overdue_steps|length|pluralize }} missed {{ overdue_steps|length|pluralize:"its,their" }} send time while this plan was disabled.
+        {{ overdue_steps|length }} scheduled message{{ overdue_steps|length|pluralize }} missed {{ overdue_steps|length|pluralize:"its,their" }} send time while this sequence was disabled.
     </div>
     <button type="button" class="btn btn-sm btn-warning" id="overdueReviewBtn">Review</button>
 </div>
@@ -298,7 +299,7 @@
                       class="plan-step-remove m-0" data-remove-form>
                     {% csrf_token %}
                     <button type="button" class="plan-step-remove-btn" data-remove-trigger
-                            title="Remove from plan" aria-label="Remove from plan">
+                            title="Remove from sequence" aria-label="Remove from sequence">
                         <i class="bi bi-trash"></i>
                     </button>
                 </form>
@@ -344,7 +345,7 @@
                     <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
                             data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
                             data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}"
-                            {% if not plan.enabled %}disabled title="Enable the plan to send"{% endif %}>
+                            {% if not plan.enabled %}disabled title="Enable the sequence to send"{% endif %}>
                         <i class="bi bi-send"></i> Confirm &amp; Schedule
                     </button>
                     {% endif %}
@@ -388,7 +389,7 @@
     {% empty %}
     <div class="empty-state">
         <i class="bi bi-inbox"></i>
-        <p>This plan has no steps.</p>
+        <p>This sequence has no steps.</p>
     </div>
     {% endfor %}
     {% if steps %}
@@ -403,6 +404,9 @@
     {% endwith %}
     {% endif %}
 </div>
+</div>{% comment %} /max-width wrapper — modals below stay outside it so the Bootstrap
+backdrop (appended to <body>) doesn't paint over them (the page-load fadeIn on
+.content > * traps nested modals). {% endcomment %}
 
 <div class="modal fade" id="removeStepModal" tabindex="-1" aria-labelledby="removeStepModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -411,7 +415,7 @@
                 <h5 class="modal-title" id="removeStepModalLabel">Remove message</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">Remove this message from the plan? This can't be undone.</div>
+            <div class="modal-body">Remove this message from the sequence? This can't be undone.</div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
@@ -440,10 +444,10 @@
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="deletePlanModalLabel">Delete plan</h5>
+                <h5 class="modal-title" id="deletePlanModalLabel">Delete sequence</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">Delete this plan? Campaigns you already launched from it are unaffected. This can't be undone.</div>
+            <div class="modal-body">Delete this sequence? Sends you already launched from it are unaffected. This can't be undone.</div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="deletePlanConfirm">Delete</button>
@@ -456,10 +460,10 @@
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="regeneratePlanModalLabel">Regenerate plan</h5>
+                <h5 class="modal-title" id="regeneratePlanModalLabel">Regenerate sequence</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">Regenerate the whole plan? The AI will draft a fresh sequence and replace every message here, discarding any edits you've made. Your plan name is kept.</div>
+            <div class="modal-body">Regenerate the whole sequence? The AI will draft a fresh sequence and replace every message here, discarding any edits you've made. Your sequence name is kept.</div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="regeneratePlanConfirm"><i class="bi bi-arrow-repeat"></i> Regenerate</button>
@@ -723,7 +727,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary small">This plan is disabled, so these messages were held past their scheduled time. Choose what to do with each — send it now, pick a new time, or skip it (cancel &amp; refund).</p>
+                <p class="text-secondary small">This sequence is disabled, so these messages were held past their scheduled time. Choose what to do with each — send it now, pick a new time, or skip it (cancel &amp; refund).</p>
                 {% for od in overdue_steps %}
                 <div class="overdue-row border rounded p-2 mb-2" data-step="{{ od.order }}"
                      data-action-url="{% url 'tickets:sms_plan_overdue_action' pk=plan.id step=od.order %}">
@@ -1255,7 +1259,7 @@ document.addEventListener('DOMContentLoaded', function () {
         var ta = card ? card.querySelector('.plan-step-message') : null;
         var emptyBody = ta ? !ta.value.trim() : false;
         openBtn.disabled = !planIsEnabled() || emptyBody;
-        openBtn.title = !planIsEnabled() ? 'Enable the plan to send'
+        openBtn.title = !planIsEnabled() ? 'Enable the sequence to send'
                       : (emptyBody ? 'Write a message first' : '');
     }
 
@@ -1443,7 +1447,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var confirmAll = document.getElementById('planConfirmAllBtn');
             if (confirmAll) {
                 confirmAll.disabled = !enabled;
-                confirmAll.title = enabled ? '' : 'Enable the plan to send';
+                confirmAll.title = enabled ? '' : 'Enable the sequence to send';
             }
         }
         reflectEnabled(enableToggle.checked);

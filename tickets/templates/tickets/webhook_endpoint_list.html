@@ -3,6 +3,7 @@
 {% block title %}Webhooks{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1>Webhooks</h1>
@@ -69,4 +70,5 @@
     <a href="{% url 'tickets:webhook_endpoint_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Add your first endpoint</a>
 </div>
 {% endif %}
+</div>
 {% endblock %}

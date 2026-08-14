@@ -3717,88 +3717,10 @@ def _invalidate_marketing_cache(org):
 @require_org
 @require_host
 def marketing_overview(request):
-    """Org-wide marketing performance dashboard with AI recommendations."""
-    org = get_organization(request)
-    window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
-    allowed_tabs = {'overview', 'email', 'ads'}
-    active_tab = request.GET.get('tab', 'overview').lower()
-    if active_tab not in allowed_tabs:
-        active_tab = 'overview'
-
-    metrics = get_cached_marketing_metrics(org, window_days, window_key)
-
-    # Respect the org's Action Center toggle: if marketing-attribution actions are
-    # turned off, don't surface them inline on the marketing page either.
-    if AIRecommendation.Kind.MARKETING_ATTRIBUTION in (org.disabled_action_kinds or []):
-        recommendations = AIRecommendation.objects.none()
-    else:
-        recommendations = (
-            AIRecommendation.objects
-            .filter(
-                organization=org,
-                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
-                status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-            )
-            .select_related('event')
-            .order_by(
-                Case(
-                    When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
-                    When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
-                    default=Value(2),
-                    output_field=models.IntegerField(),
-                ),
-                '-confidence',
-                '-created_at',
-            )[:20]
-        )
-
-    trend_chart = {
-        'labels': [row['month'] for row in metrics['trends']],
-        'email_revenue': [float(row['email_revenue']) for row in metrics['trends']],
-        'sms_revenue': [float(row['sms_revenue']) for row in metrics['trends']],
-        'ads_spend': [float(row['ads_spend']) for row in metrics['trends']],
-    }
-    engagement_chart = {
-        'labels': [row['month'] for row in metrics['engagement_trends']],
-        'email_opens': [row['email_opens'] for row in metrics['engagement_trends']],
-        'email_clicks': [row['email_clicks'] for row in metrics['engagement_trends']],
-        'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
-    }
-
-    # Public subscribe link the organizer shares (Linktree, flyers, socials) to
-    # grow their SMS audience. Built absolute so copy/QR work off-dashboard.
-    import base64
-    from .utils import generate_qr_png_bytes
-    from .services.customer_filters import market_filter_options
-    subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
-    _qr_png = generate_qr_png_bytes(subscribe_url)
-    subscribe_qr = (
-        'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
-    )
-    # Market segmentation on the subscribe form is only offered when the org has >1
-    # market (otherwise there's nothing to segment). The toggle stores the choice on
-    # the org; the subscribe form then asks each new fan which market they're in.
-    market_count = len(market_filter_options(org)[0])
-
-    context = {
-        'metrics': metrics,
-        'recommendations': recommendations,
-        'window_choices': MARKETING_WINDOW_CHOICES,
-        'window_key': window_key,
-        'window_label': window_label,
-        'active_tab': active_tab,
-        'trend_chart_json': json.dumps(trend_chart),
-        'engagement_chart_json': json.dumps(engagement_chart),
-        'org_sms_marketing_enabled': org.sms_marketing_enabled,
-        'subscribe_url': subscribe_url,
-        'subscribe_qr': subscribe_qr,
-        'market_count': market_count,
-        'subscribe_title': org.sms_subscribe_title,
-        'segment_by_market': org.sms_subscribe_segment_by_market,
-        'market_label': org.sms_subscribe_market_label,
-        'marketing_section': 'overview',
-    }
-    return render(request, 'tickets/marketing_overview.html', context)
+    """Legacy /marketing/ entry point. Marketing is now a single unified SMS page;
+    the old Overview (grow-audience) content lives on that page's Grow tab. Redirect
+    there so bookmarks and any lingering links keep working."""
+    return redirect(f"{reverse('tickets:sms_campaign_list')}?view=grow")
 
 
 @login_required
@@ -3807,10 +3729,10 @@ def marketing_overview(request):
 @require_http_methods(["POST"])
 def marketing_subscribe_settings(request):
     """Configure the public subscribe page's headline and market segmentation. Small
-    dedicated endpoint so the heavy GET marketing_overview stays GET-only. Independent
-    controls post here: the custom title, the on/off switch, and the picker's custom
-    label. Each only touches its own field (the presence of a field's key selects its
-    branch) so saving one never clobbers the others."""
+    dedicated endpoint so the heavy GET SMS page stays GET-only. Independent controls
+    post here: the custom title, the on/off switch, and the picker's custom label.
+    Each only touches its own field (the presence of a field's key selects its branch)
+    so saving one never clobbers the others."""
     org = get_organization(request)
     if 'subscribe_title' in request.POST:
         org.sms_subscribe_title = request.POST.get('subscribe_title', '').strip()[:80]
@@ -3822,7 +3744,7 @@ def marketing_subscribe_settings(request):
         org.sms_subscribe_segment_by_market = bool(request.POST.get('segment_by_market'))
         org.save(update_fields=['sms_subscribe_segment_by_market', 'updated_at'])
     messages.success(request, 'Subscribe settings updated.')
-    return redirect('tickets:marketing_overview')
+    return redirect(f"{reverse('tickets:sms_campaign_list')}?view=grow")
 
 
 @login_required
@@ -14534,56 +14456,6 @@ def recover_pending_payouts(request):
 # ---------------------------------------------------------------------------
 # External Survey views
 # ---------------------------------------------------------------------------
-
-@login_required
-@require_org
-def survey_upload_list(request):
-    org = get_organization(request)
-
-    external_uploads = ExternalSurveyUpload.objects.filter(
-        organization=org
-    ).order_by('-uploaded_at')
-
-    # Native Cue surveys are stored per-response; group them by event so each
-    # event with responses becomes a single row in the unified list.
-    native_rows = (
-        SurveyResponse.objects.filter(organization=org)
-        .values('event_id', 'event__name')
-        .annotate(response_count=Count('id'), last_response=Max('submitted_at'))
-        .order_by('-last_response')
-    )
-
-    # Native and external surveys share one interface, distinguished by a source
-    # label. Build a combined, newest-first list the template renders as one table.
-    sources = []
-    for upload in external_uploads:
-        sources.append({
-            'kind': 'external',
-            'label': 'External upload',
-            'name': upload.filename,
-            'date': upload.uploaded_at,
-            'response_count': upload.row_count,
-            'status': upload.status,
-            'upload_id': upload.id,
-        })
-    for row in native_rows:
-        sources.append({
-            'kind': 'native',
-            'label': 'Cue survey',
-            'name': row['event__name'] or 'Survey',
-            'date': row['last_response'],
-            'response_count': row['response_count'],
-            'status': 'active',
-            'event_id': row['event_id'],
-        })
-    sources.sort(key=lambda s: s['date'], reverse=True)
-
-    has_external = any(s['kind'] == 'external' for s in sources)
-
-    return render(request, 'tickets/survey_upload_list.html', {
-        'sources': sources,
-        'has_external': has_external,
-    })
 
 
 @login_required

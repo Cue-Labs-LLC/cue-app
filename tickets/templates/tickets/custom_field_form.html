@@ -4,6 +4,7 @@
 {% block title %}{{ action }} Custom Field{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <nav aria-label="breadcrumb" class="mb-3">
     <ol class="breadcrumb" style="font-size: 13px;">
         <li class="breadcrumb-item"><a href="{% url 'tickets:custom_field_list' %}">Custom Fields</a></li>
@@ -81,6 +82,7 @@
             </div>
         </form>
     </div>
+</div>
 </div>
 {% endblock %}
 

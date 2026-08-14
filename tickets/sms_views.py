@@ -533,13 +533,14 @@ def sms_campaign_list(request):
         market_order = ['All Markets']
     audience_points = {'by_market': by_market, 'market_order': market_order}
 
-    # Sub-views: Campaigns (unified) + Audience — same for all orgs.
-    sms_views = ['campaigns', 'audience']
+    # Sub-views: Campaigns (unified) + Audience + Grow (the subscribe-link panel,
+    # merged in from the old Marketing Overview page) — same for all orgs.
+    sms_views = ['campaigns', 'audience', 'grow']
     view = request.GET.get('view', 'campaigns').lower()
     if view not in sms_views:
         view = 'campaigns'
 
-    return render(request, 'tickets/marketing/sms/campaign_list.html', {
+    context = {
         'campaigns_page': campaigns_page,
         'scheduled_campaigns': scheduled_campaigns,
         'sending_campaigns': sending_campaigns,
@@ -559,7 +560,29 @@ def sms_campaign_list(request):
         'market_breakdown': market_breakdown,
         'audience_points_json': json.dumps(audience_points),
         'link_events': _org_events_for_picker(org),
-    })
+    }
+
+    # Grow view: the public subscribe link + QR + settings. Built only when that
+    # tab is active so the default Sends view skips the QR render. Mirrors the
+    # pattern the old marketing_overview view used.
+    if view == 'grow':
+        import base64
+        from .utils import generate_qr_png_bytes
+        subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
+        _qr_png = generate_qr_png_bytes(subscribe_url)
+        subscribe_qr = (
+            'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
+        )
+        context.update({
+            'subscribe_url': subscribe_url,
+            'subscribe_qr': subscribe_qr,
+            'market_count': len(market_filter_options(org)[0]),
+            'subscribe_title': org.sms_subscribe_title,
+            'segment_by_market': org.sms_subscribe_segment_by_market,
+            'market_label': org.sms_subscribe_market_label,
+        })
+
+    return render(request, 'tickets/marketing/sms/campaign_list.html', context)
 
 
 @login_required

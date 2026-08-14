@@ -6428,7 +6428,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertContains(response, 'Survey sent to 3 attendees')
         self.assertContains(response, 'Responses will appear here as they come in.')
         # The "nothing has happened" copy must NOT show once a survey has gone out.
-        self.assertNotContains(response, 'Build a survey in Cue and send it')
+        self.assertNotContains(response, 'No survey responses yet')
         # The Send modal explains the recipient count is a remainder.
         self.assertContains(response, 'already received this survey')
 
@@ -6441,7 +6441,7 @@ class SurveySentConfirmationTests(TestCase):
         # No send has happened -> original onboarding empty state, no confirmation.
         self.assertNotContains(response, 'Survey sent to')
         self.assertNotContains(response, 'already received this survey')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
     def test_unsent_invitations_do_not_count_as_sent(self):
         # A scheduled-but-not-yet-sent invitation must not trigger the confirmation.
@@ -6452,7 +6452,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['survey_sent_count'], 0)
         self.assertNotContains(response, 'Survey sent to')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
 
 class EventDetailAllocationChartTest(TestCase):
@@ -9574,7 +9574,8 @@ class MarketingAnalyticsServiceTests(TestCase):
 
 
 class MarketingOverviewViewTests(TestCase):
-    """View-level tests for the marketing overview page."""
+    """View-level tests for the unified SMS page: the legacy /marketing/ redirect
+    and the Grow tab that hosts the shareable subscribe link."""
 
     def setUp(self):
         self.client = Client()
@@ -9590,31 +9591,36 @@ class MarketingOverviewViewTests(TestCase):
         response = anon.get(reverse('tickets:marketing_overview'))
         self.assertEqual(response.status_code, 302)
 
-    def test_overview_renders_with_default_window(self):
+    def test_marketing_url_redirects_to_sms_grow(self):
         response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertRedirects(
+            response, reverse('tickets:sms_campaign_list') + '?view=grow',
+        )
+
+    def test_sms_page_default_window(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(response.status_code, 200)
-        self.assertIn('metrics', response.context)
         self.assertEqual(response.context['window_key'], '90')
 
     def test_window_querystring_overrides_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=all')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=all')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], 'all')
 
     def test_invalid_window_falls_back_to_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=banana')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=banana')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], '90')
 
-    def test_overview_shows_shareable_subscribe_link(self):
-        response = self.client.get(reverse('tickets:marketing_overview'))
+    def test_grow_view_shows_shareable_subscribe_link(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'grow'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context['subscribe_url'],
             f"http://testserver/subscribe/{self.org.slug}/",
         )
         self.assertContains(response, f'/subscribe/{self.org.slug}/')
-        self.assertContains(response, 'Grow your audience')
+        self.assertContains(response, '<h2>Grow your audience</h2>')
         self.assertContains(response, 'subscribeLinkCopy')
 
 
@@ -22423,3 +22429,69 @@ class OrganizerWaitlistAcceptedEmailTests(TestCase):
         # Re-saving an already-approved entry must not send again.
         self.admin.save_model(self._request(), entry, form=None, change=True)
         self.assertEqual(len(mail.outbox), 1)
+
+
+class ViewModeOrganizerGuardTests(TestCase):
+    """The Attendee View toggle must win over the superuser bypass.
+
+    Regression: a superuser (who is also an organizer) in Attendee View used to
+    render organizer page bodies (e.g. the event list) inside attendee chrome,
+    because require_organizer returned early for superusers before checking the
+    session view mode. Now the view-mode check runs first for everyone.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='View Mode Org', slug='view-mode-org')
+
+        # Superuser who is also an organizer member of the org.
+        self.superuser = User.objects.create_superuser(
+            username='vmsuper', email='vmsuper@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.superuser, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.superuser, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Plain organizer (not superuser) for the baseline path.
+        self.organizer = User.objects.create_user(
+            username='vmorg', email='vmorg@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.organizer, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.organizer, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _set_view_mode(self, mode):
+        session = self.client.session
+        session['_view_mode'] = mode
+        session['_org_id'] = str(self.org.pk)
+        session.save()
+
+    def test_superuser_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
+
+    def test_superuser_in_organizer_mode_sees_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('organizer')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_organizer_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.organizer)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
