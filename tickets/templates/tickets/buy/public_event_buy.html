@@ -238,18 +238,42 @@
         }
         .event-description-wrap { position: relative; }
 
+        .event-photos__label {
+            font-family: var(--font-mono);
+            font-size: var(--fs-micro);
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin: 22px 0 10px;
+        }
         .event-photos {
             display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-top: 20px;
+            gap: 10px;
+            overflow-x: auto;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            padding-bottom: 2px;
+            margin: 0 -20px;          /* bleed to the column edges so the strip reads as a rail */
+            padding-left: 20px;
+            padding-right: 20px;
         }
-        .event-photo { margin: 0; }
+        .event-photos::-webkit-scrollbar { display: none; }
+        .event-photo {
+            flex: 0 0 auto;
+            width: clamp(132px, 42%, 168px);
+            aspect-ratio: 4 / 5;
+            margin: 0;
+            overflow: hidden;
+            border-radius: var(--radius);
+            border: 1px solid var(--border-mid);
+            scroll-snap-align: start;
+        }
         .event-photo img {
             display: block;
             width: 100%;
-            height: auto;
-            border-radius: 10px;
+            height: 100%;
+            object-fit: cover;
         }
 
         .btn-view-more {
@@ -1122,6 +1146,7 @@
     {% endif %}
 
     {% if event_images %}
+    <div class="event-photos__label">Photos</div>
     <div class="event-photos">
         {% for im in event_images %}
         <figure class="event-photo">
