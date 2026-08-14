@@ -5,6 +5,8 @@
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
 {% block extra_head %}
+<style>/* No page fade when switching the tabs — each tab is a full navigation. */
+.content > * { animation: none; }</style>
 {% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
