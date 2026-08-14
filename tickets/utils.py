@@ -176,6 +176,13 @@ def require_organizer(view_func):
     """
     @wraps(view_func)
     def _wrapped(request, *args, **kwargs):
+        # Respect the session view-mode toggle before the superuser bypass. An
+        # organizer (or an admin dogfooding) who has switched to Attendee View
+        # gets attendee chrome from the context processor; without this check
+        # first, a superuser would still render organizer content inside that
+        # attendee chrome (organizer page body, attendee sidebar).
+        if request.session.get('_view_mode') == 'attendee':
+            return redirect('tickets:attendee_dashboard')
         if request.user.is_superuser:
             return view_func(request, *args, **kwargs)
         from .models import UserProfile
@@ -184,9 +191,6 @@ def require_organizer(view_func):
         except UserProfile.DoesNotExist:
             return redirect('tickets:attendee_dashboard')
         if not profile.is_organizer:
-            return redirect('tickets:attendee_dashboard')
-        # Respect session view mode
-        if request.session.get('_view_mode') == 'attendee':
             return redirect('tickets:attendee_dashboard')
         return view_func(request, *args, **kwargs)
     return _wrapped
@@ -197,6 +201,12 @@ def _org_role_required(min_check):
     def decorator(view_func):
         @wraps(view_func)
         def _wrapped(request, *args, **kwargs):
+            # Respect the session view-mode toggle before the superuser bypass so
+            # an admin (or organizer) in Attendee View is sent to the attendee
+            # dashboard rather than rendering an organizer page inside attendee
+            # chrome. Mirrors require_organizer.
+            if request.session.get('_view_mode') == 'attendee':
+                return redirect('tickets:attendee_dashboard')
             if request.user.is_superuser:
                 return view_func(request, *args, **kwargs)
             from .models import UserProfile, OrganizationMembership
@@ -204,9 +214,6 @@ def _org_role_required(min_check):
             try:
                 profile = request.user.profile
             except UserProfile.DoesNotExist:
-                return HttpResponseForbidden('Access denied.')
-            # Respect session view mode
-            if request.session.get('_view_mode') == 'attendee':
                 return HttpResponseForbidden('Access denied.')
             # Resolve role from active org's membership (in-memory only, no .save())
             active_org = get_organization(request)

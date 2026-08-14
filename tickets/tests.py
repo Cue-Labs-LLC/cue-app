@@ -22429,3 +22429,69 @@ class OrganizerWaitlistAcceptedEmailTests(TestCase):
         # Re-saving an already-approved entry must not send again.
         self.admin.save_model(self._request(), entry, form=None, change=True)
         self.assertEqual(len(mail.outbox), 1)
+
+
+class ViewModeOrganizerGuardTests(TestCase):
+    """The Attendee View toggle must win over the superuser bypass.
+
+    Regression: a superuser (who is also an organizer) in Attendee View used to
+    render organizer page bodies (e.g. the event list) inside attendee chrome,
+    because require_organizer returned early for superusers before checking the
+    session view mode. Now the view-mode check runs first for everyone.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='View Mode Org', slug='view-mode-org')
+
+        # Superuser who is also an organizer member of the org.
+        self.superuser = User.objects.create_superuser(
+            username='vmsuper', email='vmsuper@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.superuser, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.superuser, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Plain organizer (not superuser) for the baseline path.
+        self.organizer = User.objects.create_user(
+            username='vmorg', email='vmorg@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.organizer, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.organizer, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _set_view_mode(self, mode):
+        session = self.client.session
+        session['_view_mode'] = mode
+        session['_org_id'] = str(self.org.pk)
+        session.save()
+
+    def test_superuser_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
+
+    def test_superuser_in_organizer_mode_sees_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('organizer')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_organizer_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.organizer)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
