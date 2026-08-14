@@ -7,7 +7,6 @@ from django.db.models.functions import Coalesce
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
-    AIRecommendation,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
@@ -28,16 +27,6 @@ from .models import (
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
     DeviceToken,
 )
-
-
-@admin.register(AIRecommendation)
-class AIRecommendationAdmin(admin.ModelAdmin):
-    list_display = ['title', 'organization', 'kind', 'priority', 'status', 'confidence', 'event', 'customer', 'created_at']
-    list_filter = ['organization', 'kind', 'priority', 'status', 'created_at']
-    search_fields = ['title', 'summary', 'dedupe_key', 'event__name', 'customer__email', 'customer__name']
-    readonly_fields = ['id', 'created_at', 'updated_at', 'reviewed_at', 'dismissed_at', 'resolved_at']
-    autocomplete_fields = ['organization', 'event', 'customer']
-    date_hierarchy = 'created_at'
 
 
 class JSONWidget(forms.Textarea):

@@ -9,7 +9,7 @@ from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
 from django.utils.safestring import mark_safe
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint, AIRecommendation
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
@@ -153,57 +153,6 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
         self.fields['timezone'].widget.choices = choices
         self.fields['timezone'].choices = choices
         self.fields['timezone'].required = False
-
-
-class OrgActionKindsForm(forms.Form):
-    """Toggle which AIRecommendation kinds appear in the org's Action Center.
-
-    The enabled/disabled state lives in the Organization.disabled_action_kinds
-    JSONField (a list of turned-off Kind values). This form flattens that list into
-    one switch per Kind (checked = enabled) and writes the unchecked kinds back on
-    save — mirroring how SegmentTuningForm flattens a JSONField.
-    """
-
-    # One-line description of what each kind surfaces, shown under its switch.
-    KIND_DESCRIPTIONS = {
-        AIRecommendation.Kind.SALES_PACING:
-            'Flags upcoming events selling slower than expected so you can act in time.',
-        AIRecommendation.Kind.POST_EVENT_WRAPUP:
-            'Prompts a wrap-up review once an event has ended.',
-        AIRecommendation.Kind.WINBACK_AUDIENCE:
-            'Surfaces lapsed customers worth re-engaging with a win-back campaign.',
-        AIRecommendation.Kind.MARKETING_ATTRIBUTION:
-            'Highlights gaps and imbalances in your marketing attribution and channel ROI.',
-        AIRecommendation.Kind.MARKETING_UNCONFIRMED:
-            'Asks you to confirm marketing results that were matched to an event automatically.',
-    }
-
-    def __init__(self, *args, **kwargs):
-        self.instance = kwargs.pop('instance')
-        super().__init__(*args, **kwargs)
-        disabled = self.instance.disabled_action_kinds or []
-        for value, label in AIRecommendation.Kind.choices:
-            self.fields[value] = forms.BooleanField(
-                required=False,
-                label=label,
-                initial=value not in disabled,
-                widget=forms.CheckboxInput(
-                    attrs={'class': 'form-check-input', 'role': 'switch'}
-                ),
-                help_text=self.KIND_DESCRIPTIONS.get(value, ''),
-            )
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-
-    def save(self):
-        disabled = [
-            value
-            for value, _label in AIRecommendation.Kind.choices
-            if not self.cleaned_data.get(value)
-        ]
-        self.instance.disabled_action_kinds = disabled
-        self.instance.save(update_fields=['disabled_action_kinds', 'updated_at'])
-        return self.instance
 
 
 class SegmentTuningForm(forms.ModelForm):
