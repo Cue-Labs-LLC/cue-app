@@ -6428,7 +6428,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertContains(response, 'Survey sent to 3 attendees')
         self.assertContains(response, 'Responses will appear here as they come in.')
         # The "nothing has happened" copy must NOT show once a survey has gone out.
-        self.assertNotContains(response, 'Build a survey in Cue and send it')
+        self.assertNotContains(response, 'No survey responses yet')
         # The Send modal explains the recipient count is a remainder.
         self.assertContains(response, 'already received this survey')
 
@@ -6441,7 +6441,7 @@ class SurveySentConfirmationTests(TestCase):
         # No send has happened -> original onboarding empty state, no confirmation.
         self.assertNotContains(response, 'Survey sent to')
         self.assertNotContains(response, 'already received this survey')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
     def test_unsent_invitations_do_not_count_as_sent(self):
         # A scheduled-but-not-yet-sent invitation must not trigger the confirmation.
@@ -6452,7 +6452,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['survey_sent_count'], 0)
         self.assertNotContains(response, 'Survey sent to')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
 
 class EventDetailAllocationChartTest(TestCase):
