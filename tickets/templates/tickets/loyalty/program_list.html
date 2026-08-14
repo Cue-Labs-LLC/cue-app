@@ -4,6 +4,7 @@
 {% block title %}Loyalty{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <h1>Loyalty Programs</h1>
     <div class="page-header-actions">
@@ -61,4 +62,5 @@
     <a href="{% url 'tickets:loyalty_program_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create your first program</a>
 </div>
 {% endif %}
+</div>
 {% endblock %}

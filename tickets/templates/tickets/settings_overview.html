@@ -3,6 +3,7 @@
 {% block title %}Settings{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1>Settings</h1>
@@ -51,11 +52,6 @@
         <span class="hub-link-title">Display Preferences</span>
         <p class="hub-link-copy">Choose which optional cards appear on event pages.</p>
     </a>
-    <a href="{% url 'tickets:settings_action_center' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-magic"></i></span>
-        <span class="hub-link-title">Action Center</span>
-        <p class="hub-link-copy">Choose which types of suggestions appear in your Action Center.</p>
-    </a>
     <a href="{% url 'tickets:settings_brand_voice' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-chat-quote"></i></span>
         <span class="hub-link-title">Brand Voice</span>
@@ -65,11 +61,6 @@
         <span class="hub-link-icon"><i class="bi bi-diagram-3"></i></span>
         <span class="hub-link-title">Segment Settings</span>
         <p class="hub-link-copy">Choose whether customer segments use automatic scoring or custom cut-offs.</p>
-    </a>
-    <a href="{% url 'tickets:custom_field_list' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-sliders"></i></span>
-        <span class="hub-link-title">Custom Fields</span>
-        <p class="hub-link-copy">Collect structured event data with organization-specific fields.</p>
     </a>
     <a href="{% url 'tickets:income_source_list' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-cash-stack"></i></span>
@@ -91,11 +82,7 @@
         <span class="hub-link-title">Webhooks</span>
         <p class="hub-link-copy">Send signed HTTP callbacks to your systems when events, orders, and customers are created.</p>
     </a>
-    <a href="{% url 'tickets:ai_token_usage' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-cpu"></i></span>
-        <span class="hub-link-title">AI Token Usage</span>
-        <p class="hub-link-copy">Review monthly token usage for billable AI features.</p>
-    </a>
 </div>
 {% endif %}
+</div>
 {% endblock %}
