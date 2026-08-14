@@ -26,6 +26,10 @@ def _event_flyer_upload_to(instance, filename):
     return f"orgs/{instance.organization.slug}/event_flyers/{filename}"
 
 
+def _event_image_upload_to(instance, filename):
+    return f"orgs/{instance.event.organization.slug}/event_images/{filename}"
+
+
 def _csv_upload_to(instance, filename):
     org_slug = instance.organization.slug if instance.organization_id else 'unknown'
     return f"orgs/{org_slug}/csv_uploads/{instance.id}_{filename}"
@@ -1638,6 +1642,19 @@ class Event(AuditBaseModel):
         except Exception:
             tz = ZoneInfo('America/Los_Angeles')
         return datetime.combine(end_date, end_time, tzinfo=tz)
+
+
+class EventImage(BaseModel):
+    """A photo attached to an event, shown on the public buy page below the description."""
+    event = models.ForeignKey('Event', on_delete=models.CASCADE, related_name='images')
+    image = models.ImageField(upload_to=_event_image_upload_to, storage=_get_media_storage)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+
+    class Meta:
+        ordering = ['sort_order', 'created_at']
+
+    def __str__(self):
+        return f"Image for event {self.event_id}"
 
 
 def generate_unique_scanner_pin():

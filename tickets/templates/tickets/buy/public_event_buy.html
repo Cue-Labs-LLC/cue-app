@@ -223,7 +223,7 @@
         .event-desc ul, .event-desc ol { padding-left: 1.3rem; margin-bottom: 10px; }
         /* Keep pasted rich-text HTML from breaking out of the 540px column */
         .event-desc * { max-width: 100%; }
-        .event-desc img { display: block; margin: 12px auto; height: auto; max-height: 480px; border-radius: 8px; }
+        .event-desc img { height: auto; }
         .event-desc pre { white-space: pre-wrap; overflow-wrap: break-word; }
         .event-desc table { width: 100%; table-layout: fixed; }
 
@@ -237,6 +237,20 @@
             background: linear-gradient(to bottom, transparent, var(--bg));
         }
         .event-description-wrap { position: relative; }
+
+        .event-photos {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 20px;
+        }
+        .event-photo { margin: 0; }
+        .event-photo img {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+        }
 
         .btn-view-more {
             background: none;
@@ -1105,6 +1119,16 @@
         <div class="event-description-fade"></div>
     </div>
     <button type="button" class="btn-view-more" id="desc-toggle" style="display:none;">View more</button>
+    {% endif %}
+
+    {% if event_images %}
+    <div class="event-photos">
+        {% for im in event_images %}
+        <figure class="event-photo">
+            <img src="{{ im.image.url }}" alt="{{ event.name }} photo" loading="lazy">
+        </figure>
+        {% endfor %}
+    </div>
     {% endif %}
 
     {% if event.venue.street_address %}

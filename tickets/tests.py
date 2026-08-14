@@ -1,5 +1,6 @@
 import uuid
 import json
+import tempfile
 from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, MagicMock
 from django.contrib.auth.models import AnonymousUser, User
@@ -13,7 +14,7 @@ from django.utils import timezone
 from decimal import Decimal
 from rest_framework.authtoken.models import Token
 from .models import (
-    UploadedFile, TicketOrder, Customer, CustomerTag, Event,
+    UploadedFile, TicketOrder, Customer, CustomerTag, Event, EventImage,
     Venue, Market, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     AITokenUsage, AIRecommendation,
@@ -22425,51 +22426,87 @@ class OrganizerWaitlistAcceptedEmailTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
 
 
-class EventDescriptionImageUploadTests(TestCase):
-    """Tests for the event_description_image_upload endpoint (rich-text photos)."""
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class EventImageGalleryTests(TestCase):
+    """Tests for the event photo gallery (upload/delete/reorder + public render)."""
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Desc Img Org', slug='desc-img-org')
+        self.org = Organization.objects.create(name='Gallery Org', slug='gallery-org')
         self.user = User.objects.create_user(
-            username='descimg', email='descimg@test.com', password='testpass123')
+            username='galleryowner', email='gallery@test.com', password='testpass123')
         UserProfile.objects.create(
             user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
-        self.client.login(username='descimg@test.com', password='testpass123')
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.event = Event.objects.create(
+            organization=self.org, name='Gallery Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type=TICKETING_TYPE_DIRECT, status='live',
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='GA', price=Decimal('20.00'), quantity_limit=50)
+        self.client.login(username='gallery@test.com', password='testpass123')
         self.client.get(reverse('tickets:home'))  # seed _org_id for @require_org
-        self.url = reverse('tickets:event_description_image_upload')
 
-    def _png_upload(self, name='photo.png'):
+    def _png(self, name='p.png'):
         from io import BytesIO
         from django.core.files.uploadedfile import SimpleUploadedFile
         from PIL import Image
         buf = BytesIO()
-        Image.new('RGB', (4, 4), (200, 30, 30)).save(buf, format='PNG')
+        Image.new('RGB', (4, 4), (10, 120, 200)).save(buf, format='PNG')
         buf.seek(0)
         return SimpleUploadedFile(name, buf.read(), content_type='image/png')
 
-    def test_upload_success_returns_url(self):
-        import tempfile
-        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
-            resp = self.client.post(self.url, {'image': self._png_upload()})
+    def test_upload_creates_images(self):
+        url = reverse('tickets:event_image_upload', args=[self.event.id])
+        resp = self.client.post(url, {'image': [self._png('a.png'), self._png('b.png')]})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data['success'])
-        self.assertIn('event_description_images', data['url'])
+        self.assertEqual(len(data['images']), 2)
+        self.assertEqual(EventImage.objects.filter(event=self.event).count(), 2)
+        # sort_order assigned sequentially
+        self.assertEqual(
+            sorted(EventImage.objects.filter(event=self.event).values_list('sort_order', flat=True)),
+            [0, 1])
 
-    def test_missing_file_400(self):
-        resp = self.client.post(self.url, {})
-        self.assertEqual(resp.status_code, 400)
-        self.assertFalse(resp.json()['success'])
-
-    def test_non_image_400(self):
+    def test_non_image_rejected(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        bad = SimpleUploadedFile('notes.txt', b'hello', content_type='text/plain')
-        resp = self.client.post(self.url, {'image': bad})
+        bad = SimpleUploadedFile('x.txt', b'hi', content_type='text/plain')
+        url = reverse('tickets:event_image_upload', args=[self.event.id])
+        resp = self.client.post(url, {'image': bad})
         self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.json()['error'], 'File must be an image.')
+        self.assertEqual(EventImage.objects.filter(event=self.event).count(), 0)
 
-    def test_requires_login(self):
-        self.client.logout()
-        resp = self.client.post(self.url, {'image': self._png_upload()})
-        self.assertIn(resp.status_code, (302, 403))
+    def test_delete_image(self):
+        img = EventImage.objects.create(event=self.event, image=self._png(), sort_order=0)
+        url = reverse('tickets:event_image_delete', args=[self.event.id, img.id])
+        resp = self.client.post(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(EventImage.objects.filter(id=img.id).exists())
+
+    def test_reorder_images(self):
+        a = EventImage.objects.create(event=self.event, image=self._png(), sort_order=0)
+        b = EventImage.objects.create(event=self.event, image=self._png(), sort_order=1)
+        url = reverse('tickets:event_image_reorder', args=[self.event.id])
+        resp = self.client.post(url, data=json.dumps({'order': [str(b.id), str(a.id)]}),
+                                content_type='application/json')
+        self.assertEqual(resp.status_code, 200)
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertEqual(b.sort_order, 0)
+        self.assertEqual(a.sort_order, 1)
+
+    def test_cross_org_upload_blocked(self):
+        other = Organization.objects.create(name='Other', slug='other-gallery')
+        other_event = Event.objects.create(
+            organization=other, name='Other Event', venue=Venue.objects.create(organization=other, name='V2', city='C2'),
+            start_date=date.today() + timedelta(days=7), ticketing_type=TICKETING_TYPE_DIRECT, status='live')
+        url = reverse('tickets:event_image_upload', args=[other_event.id])
+        resp = self.client.post(url, {'image': self._png()})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_public_page_renders_photos(self):
+        EventImage.objects.create(event=self.event, image=self._png(), sort_order=0)
+        resp = self.client.get(reverse('tickets:public_event_buy', args=[self.event.public_id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'event-photos')
