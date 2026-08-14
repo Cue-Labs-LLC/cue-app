@@ -1132,8 +1132,9 @@ class SMSViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(resp.status_code, 200)
         # Default view is unified Campaigns tab (shows empty state when no sends).
-        self.assertContains(resp, 'marketing-sectionnav')
         self.assertContains(resp, 'marketing-subnav')              # SMS sub-view pills
+        self.assertContains(resp, '>Grow</a>')                 # merged-in subscribe tab
+        self.assertContains(resp, '<h2>Sends</h2>')            # consistent content header
         self.assertContains(resp, 'No sends in this window')   # empty state
         self.assertContains(resp, 'New Send')                  # native CTA in empty state + toolbar
 
@@ -1217,6 +1218,7 @@ class SMSViewTests(TestCase):
         # The Audience sub-view renders the broadcast chart + by-market table.
         resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'audience'})
         self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '<h2>Audiences</h2>')       # consistent content header
         self.assertContains(resp, 'Audience by market')
         self.assertContains(resp, 'id="sms-audience-chart"')
         # Campaigns empty state not rendered on the Audience view.
@@ -1269,30 +1271,26 @@ class SMSViewTests(TestCase):
         self.assertNotContains(resp, 'New Send')
         self.assertNotContains(resp, 'Your campaigns')
 
-    def test_marketing_overview_has_unified_section_nav(self):
-        # All channels live in the Marketing page's primary section nav; the old
-        # in-page Bootstrap tab row (Overview/Email/Paid Ads) is gone.
+    def test_marketing_overview_redirects_to_sms_grow(self):
+        # Marketing is now a single unified SMS page. The legacy /marketing/ entry
+        # point (and any old ?tab= link) redirects to the SMS page's Grow tab.
+        target = reverse('tickets:sms_campaign_list') + '?view=grow'
         resp = self.client.get(reverse('tickets:marketing_overview'))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'marketing-sectionnav')
-        self.assertContains(resp, reverse('tickets:sms_campaign_list'))
-        # Email + Paid Ads are now top-level section links, not in-page tabs.
-        self.assertContains(resp, reverse('tickets:marketing_overview') + '?tab=email')
-        self.assertContains(resp, reverse('tickets:marketing_overview') + '?tab=ads')
-        self.assertNotContains(resp, 'marketing-tabs')
-        self.assertNotContains(resp, 'data-tab-key')
+        self.assertRedirects(resp, target)
+        for tab in ('email', 'ads'):
+            resp = self.client.get(reverse('tickets:marketing_overview'), {'tab': tab})
+            self.assertRedirects(resp, target)
 
-    def test_marketing_overview_renders_each_section(self):
-        # Each section is now server-rendered via ?tab= (no in-page tab JS);
-        # only the active section's body markup is present.
-        email = self.client.get(reverse('tickets:marketing_overview'), {'tab': 'email'})
-        self.assertEqual(email.status_code, 200)
-        self.assertContains(email, 'Top email campaigns')
-        self.assertNotContains(email, 'Top events by ROI')   # ads-only section
-        ads = self.client.get(reverse('tickets:marketing_overview'), {'tab': 'ads'})
-        self.assertEqual(ads.status_code, 200)
-        self.assertContains(ads, 'Top events by ROI')
-        self.assertNotContains(ads, 'Top email campaigns')   # email-only section
+    def test_sms_grow_view_renders_subscribe_panel(self):
+        # The Grow tab hosts the merged-in "Grow your audience" subscribe panel:
+        # the shareable subscribe link + settings. The old email/ads panels are gone.
+        resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'grow'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '<h2>Grow your audience</h2>')   # consistent content header
+        self.assertContains(resp, 'id="subscribeLinkInput"')
+        self.assertContains(resp, reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertNotContains(resp, 'Top email campaigns')
+        self.assertNotContains(resp, 'Top events by ROI')
 
     def test_preview_returns_count(self):
         resp = self.client.post(reverse('tickets:sms_audience_preview'), {'rfm_segment': 'VIP'})

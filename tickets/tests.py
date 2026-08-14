@@ -9574,7 +9574,8 @@ class MarketingAnalyticsServiceTests(TestCase):
 
 
 class MarketingOverviewViewTests(TestCase):
-    """View-level tests for the marketing overview page."""
+    """View-level tests for the unified SMS page: the legacy /marketing/ redirect
+    and the Grow tab that hosts the shareable subscribe link."""
 
     def setUp(self):
         self.client = Client()
@@ -9590,31 +9591,36 @@ class MarketingOverviewViewTests(TestCase):
         response = anon.get(reverse('tickets:marketing_overview'))
         self.assertEqual(response.status_code, 302)
 
-    def test_overview_renders_with_default_window(self):
+    def test_marketing_url_redirects_to_sms_grow(self):
         response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertRedirects(
+            response, reverse('tickets:sms_campaign_list') + '?view=grow',
+        )
+
+    def test_sms_page_default_window(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(response.status_code, 200)
-        self.assertIn('metrics', response.context)
         self.assertEqual(response.context['window_key'], '90')
 
     def test_window_querystring_overrides_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=all')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=all')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], 'all')
 
     def test_invalid_window_falls_back_to_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=banana')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=banana')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], '90')
 
-    def test_overview_shows_shareable_subscribe_link(self):
-        response = self.client.get(reverse('tickets:marketing_overview'))
+    def test_grow_view_shows_shareable_subscribe_link(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'grow'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context['subscribe_url'],
             f"http://testserver/subscribe/{self.org.slug}/",
         )
         self.assertContains(response, f'/subscribe/{self.org.slug}/')
-        self.assertContains(response, 'Grow your audience')
+        self.assertContains(response, '<h2>Grow your audience</h2>')
         self.assertContains(response, 'subscribeLinkCopy')
 
 

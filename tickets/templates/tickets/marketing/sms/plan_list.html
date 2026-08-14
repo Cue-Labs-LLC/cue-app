@@ -1,13 +1,17 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
 
-{% block title %}Campaign plans{% endblock %}
+{% block title %}Sequences{% endblock %}
 
 {% block extra_head %}
 <style>
-/* Pill sub-nav (Sends / Audience / Campaign Plans) — matches the SMS page. */
+/* No page-load fade on the SMS page — switching tabs is a full navigation, and the
+   global `.content > *` fadeIn would re-animate the whole page on every tab click. */
+.content > * { animation: none; }
+
+/* Pill sub-nav (Sends / Sequences / Audiences / Grow) — matches the SMS page. */
 .marketing-subnav {
-    display: inline-flex; gap: 2px; margin-bottom: 22px;
+    display: inline-flex; gap: 2px; margin-bottom: 0;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 999px; padding: 3px;
 }
@@ -21,28 +25,42 @@
 .marketing-subnav-btn:hover { color: var(--text-primary); }
 .marketing-subnav-btn.active,
 .marketing-subnav-btn.active:hover { background: var(--accent); color: var(--text-inverse); }
+
+/* Content header — matches the SMS page's .sms-section-head. */
+.sms-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 1.75rem 0 0.85rem;
+}
+.sms-section-head:first-child { margin-top: 0.25rem; }
+.sms-section-head h2 { font-size: 1.05rem; margin: 0; }
+/* Right-aligned controls inside a .sms-section-head — matches the SMS page. */
+.sms-head-controls { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 </style>
 {% endblock %}
 
 {% block content %}
 <div style="max-width: 1200px; margin: 0 auto;">
-{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' sms_page_actions=True %}
 
 <nav class="marketing-subnav" role="tablist" aria-label="SMS views">
     <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=campaigns">Sends</a>
-    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=audience">Audience</a>
-    <a class="marketing-subnav-btn active" href="{% url 'tickets:sms_plan_list' %}" aria-current="page">Campaign Plans</a>
+    <a class="marketing-subnav-btn active" href="{% url 'tickets:sms_plan_list' %}" aria-current="page">Sequences</a>
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=audience">Audiences</a>
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_campaign_list' %}?view=grow">Grow</a>
 </nav>
 
-<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-    <div class="btn-group btn-group-sm" role="group" aria-label="Filter plans by status">
-        <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
-        <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
-        <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
-        <a href="?status=scheduled" class="btn btn-outline-secondary{% if status_filter == 'scheduled' %} active{% endif %}">Scheduled</a>
-        <a href="?status=sent" class="btn btn-outline-secondary{% if status_filter == 'sent' %} active{% endif %}">Sent</a>
+<div class="sms-section-head">
+    <h2>Sequences</h2>
+    <div class="sms-head-controls">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Filter plans by status">
+            <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
+            <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
+            <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
+            <a href="?status=scheduled" class="btn btn-outline-secondary{% if status_filter == 'scheduled' %} active{% endif %}">Scheduled</a>
+            <a href="?status=sent" class="btn btn-outline-secondary{% if status_filter == 'sent' %} active{% endif %}">Sent</a>
+        </div>
+        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-stars"></i> Plan with AI</a>
     </div>
-    <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
 </div>
 
 <div class="card">
@@ -52,7 +70,7 @@
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Plan</th>
+                        <th>Sequence</th>
                         <th>Status</th>
                         <th>Event</th>
                         <th>Event date</th>
@@ -77,13 +95,13 @@
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
                         <td class="text-center" onclick="event.stopPropagation()">
                             {% if plan.status == 'sent' %}
-                            <span class="text-secondary" title="This plan has finished sending">—</span>
+                            <span class="text-secondary" title="This sequence has finished sending">—</span>
                             {% else %}
                             <div class="form-check form-switch d-inline-flex m-0 justify-content-center">
                                 <input class="form-check-input plan-enable-toggle" type="checkbox" role="switch"
                                        data-toggle-url="{% url 'tickets:sms_plan_toggle_enabled' pk=plan.id %}"
                                        {% if plan.enabled %}checked{% endif %}
-                                       aria-label="Enable or disable this plan">
+                                       aria-label="Enable or disable this sequence">
                             </div>
                             {% endif %}
                         </td>
@@ -92,7 +110,7 @@
                             <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
                                 {% csrf_token %}
                                 <button type="button" class="btn btn-sm btn-link text-danger p-0 plan-delete-trigger" data-plan-delete-trigger
-                                        title="Delete plan" aria-label="Delete plan"><i class="bi bi-trash"></i></button>
+                                        title="Delete sequence" aria-label="Delete sequence"><i class="bi bi-trash"></i></button>
                             </form>
                             {% endif %}
                         </td>
@@ -104,8 +122,8 @@
         {% else %}
         <div class="empty-state">
             <i class="bi bi-stars"></i>
-            <p>No plans yet. Generate one to get a recommended SMS sequence for an event or segment.</p>
-            <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm">Plan a campaign with AI</a>
+            <p>No sequences yet. Generate one to get a recommended multi-step SMS sequence for an event or segment.</p>
+            <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm">Plan a sequence with AI</a>
         </div>
         {% endif %}
     </div>
@@ -125,10 +143,10 @@
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="deletePlanModalLabel">Delete plan</h5>
+                <h5 class="modal-title" id="deletePlanModalLabel">Delete sequence</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">Delete this plan? Campaigns you already launched from it are unaffected. This can't be undone.</div>
+            <div class="modal-body">Delete this sequence? Sends you already launched from it are unaffected. This can't be undone.</div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="deletePlanConfirm">Delete</button>
