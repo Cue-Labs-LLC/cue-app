@@ -121,8 +121,8 @@ def on_survey_response_change(sender, instance, **kwargs):
 @receiver(post_save, sender='tickets.ExternalSurveyResponse')
 def on_external_survey_response_change(sender, instance, **kwargs):
     """New external survey response affects ext_count and NPS results.
-    Note: survey_event_link() uses queryset.update() which bypasses this signal —
-    that view handles invalidation manually."""
+    Note: callers that use queryset.update()/bulk_create bypass this signal and
+    handle invalidation manually."""
     from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
     django_cache.delete(_event_stats_cache_key(instance.event_id))
     _invalidate_event_upload_stats_cache(instance.event_id)

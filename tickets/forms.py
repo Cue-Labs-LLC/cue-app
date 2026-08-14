@@ -9,7 +9,7 @@ from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
 from django.utils.safestring import mark_safe
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint, AIRecommendation
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
@@ -153,57 +153,6 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
         self.fields['timezone'].widget.choices = choices
         self.fields['timezone'].choices = choices
         self.fields['timezone'].required = False
-
-
-class OrgActionKindsForm(forms.Form):
-    """Toggle which AIRecommendation kinds appear in the org's Action Center.
-
-    The enabled/disabled state lives in the Organization.disabled_action_kinds
-    JSONField (a list of turned-off Kind values). This form flattens that list into
-    one switch per Kind (checked = enabled) and writes the unchecked kinds back on
-    save — mirroring how SegmentTuningForm flattens a JSONField.
-    """
-
-    # One-line description of what each kind surfaces, shown under its switch.
-    KIND_DESCRIPTIONS = {
-        AIRecommendation.Kind.SALES_PACING:
-            'Flags upcoming events selling slower than expected so you can act in time.',
-        AIRecommendation.Kind.POST_EVENT_WRAPUP:
-            'Prompts a wrap-up review once an event has ended.',
-        AIRecommendation.Kind.WINBACK_AUDIENCE:
-            'Surfaces lapsed customers worth re-engaging with a win-back campaign.',
-        AIRecommendation.Kind.MARKETING_ATTRIBUTION:
-            'Highlights gaps and imbalances in your marketing attribution and channel ROI.',
-        AIRecommendation.Kind.MARKETING_UNCONFIRMED:
-            'Asks you to confirm marketing results that were matched to an event automatically.',
-    }
-
-    def __init__(self, *args, **kwargs):
-        self.instance = kwargs.pop('instance')
-        super().__init__(*args, **kwargs)
-        disabled = self.instance.disabled_action_kinds or []
-        for value, label in AIRecommendation.Kind.choices:
-            self.fields[value] = forms.BooleanField(
-                required=False,
-                label=label,
-                initial=value not in disabled,
-                widget=forms.CheckboxInput(
-                    attrs={'class': 'form-check-input', 'role': 'switch'}
-                ),
-                help_text=self.KIND_DESCRIPTIONS.get(value, ''),
-            )
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-
-    def save(self):
-        disabled = [
-            value
-            for value, _label in AIRecommendation.Kind.choices
-            if not self.cleaned_data.get(value)
-        ]
-        self.instance.disabled_action_kinds = disabled
-        self.instance.save(update_fields=['disabled_action_kinds', 'updated_at'])
-        return self.instance
 
 
 class SegmentTuningForm(forms.ModelForm):
@@ -1886,54 +1835,6 @@ class PromoCodeForm(forms.ModelForm):
         if discount_type == PromoCode.PERCENTAGE and discount_value is not None and discount_value > 100:
             self.add_error('discount_value', 'Percentage discount cannot exceed 100.')
         return cleaned_data
-
-
-class SurveyUploadForm(forms.Form):
-    """Upload a CSV survey export from Typeform or similar."""
-
-    csv_file = forms.FileField(
-        label='Survey CSV file',
-        widget=forms.ClearableFileInput(attrs={'class': 'form-control', 'accept': '.csv'}),
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.helper = FormHelper()
-        self.helper.form_method = 'post'
-        self.helper.form_enctype = 'multipart/form-data'
-        self.helper.layout = Layout(
-            Field('csv_file'),
-            Submit('submit', 'Upload Survey', css_class='btn btn-primary mt-2'),
-        )
-
-    def clean_csv_file(self):
-        f = self.cleaned_data['csv_file']
-        if not f.name.lower().endswith('.csv'):
-            raise forms.ValidationError('Only .csv files are accepted.')
-        if f.size > 5 * 1024 * 1024:
-            raise forms.ValidationError('File must be under 5 MB.')
-        # Peek at the first line to check column count
-        import csv as _csv
-        import io
-        try:
-            f.seek(0)
-            first_line = f.readline()
-            if isinstance(first_line, bytes):
-                first_line = first_line.decode('utf-8-sig')
-            reader = _csv.reader(io.StringIO(first_line))
-            headers = next(reader, [])
-            if len(headers) < 13:
-                raise forms.ValidationError(
-                    f'Expected at least 13 columns, found {len(headers)}. '
-                    'Please check that this is a valid survey export.'
-                )
-        except forms.ValidationError:
-            raise
-        except Exception:
-            raise forms.ValidationError('Could not read the file. Please check it is a valid CSV.')
-        finally:
-            f.seek(0)
-        return f
 
 
 class UserProfileForm(forms.Form):

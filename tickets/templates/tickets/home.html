@@ -4,6 +4,7 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
         <h1>Dashboard</h1>
@@ -84,20 +85,20 @@
 
 {% if total_customers %}
 <div class="stats-grid">
-    <div class="stat-card stat-card--accent">
+    <div class="stat-card">
         <div class="stat-label">Total Customers</div>
         <div class="stat-value">{{ total_customers|default:0|intcomma }}</div>
         <a href="{% url 'tickets:customer_list' %}" class="stat-link">View all <i class="bi bi-arrow-right"></i></a>
     </div>
-    <div class="stat-card stat-card--success">
+    <div class="stat-card">
         <div class="stat-label">Total Orders</div>
         <div class="stat-value">{{ total_orders|default:0|intcomma }}</div>
     </div>
-    <div class="stat-card stat-card--info">
+    <div class="stat-card">
         <div class="stat-label">Total Revenue</div>
         <div class="stat-value">${{ total_revenue|currency }}</div>
     </div>
-    <div class="stat-card stat-card--warning">
+    <div class="stat-card">
         <div class="stat-label">Total Tickets</div>
         <div class="stat-value">{{ total_tickets|default:0|intcomma }}</div>
     </div>
@@ -114,88 +115,6 @@
             </a>
             <div><a href="{% url 'tickets:sample_import_csv' %}" class="small d-inline-block mt-2">Download sample CSV</a></div>
         </div>
-    </div>
-</div>
-{% endif %}
-
-{% if ai_recommendations %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5><i class="bi bi-magic me-2"></i>Action Center</h5>
-        <a href="{% url 'tickets:action_center' %}" class="btn btn-sm btn-outline-primary">View all</a>
-    </div>
-    <div class="list-group list-group-flush">
-        {% for recommendation in ai_recommendations %}
-        <div class="list-group-item d-flex flex-column flex-lg-row justify-content-between gap-3" id="rec-card-{{ recommendation.id }}">
-            <div>
-                <div class="d-flex align-items-center gap-2 mb-1">
-                    <span class="badge {% if recommendation.priority == 'high' %}bg-danger{% elif recommendation.priority == 'medium' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
-                        {{ recommendation.get_priority_display }}
-                    </span>
-                    <span class="small text-body-secondary">{{ recommendation.get_kind_display }}</span>
-                </div>
-                <strong>{{ recommendation.title }}</strong>
-                <p class="small text-body-secondary mb-0">{{ recommendation.summary }}</p>
-                {% if recommendation.event %}
-                <div class="small text-body-secondary mt-1">
-                    <i class="bi bi-calendar-event me-1"></i>{{ recommendation.event.name }}
-                    {% if recommendation.event.start_date %}
-                    <span>({{ recommendation.event.start_date|date:"M j, Y" }})</span>
-                    {% endif %}
-                </div>
-                {% endif %}
-            </div>
-            {% if recommendation.kind == 'marketing_attribution' and recommendation.event %}
-            <div class="d-flex align-items-start">
-                <button type="button" class="btn btn-sm btn-primary"
-                        data-bs-toggle="modal"
-                        data-bs-target="#linkCampaignsModal"
-                        data-recommendation-id="{{ recommendation.id }}"
-                        data-event-id="{{ recommendation.event.id }}"
-                        data-event-name="{{ recommendation.event.name }}"
-                        {% if recommendation.evidence_json.meta_connected and "Meta Ads spend" in recommendation.evidence_json.missing_items %}
-                        data-meta-match-url="{% url 'tickets:event_meta_ads_match' recommendation.event.id %}?format=json"
-                        data-meta-apply-url="{% url 'tickets:event_meta_ads_apply' recommendation.event.id %}"
-                        {% endif %}
-                        {% if recommendation.evidence_json.mailchimp_connected and "Mailchimp campaign report" in recommendation.evidence_json.missing_items %}
-                        data-mailchimp-match-url="{% url 'tickets:event_mailchimp_match' recommendation.event.id %}?format=json"
-                        data-mailchimp-apply-url="{% url 'tickets:event_mailchimp_apply' recommendation.event.id %}"
-                        {% endif %}
-                        data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}">
-                    {{ recommendation.recommended_action_json.label|default:"Link campaigns" }}
-                </button>
-            </div>
-            {% elif recommendation.kind == 'marketing_unconfirmed' and recommendation.event %}
-            <div class="d-flex align-items-start">
-                {% if is_org_admin %}
-                <button type="button" class="btn btn-sm btn-primary"
-                        data-bs-toggle="modal"
-                        data-bs-target="#unconfirmedMatchesModal"
-                        data-recommendation-id="{{ recommendation.id }}"
-                        data-event-id="{{ recommendation.event.id }}"
-                        data-event-name="{{ recommendation.event.name }}"
-                        data-fetch-url="{% url 'tickets:ai_recommendation_unconfirmed_matches' recommendation.id %}"
-                        data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}"
-                        data-event-marketing-url="{{ recommendation.recommended_action_json.url }}"
-                        data-card-id="rec-card-{{ recommendation.id }}">
-                    {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
-                </button>
-                {% else %}
-                <a class="btn btn-sm btn-primary" href="{{ recommendation.recommended_action_json.url }}">
-                    {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
-                </a>
-                {% endif %}
-            </div>
-            {% else %}
-            <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}" class="d-flex align-items-start">
-                {% csrf_token %}
-                <button class="btn btn-sm btn-primary" type="submit">
-                    {{ recommendation.recommended_action_json.label|default:"Review" }}
-                </button>
-            </form>
-            {% endif %}
-        </div>
-        {% endfor %}
     </div>
 </div>
 {% endif %}
@@ -321,8 +240,7 @@
         {% endif %}
     </div>
 </div>
+</div>
 
-{% include 'tickets/partials/_link_campaigns_modal.html' %}
-{% include 'tickets/partials/_unconfirmed_matches_modal.html' %}
 {% include 'tickets/partials/_duplicate_event_modal.html' %}
 {% endblock %}

@@ -38,7 +38,6 @@ from django.utils.text import slugify
 
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
-    AIRecommendation,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, TicketOrder, Ticket, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
@@ -61,8 +60,8 @@ from .forms import (
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
-    PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
-    OrgDisplayPreferencesForm, OrgActionKindsForm, SegmentTuningForm, BrandVoiceForm,
+    PromoCodeForm, UserProfileForm, OrgProfileForm,
+    OrgDisplayPreferencesForm, SegmentTuningForm, BrandVoiceForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -293,13 +292,13 @@ def _parse_window(request):
     return None, None, 'all'
 
 
-def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_count=0, external_enabled=0):
+def _event_list_cache_key(org_id, search, sort, page, status_filter, external_enabled=0):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
         version = django_cache.get(f'event_list_ver:{org_id}', 0)
     except Exception:
         version = 0
-    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:a{actions_count}:x{external_enabled}'
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:x{external_enabled}'
 
 
 def _invalidate_event_list_cache(org):
@@ -2086,20 +2085,6 @@ def home(request):
     total_orders = order_agg['total_orders']
     total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00')) - direct_fees
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
-    ai_recommendations = (
-        AIRecommendation.outstanding_for_org(org)
-        .select_related('event', 'customer')
-        .order_by(
-            Case(
-                When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
-                When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
-                default=Value(2),
-                output_field=models.IntegerField(),
-            ),
-            '-confidence',
-            '-created_at',
-        )[:3]
-    )
 
     # Reuse the already-computed customer count for the onboarding predicates so
     # the checklist and the upsell don't re-query "does this org have customers"
@@ -2116,281 +2101,12 @@ def home(request):
         'total_orders': total_orders,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
-        'ai_recommendations': ai_recommendations,
         'onboarding': onboarding,
         'show_directticketing_upsell': _direct_ticketing_upsell(
             org, has_customers, onboarding.get('has_sent_campaign')
         ),
     }
     return render(request, 'tickets/home.html', context)
-
-
-@login_required
-@require_org
-@require_organizer
-def action_center(request):
-    """Reviewed AI recommendations for the active organization."""
-    org = get_organization(request)
-    status_filter = request.GET.get('status', '')
-    priority_filter = request.GET.get('priority', '')
-    kind_filter = request.GET.get('kind', '')
-    event_filter = request.GET.get('event', '')
-
-    # Kinds the org has turned off in Action Center settings are hidden across all
-    # statuses (a disabled type shouldn't surface even under a "Dismissed" view).
-    disabled_kinds = org.disabled_action_kinds or []
-    recommendations = (
-        AIRecommendation.objects
-        .filter(organization=org)
-        .select_related('event', 'customer')
-    )
-    if disabled_kinds:
-        recommendations = recommendations.exclude(kind__in=disabled_kinds)
-    filter_event = None
-    if event_filter:
-        filter_event = Event.objects.filter(organization=org, id=event_filter).first()
-        if filter_event is not None:
-            recommendations = recommendations.filter(event=filter_event)
-    if status_filter:
-        recommendations = recommendations.filter(status=status_filter)
-    else:
-        recommendations = recommendations.filter(
-            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-        )
-    if priority_filter:
-        recommendations = recommendations.filter(priority=priority_filter)
-    if kind_filter:
-        recommendations = recommendations.filter(kind=kind_filter)
-
-    recommendations = recommendations.order_by(
-        Case(
-            When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
-            When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
-            default=Value(2),
-            output_field=models.IntegerField(),
-        ),
-        Case(
-            When(status=AIRecommendation.Status.NEW, then=Value(0)),
-            When(status=AIRecommendation.Status.REVIEWED, then=Value(1)),
-            default=Value(2),
-            output_field=models.IntegerField(),
-        ),
-        '-confidence',
-        '-created_at',
-    )
-
-    paginator = Paginator(recommendations, 20)
-    page_obj = paginator.get_page(request.GET.get('page', 1))
-
-    context = {
-        'page_obj': page_obj,
-        'status_filter': status_filter,
-        'priority_filter': priority_filter,
-        'kind_filter': kind_filter,
-        'filter_event': filter_event,
-        'status_choices': AIRecommendation.Status.choices,
-        'priority_choices': AIRecommendation.Priority.choices,
-        # Only offer enabled kinds in the filter dropdown so an organizer can't
-        # filter down to a type they've turned off.
-        'kind_choices': [
-            (value, label)
-            for value, label in AIRecommendation.Kind.choices
-            if value not in disabled_kinds
-        ],
-    }
-    return render(request, 'tickets/action_center.html', context)
-
-
-def _ai_recommendation_redirect(request):
-    next_url = request.POST.get('next') or request.META.get('HTTP_REFERER') or reverse('tickets:action_center')
-    if url_has_allowed_host_and_scheme(
-        next_url,
-        allowed_hosts={request.get_host()},
-        require_https=request.is_secure(),
-    ):
-        return redirect(next_url)
-    return redirect('tickets:action_center')
-
-
-@login_required
-@require_org
-@require_organizer
-@require_http_methods(["POST"])
-def ai_recommendation_review(request, recommendation_id):
-    org = get_organization(request)
-    recommendation = get_object_or_404(
-        AIRecommendation.objects.filter(organization=org),
-        id=recommendation_id,
-    )
-    if recommendation.status == AIRecommendation.Status.NEW:
-        recommendation.mark_reviewed()
-    action = recommendation.recommended_action_json or {}
-    url = action.get('url') or reverse('tickets:action_center')
-    if url_has_allowed_host_and_scheme(
-        url,
-        allowed_hosts={request.get_host()},
-        require_https=request.is_secure(),
-    ):
-        return redirect(url)
-    return redirect('tickets:action_center')
-
-
-@login_required
-@require_org
-@require_organizer
-@require_http_methods(["POST"])
-def ai_recommendation_dismiss(request, recommendation_id):
-    org = get_organization(request)
-    recommendation = get_object_or_404(
-        AIRecommendation.objects.filter(organization=org),
-        id=recommendation_id,
-    )
-    recommendation.dismiss()
-    messages.success(request, 'Recommendation dismissed.')
-    return _ai_recommendation_redirect(request)
-
-
-@login_required
-@require_org
-@require_organizer
-@require_http_methods(["POST"])
-def ai_recommendation_resolve(request, recommendation_id):
-    org = get_organization(request)
-    recommendation = get_object_or_404(
-        AIRecommendation.objects.filter(organization=org),
-        id=recommendation_id,
-    )
-    recommendation.resolve()
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return JsonResponse({'ok': True})
-    messages.success(request, 'Recommendation marked resolved.')
-    return _ai_recommendation_redirect(request)
-
-
-@login_required
-@require_org
-@require_organizer
-@require_http_methods(["GET"])
-def ai_recommendation_unconfirmed_matches(request, recommendation_id):
-    """JSON: unconfirmed Meta Ads / Mailchimp / SlickText matches for a recommendation's event.
-
-    Powers the "Review and confirm" modal on the Action Center and home dashboard.
-    Mirrors the same filters as ``detect_unconfirmed_marketing_matches`` so the totals
-    line up with the recommendation summary.
-    """
-    org = get_organization(request)
-    recommendation = get_object_or_404(
-        AIRecommendation.objects.filter(organization=org).select_related('event'),
-        id=recommendation_id,
-    )
-    if (
-        recommendation.kind != AIRecommendation.Kind.MARKETING_UNCONFIRMED
-        or recommendation.event is None
-    ):
-        return JsonResponse({'ok': False, 'error': 'Not a marketing match recommendation.'}, status=404)
-
-    event = recommendation.event
-
-    meta_ads = list(
-        EventExpense.objects.filter(
-            event=event,
-            deleted_at__isnull=True,
-            confirmed_at__isnull=True,
-            source='meta_ads',
-        ).order_by('-amount', 'description')
-    )
-    mailchimp = list(
-        EventEmailCampaign.objects.filter(
-            event=event,
-            deleted_at__isnull=True,
-            confirmed_at__isnull=True,
-        ).order_by('-send_time', 'campaign_title')
-    )
-    slicktext = list(
-        EventSMSCampaign.objects.filter(
-            event=event,
-            deleted_at__isnull=True,
-            confirmed_at__isnull=True,
-        ).order_by('-send_time', 'name')
-    )
-
-    def ads_payload(e):
-        meta = e.external_metadata or {}
-        return {
-            'id': str(e.id),
-            'label': meta.get('campaign_name') or e.description or 'Meta Ads campaign',
-            'sublabel': e.external_id or '',
-            'amount': f'{(e.amount or Decimal("0.00")):.2f}',
-            'effective_attributed_orders': e.effective_attributed_orders or 0,
-            'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
-            'manual_attributed_orders': e.manual_attributed_orders,
-            'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
-            'confirm_url': reverse('tickets:event_meta_ads_confirm', args=[event.id, e.id]),
-            'remove_url': reverse('tickets:event_meta_ads_remove', args=[event.id, e.id]),
-            'metrics_edit_url': reverse('tickets:event_meta_ads_metrics_edit', args=[event.id, e.id]),
-        }
-
-    def fmt_send_time(value):
-        if not value:
-            return ''
-        return _format_meta_ads_datetime(value.isoformat()) or ''
-
-    def email_payload(c):
-        return {
-            'id': str(c.id),
-            'label': c.campaign_title or c.external_id or 'Mailchimp campaign',
-            'sublabel': c.subject_line or '',
-            'send_time': fmt_send_time(c.send_time),
-            'effective_emails_sent': c.effective_emails_sent or 0,
-            'effective_unique_opens': c.effective_unique_opens or 0,
-            'effective_clicks': c.effective_clicks or 0,
-            'effective_orders': c.effective_orders or 0,
-            'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
-            'manual_emails_sent': c.manual_emails_sent,
-            'manual_unique_opens': c.manual_unique_opens,
-            'manual_clicks': c.manual_clicks,
-            'manual_orders': c.manual_orders,
-            'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
-            'confirm_url': reverse('tickets:event_mailchimp_confirm', args=[event.id, c.id]),
-            'remove_url': reverse('tickets:event_mailchimp_remove', args=[event.id, c.id]),
-            'metrics_edit_url': reverse('tickets:event_mailchimp_metrics_edit', args=[event.id, c.id]),
-        }
-
-    def sms_payload(c):
-        return {
-            'id': str(c.id),
-            'label': c.name or c.external_id or 'SlickText broadcast',
-            'sublabel': (c.message or '')[:120],
-            'send_time': fmt_send_time(c.send_time),
-            'effective_audience': c.effective_audience or 0,
-            'effective_clicks': c.effective_clicks or 0,
-            'effective_orders': c.effective_orders or 0,
-            'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
-            'manual_audience': c.manual_audience,
-            'manual_clicks': c.manual_clicks,
-            'manual_orders': c.manual_orders,
-            'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
-            'confirm_url': reverse('tickets:event_slicktext_confirm', args=[event.id, c.id]),
-            'remove_url': reverse('tickets:event_slicktext_remove', args=[event.id, c.id]),
-            'metrics_edit_url': reverse('tickets:event_slicktext_metrics_edit', args=[event.id, c.id]),
-        }
-
-    payload = {
-        'ok': True,
-        'event_id': str(event.id),
-        'event_name': event.name,
-        'meta_ads': [ads_payload(e) for e in meta_ads],
-        'mailchimp': [email_payload(c) for c in mailchimp],
-        'slicktext': [sms_payload(c) for c in slicktext],
-        'confirm_all_urls': {
-            'meta_ads': reverse('tickets:event_meta_ads_confirm_all', args=[event.id]),
-            'mailchimp': reverse('tickets:event_mailchimp_confirm_all', args=[event.id]),
-            'slicktext': reverse('tickets:event_slicktext_confirm_all', args=[event.id]),
-        },
-        'event_marketing_url': reverse('tickets:event_detail', args=[event.id]) + '#marketing',
-    }
-    payload['total'] = len(payload['meta_ads']) + len(payload['mailchimp']) + len(payload['slicktext'])
-    return JsonResponse(payload)
 
 
 def require_external_events(view):
@@ -3717,88 +3433,10 @@ def _invalidate_marketing_cache(org):
 @require_org
 @require_host
 def marketing_overview(request):
-    """Org-wide marketing performance dashboard with AI recommendations."""
-    org = get_organization(request)
-    window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
-    allowed_tabs = {'overview', 'email', 'ads'}
-    active_tab = request.GET.get('tab', 'overview').lower()
-    if active_tab not in allowed_tabs:
-        active_tab = 'overview'
-
-    metrics = get_cached_marketing_metrics(org, window_days, window_key)
-
-    # Respect the org's Action Center toggle: if marketing-attribution actions are
-    # turned off, don't surface them inline on the marketing page either.
-    if AIRecommendation.Kind.MARKETING_ATTRIBUTION in (org.disabled_action_kinds or []):
-        recommendations = AIRecommendation.objects.none()
-    else:
-        recommendations = (
-            AIRecommendation.objects
-            .filter(
-                organization=org,
-                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
-                status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
-            )
-            .select_related('event')
-            .order_by(
-                Case(
-                    When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
-                    When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
-                    default=Value(2),
-                    output_field=models.IntegerField(),
-                ),
-                '-confidence',
-                '-created_at',
-            )[:20]
-        )
-
-    trend_chart = {
-        'labels': [row['month'] for row in metrics['trends']],
-        'email_revenue': [float(row['email_revenue']) for row in metrics['trends']],
-        'sms_revenue': [float(row['sms_revenue']) for row in metrics['trends']],
-        'ads_spend': [float(row['ads_spend']) for row in metrics['trends']],
-    }
-    engagement_chart = {
-        'labels': [row['month'] for row in metrics['engagement_trends']],
-        'email_opens': [row['email_opens'] for row in metrics['engagement_trends']],
-        'email_clicks': [row['email_clicks'] for row in metrics['engagement_trends']],
-        'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
-    }
-
-    # Public subscribe link the organizer shares (Linktree, flyers, socials) to
-    # grow their SMS audience. Built absolute so copy/QR work off-dashboard.
-    import base64
-    from .utils import generate_qr_png_bytes
-    from .services.customer_filters import market_filter_options
-    subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
-    _qr_png = generate_qr_png_bytes(subscribe_url)
-    subscribe_qr = (
-        'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
-    )
-    # Market segmentation on the subscribe form is only offered when the org has >1
-    # market (otherwise there's nothing to segment). The toggle stores the choice on
-    # the org; the subscribe form then asks each new fan which market they're in.
-    market_count = len(market_filter_options(org)[0])
-
-    context = {
-        'metrics': metrics,
-        'recommendations': recommendations,
-        'window_choices': MARKETING_WINDOW_CHOICES,
-        'window_key': window_key,
-        'window_label': window_label,
-        'active_tab': active_tab,
-        'trend_chart_json': json.dumps(trend_chart),
-        'engagement_chart_json': json.dumps(engagement_chart),
-        'org_sms_marketing_enabled': org.sms_marketing_enabled,
-        'subscribe_url': subscribe_url,
-        'subscribe_qr': subscribe_qr,
-        'market_count': market_count,
-        'subscribe_title': org.sms_subscribe_title,
-        'segment_by_market': org.sms_subscribe_segment_by_market,
-        'market_label': org.sms_subscribe_market_label,
-        'marketing_section': 'overview',
-    }
-    return render(request, 'tickets/marketing_overview.html', context)
+    """Legacy /marketing/ entry point. Marketing is now a single unified SMS page;
+    the old Overview (grow-audience) content lives on that page's Grow tab. Redirect
+    there so bookmarks and any lingering links keep working."""
+    return redirect(f"{reverse('tickets:sms_campaign_list')}?view=grow")
 
 
 @login_required
@@ -3807,10 +3445,10 @@ def marketing_overview(request):
 @require_http_methods(["POST"])
 def marketing_subscribe_settings(request):
     """Configure the public subscribe page's headline and market segmentation. Small
-    dedicated endpoint so the heavy GET marketing_overview stays GET-only. Independent
-    controls post here: the custom title, the on/off switch, and the picker's custom
-    label. Each only touches its own field (the presence of a field's key selects its
-    branch) so saving one never clobbers the others."""
+    dedicated endpoint so the heavy GET SMS page stays GET-only. Independent controls
+    post here: the custom title, the on/off switch, and the picker's custom label.
+    Each only touches its own field (the presence of a field's key selects its branch)
+    so saving one never clobbers the others."""
     org = get_organization(request)
     if 'subscribe_title' in request.POST:
         org.sms_subscribe_title = request.POST.get('subscribe_title', '').strip()[:80]
@@ -3822,7 +3460,7 @@ def marketing_subscribe_settings(request):
         org.sms_subscribe_segment_by_market = bool(request.POST.get('segment_by_market'))
         org.save(update_fields=['sms_subscribe_segment_by_market', 'updated_at'])
     messages.success(request, 'Subscribe settings updated.')
-    return redirect('tickets:marketing_overview')
+    return redirect(f"{reverse('tickets:sms_campaign_list')}?view=grow")
 
 
 @login_required
@@ -4779,18 +4417,11 @@ def event_list(request):
     if status_filter not in ('all', 'live', 'ended', 'upcoming'):
         status_filter = 'all'
 
-    # Include outstanding actions count in the cache key so the sidebar badge
-    # stays in sync (the rendered HTML embeds the count via the context processor).
-    try:
-        actions_count = AIRecommendation.outstanding_for_org(org).count()
-    except Exception:
-        actions_count = 0
-
     external_events_enabled = bool(org and org.external_events_enabled)
 
     # Check cache first (skip gracefully when Redis is unavailable)
     cache_key = _event_list_cache_key(
-        org.pk, search_query, '', page_number, status_filter, actions_count,
+        org.pk, search_query, '', page_number, status_filter,
         external_enabled=int(external_events_enabled),
     )
     try:
@@ -4842,18 +4473,6 @@ def event_list(request):
         ).select_related('venue')
     }
     page_obj.object_list = [annotated_map[pk] for pk in page_pks]
-
-    # Count unresolved (NEW/REVIEWED) event-linked AI recommendations per event so
-    # each row can show an "actions" badge that links to the filtered Action Center.
-    action_counts = dict(
-        AIRecommendation.outstanding_for_org(org)
-        .filter(event_id__in=page_pks)
-        .values('event_id')
-        .annotate(count=Count('id'))
-        .values_list('event_id', 'count')
-    )
-    for ev in page_obj.object_list:
-        ev.action_count = action_counts.get(ev.pk, 0)
 
     # Compute net_revenue for each event on this page.
     # Fees apply to direct ticketing events only; external/CSV events are shown at gross.
@@ -4974,8 +4593,7 @@ def _compute_event_stats(event):
 
     Results are cached under _event_stats_cache_key(event.pk) for 300s.
     Invalidated by signals in signals.py and call-site invalidation in
-    send_survey() and survey_event_link() (which use bulk_create/queryset.update
-    that bypass signals).
+    send_survey() (which uses bulk_create/queryset.update that bypass signals).
     """
     cache_key = _event_stats_cache_key(event.pk)
     cached = safe_cache_get(cache_key)
@@ -8172,25 +7790,6 @@ def settings_display_preferences(request):
     else:
         form = OrgDisplayPreferencesForm(instance=org)
     return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
-
-
-@login_required
-@require_org
-@require_admin
-def settings_action_center(request):
-    """Choose which AIRecommendation kinds appear in the org's Action Center."""
-    org = get_organization(request)
-    if request.method == 'POST':
-        form = OrgActionKindsForm(request.POST, instance=org)
-        if form.is_valid():
-            form.save()
-            # Badges/count on the cached events list depend on the enabled kinds.
-            _invalidate_event_list_cache(org)
-            messages.success(request, 'Action Center preferences updated.')
-            return redirect('tickets:settings_action_center')
-    else:
-        form = OrgActionKindsForm(instance=org)
-    return render(request, 'tickets/settings_action_center.html', {'form': form, 'org': org})
 
 
 @login_required
@@ -14664,176 +14263,6 @@ def recover_pending_payouts(request):
 # ---------------------------------------------------------------------------
 # External Survey views
 # ---------------------------------------------------------------------------
-
-@login_required
-@require_org
-def survey_upload_list(request):
-    org = get_organization(request)
-
-    external_uploads = ExternalSurveyUpload.objects.filter(
-        organization=org
-    ).order_by('-uploaded_at')
-
-    # Native Cue surveys are stored per-response; group them by event so each
-    # event with responses becomes a single row in the unified list.
-    native_rows = (
-        SurveyResponse.objects.filter(organization=org)
-        .values('event_id', 'event__name')
-        .annotate(response_count=Count('id'), last_response=Max('submitted_at'))
-        .order_by('-last_response')
-    )
-
-    # Native and external surveys share one interface, distinguished by a source
-    # label. Build a combined, newest-first list the template renders as one table.
-    sources = []
-    for upload in external_uploads:
-        sources.append({
-            'kind': 'external',
-            'label': 'External upload',
-            'name': upload.filename,
-            'date': upload.uploaded_at,
-            'response_count': upload.row_count,
-            'status': upload.status,
-            'upload_id': upload.id,
-        })
-    for row in native_rows:
-        sources.append({
-            'kind': 'native',
-            'label': 'Cue survey',
-            'name': row['event__name'] or 'Survey',
-            'date': row['last_response'],
-            'response_count': row['response_count'],
-            'status': 'active',
-            'event_id': row['event_id'],
-        })
-    sources.sort(key=lambda s: s['date'], reverse=True)
-
-    has_external = any(s['kind'] == 'external' for s in sources)
-
-    return render(request, 'tickets/survey_upload_list.html', {
-        'sources': sources,
-        'has_external': has_external,
-    })
-
-
-@login_required
-@require_org
-def survey_upload_create(request):
-    org = get_organization(request)
-    if request.method == 'POST':
-        form = SurveyUploadForm(request.POST, request.FILES)
-        if form.is_valid():
-            csv_file = form.cleaned_data['csv_file']
-            upload = ExternalSurveyUpload.objects.create(
-                organization=org,
-                filename=csv_file.name,
-                status=ExternalSurveyUpload.Status.PROCESSING,
-            )
-            try:
-                from .services.external_survey.parser import ExternalSurveyParser
-                parser = ExternalSurveyParser(organization=org, upload=upload)
-                result = parser.parse(csv_file)
-                upload.row_count = result['rows_inserted']
-                upload.status = ExternalSurveyUpload.Status.COMPLETED
-                upload.save(update_fields=['row_count', 'status', 'error_log'])
-                messages.success(
-                    request,
-                    f'Uploaded {result["rows_inserted"]} responses'
-                    + (f' ({result["rows_skipped"]} skipped).' if result['rows_skipped'] else '.'),
-                )
-                return redirect('tickets:survey_event_link', upload_id=upload.id)
-            except Exception as exc:
-                upload.status = ExternalSurveyUpload.Status.FAILED
-                upload.error_log = json.dumps([str(exc)])
-                upload.save(update_fields=['status', 'error_log'])
-                messages.error(request, f'Parse failed: {exc}')
-    else:
-        form = SurveyUploadForm()
-    return render(request, 'tickets/survey_upload_form.html', {'form': form})
-
-
-@login_required
-@require_org
-def survey_upload_detail(request, upload_id):
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-    cities = (
-        ExternalSurveyResponse.objects.filter(upload=upload)
-        .values_list('city', flat=True)
-        .distinct()
-        .order_by('city')
-    )
-    return render(request, 'tickets/survey_upload_detail.html', {
-        'upload': upload,
-        'cities': cities,
-    })
-
-
-@login_required
-@require_org
-def survey_upload_delete(request, upload_id):
-    if request.method != 'POST':
-        return redirect('tickets:survey_upload_list')
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-    upload.hard_delete()
-    messages.success(request, 'Survey upload deleted.')
-    return redirect('tickets:survey_upload_list')
-
-
-@login_required
-@require_org
-def survey_event_link(request, upload_id):
-    from collections import defaultdict
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-
-    responses = (
-        ExternalSurveyResponse.objects.filter(upload=upload)
-        .select_related('event')
-        .order_by('-responded_at')
-    )
-    events = Event.objects.filter(organization=org).order_by('-start_date')
-
-    if request.method == 'POST':
-        mapping = {}
-        for resp in responses:
-            mapping[str(resp.id)] = request.POST.get(f'event_{resp.id}', '').strip()
-
-        valid_event_ids = set(
-            str(eid) for eid in Event.objects.filter(organization=org).values_list('id', flat=True)
-        )
-        by_event = defaultdict(list)
-        for resp_id, event_id in mapping.items():
-            by_event[event_id].append(resp_id)
-
-        # Collect event IDs affected before and after the update for cache invalidation.
-        # queryset.update() bypasses post_save signals — must invalidate manually.
-        old_event_ids = set(
-            str(eid) for eid in
-            ExternalSurveyResponse.objects.filter(upload=upload, event__isnull=False)
-            .values_list('event_id', flat=True)
-        )
-        for event_id, resp_ids in by_event.items():
-            if event_id and event_id in valid_event_ids:
-                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event_id=event_id)
-            else:
-                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event=None)
-
-        # Invalidate cache for all affected events (old assignments + new assignments)
-        new_event_ids = set(eid for eid in by_event if eid and eid in valid_event_ids)
-        for eid in old_event_ids | new_event_ids:
-            django_cache.delete(_event_stats_cache_key(eid))
-            _invalidate_event_upload_stats_cache(eid)
-
-        messages.success(request, 'Event links saved.')
-        return redirect(f"{reverse_lazy('tickets:survey_analytics')}?upload={upload.id}")
-
-    return render(request, 'tickets/survey_event_link.html', {
-        'upload': upload,
-        'responses': responses,
-        'events': events,
-    })
 
 
 @login_required

@@ -3,6 +3,11 @@
 
 {% block title %}Events{% endblock %}
 
+{% block extra_head %}
+<style>/* No page fade when switching the status tabs — each tab is a full navigation. */
+.content > * { animation: none; }</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1>Events</h1>
@@ -83,15 +88,6 @@
                                             {% endwith %}
                                         {% else %}
                                         <span class="badge bg-secondary" style="font-size: 0.7em;">CSV Import</span>
-                                        {% endif %}
-                                        {% if event.action_count %}
-                                        <a href="{% url 'tickets:action_center' %}?event={{ event.id }}"
-                                           class="badge bg-danger text-decoration-none d-inline-flex align-items-center gap-1"
-                                           style="font-size: 0.7em;"
-                                           title="{{ event.action_count }} action{{ event.action_count|pluralize }} needs attention"
-                                           onclick="event.stopPropagation();">
-                                            <i class="bi bi-magic"></i>{{ event.action_count }} action{{ event.action_count|pluralize }}
-                                        </a>
                                         {% endif %}
                                     </div>
                                 </div>

@@ -1,30 +1,11 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
 
-{% block title %}Plan a campaign with AI{% endblock %}
+{% block title %}Plan a sequence with AI{% endblock %}
 
 {% block extra_head %}
 <style>
 .plan-intro { color: var(--text-secondary); max-width: 60ch; margin-bottom: 1.5rem; }
-.plan-target-toggle {
-    display: inline-flex; gap: 2px; margin-bottom: 1.25rem;
-    background: var(--bg-inset); border: 1px solid var(--border);
-    border-radius: 999px; padding: 3px;
-}
-.plan-target-toggle button {
-    border: 0; background: transparent; color: var(--text-secondary);
-    font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
-    letter-spacing: 0.05em; text-transform: uppercase;
-    padding: 7px 18px; border-radius: 999px; cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-}
-.plan-target-toggle button.active { background: var(--accent); color: var(--text-inverse); }
-.seg-chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
-    margin: 0 6px 6px 0; cursor: pointer; user-select: none; font-size: 13px;
-}
-.seg-chip input { margin: 0; }
 .plan-section { margin-bottom: 1.5rem; }
 .plan-section > label.form-label { font-weight: 600; }
 .goal-suggest { margin-top: 0.6rem; line-height: 2.1; }
@@ -44,131 +25,62 @@
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <div class="page-header">
     <div>
-        <h1 class="page-title"><i class="bi bi-stars"></i> Plan a campaign with AI</h1>
-        <p class="page-subtitle">Get a recommended multi-touch SMS sequence — and the written messages — for an event or a customer segment.</p>
+        <a href="{% url 'tickets:sms_plan_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to Sequences</a>
+        <h1 class="mb-0">Plan a sequence with AI</h1>
     </div>
-    <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Back</a>
 </div>
 
 <div class="card">
     <div class="card-body">
-        <p class="plan-intro">The strategist reads your event or segment details and what has worked in your past campaigns, then recommends when to message, who to target, and what to say. Nothing is sent — you review and launch each step yourself.</p>
+        <p class="plan-intro">The strategist reads your event or segment details and what has worked in your past sequences, then recommends when to message, who to target, and what to say. Nothing is sent — you review and launch each step yourself.</p>
 
         <form method="post" action="{% url 'tickets:sms_plan_create' %}">
             {% csrf_token %}
 
-            <div class="plan-target-toggle" role="tablist" aria-label="Plan target">
-                <button type="button" data-target="event" class="{% if not selected_segments and not selected_tag_ids and not selected_market_id %}active{% endif %}">For an event</button>
-                <button type="button" data-target="segment" class="{% if selected_segments or selected_tag_ids or selected_market_id %}active{% endif %}">For a segment</button>
-            </div>
-
-            {# ── Event target ─────────────────────────────────────────── #}
-            <div class="plan-section" data-panel="event">
+            {# ── Event target (sequences are event-only for now) ───────── #}
+            <div class="plan-section">
                 <label class="form-label" for="planEvent">Event</label>
-                <select class="form-select" id="planEvent" name="event">
+                <select class="form-select" id="planEvent" name="event" required>
                     <option value="">Select an event…</option>
                     {% for ev in plan_events %}
                     <option value="{{ ev.id }}"{% if event and event.id == ev.id %} selected{% endif %}>{{ ev.name }} — {{ ev.start_date|date:'M d, Y' }}</option>
                     {% endfor %}
                 </select>
-                <div class="form-text">The plan targets this event's ticket buyers and drives them back to the ticket page.</div>
-            </div>
-
-            {# ── Segment target ───────────────────────────────────────── #}
-            <div class="plan-section" data-panel="segment" hidden>
-                <label class="form-label">Segments</label>
-                <div>
-                    {% for seg in segment_choices %}
-                    <label class="seg-chip">
-                        <input type="checkbox" name="rfm_segment" value="{{ seg }}"{% if seg in selected_segments %} checked{% endif %}>
-                        {{ seg }}
-                    </label>
-                    {% endfor %}
-                </div>
-
-                {% if tags %}
-                <label class="form-label mt-3">Tags</label>
-                <div>
-                    {% for tag in tags %}
-                    <label class="seg-chip">
-                        <input type="checkbox" name="tag_ids" value="{{ tag.id }}"{% if tag.id|stringformat:'s' in selected_tag_ids %} checked{% endif %}>
-                        {{ tag.name }}
-                    </label>
-                    {% endfor %}
-                </div>
-                {% endif %}
-
-                <label class="form-label mt-3" for="planMarket">Market</label>
-                <select class="form-select" id="planMarket" name="market_id">
-                    <option value="">All markets</option>
-                    {% for value, name in market_choices %}
-                    <option value="{{ value }}"{% if value == selected_market_id %} selected{% endif %}>{{ name }}</option>
-                    {% endfor %}
-                </select>
-                <div class="form-text">Pick at least one segment, tag, or market.</div>
+                <div class="form-text">The sequence targets this event's ticket buyers and drives them back to the ticket page.</div>
             </div>
 
             {# ── Objective ────────────────────────────────────────────── #}
             <div class="plan-section">
                 <label class="form-label" for="planObjective">Goal <span class="text-secondary fw-normal">(optional)</span></label>
                 <input type="text" class="form-control" id="planObjective" name="objective" maxlength="300"
-                       placeholder="e.g. Sell out the remaining tickets, or win back lapsed customers"
+                       placeholder="e.g. Sell out the remaining tickets, or create last-minute urgency"
                        value="{{ request.POST.objective|default:'' }}">
                 <div class="goal-suggest">
                     <span class="goal-suggest-label">Try:</span>
-                    <span data-goals="event">
-                        <button type="button" class="goal-chip">Sell out the remaining tickets</button>
-                        <button type="button" class="goal-chip">Drive early-bird sales</button>
-                        <button type="button" class="goal-chip">Create last-minute urgency</button>
-                        <button type="button" class="goal-chip">Upsell to a premium tier</button>
-                        <button type="button" class="goal-chip">Bring back past attendees</button>
-                    </span>
-                    <span data-goals="segment" hidden>
-                        <button type="button" class="goal-chip">Win back lapsed customers</button>
-                        <button type="button" class="goal-chip">Reward and retain VIPs</button>
-                        <button type="button" class="goal-chip">Convert new subscribers to first purchase</button>
-                        <button type="button" class="goal-chip">Re-engage dormant fans</button>
-                        <button type="button" class="goal-chip">Reactivate big spenders</button>
-                    </span>
+                    <button type="button" class="goal-chip">Sell out the remaining tickets</button>
+                    <button type="button" class="goal-chip">Drive early-bird sales</button>
+                    <button type="button" class="goal-chip">Create last-minute urgency</button>
+                    <button type="button" class="goal-chip">Upsell to a premium tier</button>
+                    <button type="button" class="goal-chip">Bring back past attendees</button>
                 </div>
             </div>
 
             <button type="submit" class="btn btn-primary" id="planGenerateBtn">
                 <span class="spinner-border spinner-border-sm d-none" id="planSpinner" role="status" aria-hidden="true"></span>
-                <i class="bi bi-stars"></i> Generate plan
+                <i class="bi bi-stars"></i> Generate sequence
             </button>
         </form>
     </div>
+</div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    const toggle = document.querySelector('.plan-target-toggle');
-    const buttons = toggle.querySelectorAll('button');
-    const eventPanel = document.querySelector('[data-panel="event"]');
-    const segmentPanel = document.querySelector('[data-panel="segment"]');
-    const eventSelect = document.getElementById('planEvent');
-    const goalGroups = document.querySelectorAll('[data-goals]');
-
-    function setTarget(target) {
-        buttons.forEach(b => b.classList.toggle('active', b.dataset.target === target));
-        const isEvent = target === 'event';
-        eventPanel.hidden = !isEvent;
-        segmentPanel.hidden = isEvent;
-        // Ensure only the active target submits its inputs.
-        eventSelect.disabled = !isEvent;
-        segmentPanel.querySelectorAll('input, select').forEach(el => { el.disabled = isEvent; });
-        // Swap the goal suggestions to match what's being planned for.
-        goalGroups.forEach(g => { g.hidden = g.dataset.goals !== target; });
-    }
-    buttons.forEach(b => b.addEventListener('click', () => setTarget(b.dataset.target)));
-    // Initialize from server state.
-    setTarget(toggle.querySelector('button.active')?.dataset.target || 'event');
-
     // Quick-select goal chips fill the objective input (still editable).
     const objectiveInput = document.getElementById('planObjective');
     document.querySelectorAll('.goal-chip').forEach(chip => {

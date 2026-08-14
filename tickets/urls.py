@@ -99,11 +99,6 @@ urlpatterns = [
     path('dashboard/', views.home, name='home'),
     path('onboarding/dismiss/', views.dismiss_onboarding, name='dismiss_onboarding'),
     path('onboarding/dismiss-upsell/', views.dismiss_directticketing_upsell, name='dismiss_directticketing_upsell'),
-    path('actions/', views.action_center, name='action_center'),
-    path('actions/<uuid:recommendation_id>/review/', views.ai_recommendation_review, name='ai_recommendation_review'),
-    path('actions/<uuid:recommendation_id>/dismiss/', views.ai_recommendation_dismiss, name='ai_recommendation_dismiss'),
-    path('actions/<uuid:recommendation_id>/resolve/', views.ai_recommendation_resolve, name='ai_recommendation_resolve'),
-    path('actions/<uuid:recommendation_id>/unconfirmed-matches/', views.ai_recommendation_unconfirmed_matches, name='ai_recommendation_unconfirmed_matches'),
 
     # CSV Upload (price entry and results used when uploading from an event)
     path('sample-import.csv', views.sample_import_csv, name='sample_import_csv'),
@@ -146,13 +141,8 @@ urlpatterns = [
     path('loyalty/<uuid:program_id>/delete/', views.loyalty_program_delete, name='loyalty_program_delete'),
     path('loyalty/<uuid:program_id>/tiers/<uuid:tier_id>/members/', views.loyalty_tier_members, name='loyalty_tier_members'),
     # External Survey
-    path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
-    path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
     path('analytics/surveys/analytics/', views.survey_analytics, name='survey_analytics'),
     path('analytics/surveys/response/<str:kind>/<uuid:response_id>/', views.survey_response_detail, name='survey_response_detail'),
-    path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
-    path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
-    path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
 
     # Typeform integration (organizer settings) — see the Integrations block for the
     # full set of integration connection pages. The webhook path stays unchanged because
@@ -341,7 +331,6 @@ urlpatterns = [
     # Settings
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
-    path('settings/action-center/', views.settings_action_center, name='settings_action_center'),
     path('settings/brand-voice/', views.settings_brand_voice, name='settings_brand_voice'),
     path('settings/brand-voice/example/', views.settings_brand_voice_example, name='settings_brand_voice_example'),
     path('settings/segment-tuning/', views.settings_segment_tuning, name='settings_segment_tuning'),

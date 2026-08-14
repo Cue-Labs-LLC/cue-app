@@ -5,6 +5,8 @@
 
 {% block extra_head %}
 {{ block.super }}
+<style>/* No page fade when switching the tabs — each tab is a full navigation. */
+.content > * { animation: none; }</style>
 <style>
     #custActionBar {
         overflow: visible;

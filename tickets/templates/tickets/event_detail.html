@@ -5,6 +5,8 @@
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
 {% block extra_head %}
+<style>/* No page fade when switching the tabs — each tab is a full navigation. */
+.content > * { animation: none; }</style>
 {% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
@@ -356,6 +358,7 @@ button.detail-meta-weather--severe:focus-visible {
 {% endblock %}
 
 {% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
 <nav aria-label="breadcrumb" class="d-none d-sm-block">
     <ol class="breadcrumb">
         <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
@@ -2090,14 +2093,7 @@ document.addEventListener('DOMContentLoaded', function() {
     {% else %}
     <div class="empty-state" style="padding: 28px 24px;">
         <i class="bi bi-clipboard2-data" style="font-size: 16px;"></i>
-        <p class="mb-1">No survey responses yet</p>
-        <p class="text-body-secondary small mb-2">
-            Build a survey in Cue and send it to your attendees to start collecting responses.
-        </p>
-        <p class="text-body-secondary small mb-0">
-            Already collecting responses elsewhere?
-            <a href="{% url 'tickets:typeform_settings' %}">Connect a survey integration</a>.
-        </p>
+        <p class="mb-0">No survey responses yet</p>
     </div>
     {% endif %}
     {% endif %}
@@ -2658,6 +2654,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </form>
     </div>
   </div>
+</div>
 </div>
 
 {% endblock %}

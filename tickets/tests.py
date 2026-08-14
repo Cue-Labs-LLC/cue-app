@@ -17,7 +17,7 @@ from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event, EventImage,
     Venue, Market, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
-    AITokenUsage, AIRecommendation,
+    AITokenUsage,
     EventExpense,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
@@ -6429,7 +6429,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertContains(response, 'Survey sent to 3 attendees')
         self.assertContains(response, 'Responses will appear here as they come in.')
         # The "nothing has happened" copy must NOT show once a survey has gone out.
-        self.assertNotContains(response, 'Build a survey in Cue and send it')
+        self.assertNotContains(response, 'No survey responses yet')
         # The Send modal explains the recipient count is a remainder.
         self.assertContains(response, 'already received this survey')
 
@@ -6442,7 +6442,7 @@ class SurveySentConfirmationTests(TestCase):
         # No send has happened -> original onboarding empty state, no confirmation.
         self.assertNotContains(response, 'Survey sent to')
         self.assertNotContains(response, 'already received this survey')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
     def test_unsent_invitations_do_not_count_as_sent(self):
         # A scheduled-but-not-yet-sent invitation must not trigger the confirmation.
@@ -6453,7 +6453,7 @@ class SurveySentConfirmationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['survey_sent_count'], 0)
         self.assertNotContains(response, 'Survey sent to')
-        self.assertContains(response, 'Build a survey in Cue and send it')
+        self.assertContains(response, 'No survey responses yet')
 
 
 class EventDetailAllocationChartTest(TestCase):
@@ -7942,342 +7942,6 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.assertEqual(list(campaign.candidate_customers(self.org)), [self.alice])
 
 
-class AIRecommendationTests(TestCase):
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(name='AI Org', slug='ai-org')
-        self.other_org = Organization.objects.create(name='Other AI Org', slug='other-ai-org')
-        self.user = User.objects.create_user(
-            username='aiuser',
-            email='ai@example.com',
-            password='testpass123',
-        )
-        UserProfile.objects.create(
-            user=self.user,
-            organization=self.org,
-            org_role=UserProfile.OrgRole.OWNER,
-        )
-        OrganizationMembership.objects.create(
-            user=self.user,
-            organization=self.org,
-            org_role=UserProfile.OrgRole.OWNER,
-        )
-        self.client.login(username='ai@example.com', password='testpass123')
-        session = self.client.session
-        session['_org_id'] = str(self.org.pk)
-        session.save()
-        self.venue = Venue.objects.create(
-            organization=self.org,
-            name='AI Venue',
-            city='Atlanta',
-            capacity=500,
-        )
-        self.event = Event.objects.create(
-            organization=self.org,
-            name='AI Event',
-            venue=self.venue,
-            ticketing_type='direct',
-            start_date=date.today() + timedelta(days=10),
-            start_time=time(20, 0),
-            end_date=date.today() + timedelta(days=10),
-            capacity=400,
-        )
-
-    def _recommendation(self, **overrides):
-        defaults = {
-            'organization': self.org,
-            'event': self.event,
-            'kind': AIRecommendation.Kind.SALES_PACING,
-            'priority': AIRecommendation.Priority.HIGH,
-            'confidence': Decimal('0.800'),
-            'title': 'Review pacing',
-            'summary': 'Sales are behind pace.',
-            'evidence_json': {'gap': 12},
-            'recommended_action_json': {
-                'type': 'open_url',
-                'label': 'Open event',
-                'url': reverse('tickets:event_detail', args=[self.event.id]),
-                'payload': {'event_id': str(self.event.id)},
-            },
-            'dedupe_key': 'sales_pacing:test',
-        }
-        defaults.update(overrides)
-        return AIRecommendation.objects.create(**defaults)
-
-    def test_recommendation_dedupe_is_scoped_to_organization(self):
-        self._recommendation()
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                self._recommendation(title='Duplicate')
-        other_event = Event.objects.create(
-            organization=self.other_org,
-            name='Other Event',
-            venue=Venue.objects.create(organization=self.other_org, name='Other Venue', city='Savannah'),
-            start_date=date.today() + timedelta(days=10),
-        )
-        rec = self._recommendation(
-            organization=self.other_org,
-            event=other_event,
-            dedupe_key='sales_pacing:test',
-        )
-        self.assertEqual(rec.organization, self.other_org)
-
-    def test_status_transition_helpers_set_timestamps(self):
-        rec = self._recommendation()
-        rec.mark_reviewed()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.REVIEWED)
-        self.assertIsNotNone(rec.reviewed_at)
-        rec.dismiss()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
-        self.assertIsNotNone(rec.dismissed_at)
-        rec.resolve()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
-        self.assertIsNotNone(rec.resolved_at)
-
-    @patch('tickets.services.ai_recommendations.generator.generate_forecast_preview')
-    def test_sales_pacing_detector_creates_recommendation(self, mock_preview):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.event.cached_paid_ticket_count = 2
-        self.event.save(update_fields=['cached_paid_ticket_count'])
-        mock_preview.return_value = {
-            'has_sufficient_data': True,
-            'curve_points': [{'days_before': 10, 'expected_tickets': 25}],
-        }
-        recommendations = AIRecommendationGenerator(self.org).detect_sales_pacing_risks()
-        self.assertEqual(len(recommendations), 1)
-        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.SALES_PACING)
-        self.assertEqual(recommendations[0].evidence_json['ticket_gap'], 23)
-
-    def test_post_event_detector_creates_review_recommendation_and_dedupes(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.event.start_date = date.today() - timedelta(days=2)
-        self.event.end_date = date.today() - timedelta(days=2)
-        self.event.save(update_fields=['start_date', 'end_date'])
-        generator = AIRecommendationGenerator(self.org)
-        first = generator.detect_post_event_wrapups()
-        second = generator.detect_post_event_wrapups()
-        self.assertEqual(len(first), 1)
-        self.assertEqual(len(second), 1)
-        self.assertEqual(
-            AIRecommendation.objects.filter(organization=self.org, kind=AIRecommendation.Kind.POST_EVENT_WRAPUP).count(),
-            1,
-        )
-
-    def test_dismissed_recommendation_is_not_reopened_by_detector(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.event.start_date = date.today() - timedelta(days=2)
-        self.event.end_date = date.today() - timedelta(days=2)
-        self.event.save(update_fields=['start_date', 'end_date'])
-        rec = AIRecommendationGenerator(self.org).detect_post_event_wrapups()[0]
-        rec.dismiss()
-        AIRecommendationGenerator(self.org).detect_post_event_wrapups()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
-
-    def test_winback_detector_creates_recommendation(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        past_event = Event.objects.create(
-            organization=self.org,
-            name='Past Buyer Event',
-            venue=self.venue,
-            start_date=date.today() - timedelta(days=120),
-        )
-        customer = Customer.objects.create(
-            organization=self.org,
-            email='winback@example.com',
-            name='Win Back',
-            lifetime_value=Decimal('500.00'),
-            last_order_date=date.today() - timedelta(days=120),
-        )
-        for idx in range(2):
-            TicketOrder.objects.create(
-                customer=customer,
-                event=past_event,
-                order_number=f'WB-{idx}-{uuid.uuid4().hex[:6]}',
-                order_date=timezone.now() - timedelta(days=120 + idx),
-                total_amount=Decimal('250.00'),
-            )
-        recommendations = AIRecommendationGenerator(self.org).detect_winback_audience()
-        self.assertEqual(len(recommendations), 1)
-        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.WINBACK_AUDIENCE)
-        self.assertEqual(recommendations[0].evidence_json['customer_count'], 1)
-
-    def test_marketing_attribution_detector_creates_recommendation(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.org.meta_ads_account_id = 'act_123'
-        self.org.mailchimp_access_token = 'token'
-        self.org.mailchimp_dc = 'us1'
-        self.org.save(update_fields=['meta_ads_account_id', 'mailchimp_access_token', 'mailchimp_dc'])
-        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
-        self.assertEqual(len(recommendations), 1)
-        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.MARKETING_ATTRIBUTION)
-        self.assertIn('Meta Ads spend', recommendations[0].evidence_json['missing_items'])
-
-    def test_marketing_attribution_detector_skips_meta_gap_for_manual_facebook_marketing_expense(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.org.meta_ads_account_id = 'act_123'
-        self.org.save(update_fields=['meta_ads_account_id'])
-        EventExpense.objects.create(
-            event=self.event,
-            category='marketing',
-            source='manual',
-            description='Facebook ads campaign',
-            amount=Decimal('150.00'),
-        )
-
-        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
-
-        self.assertEqual(recommendations, [])
-        self.assertFalse(
-            AIRecommendation.objects.filter(
-                organization=self.org,
-                dedupe_key=f'marketing_attribution:{self.event.id}',
-            ).exists()
-        )
-
-    def test_marketing_attribution_detector_requires_manual_meta_expense_to_be_marketing(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.org.meta_ads_account_id = 'act_123'
-        self.org.save(update_fields=['meta_ads_account_id'])
-        EventExpense.objects.create(
-            event=self.event,
-            category='venue',
-            source='manual',
-            description='Facebook ads watch party rental',
-            amount=Decimal('150.00'),
-        )
-
-        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
-
-        self.assertEqual(len(recommendations), 1)
-        self.assertIn('Meta Ads spend', recommendations[0].evidence_json['missing_items'])
-
-    def test_marketing_attribution_detector_resolves_open_recommendation_when_manual_meta_expense_exists(self):
-        from tickets.services.ai_recommendations import AIRecommendationGenerator
-
-        self.org.meta_ads_account_id = 'act_123'
-        self.org.save(update_fields=['meta_ads_account_id'])
-        generator = AIRecommendationGenerator(self.org)
-        recommendation = generator.detect_marketing_attribution_gaps()[0]
-
-        EventExpense.objects.create(
-            event=self.event,
-            category='marketing',
-            source='manual',
-            description='Launch marketing',
-            notes='IG and FB ad spend',
-            amount=Decimal('150.00'),
-        )
-
-        recommendations = generator.detect_marketing_attribution_gaps()
-        recommendation.refresh_from_db()
-
-        self.assertEqual(recommendations, [])
-        self.assertEqual(recommendation.status, AIRecommendation.Status.RESOLVED)
-        self.assertIsNotNone(recommendation.resolved_at)
-
-    def test_action_center_is_org_scoped_and_dashboard_excludes_closed_items(self):
-        visible = self._recommendation(title='Visible recommendation')
-        hidden = self._recommendation(
-            title='Hidden recommendation',
-            dedupe_key='sales_pacing:hidden',
-            status=AIRecommendation.Status.DISMISSED,
-        )
-        other_event = Event.objects.create(
-            organization=self.other_org,
-            name='Other Event',
-            venue=Venue.objects.create(organization=self.other_org, name='Other Venue', city='Savannah'),
-            start_date=date.today() + timedelta(days=10),
-        )
-        self._recommendation(
-            organization=self.other_org,
-            event=other_event,
-            title='Other org recommendation',
-            dedupe_key='other-org-rec',
-        )
-
-        response = self.client.get(reverse('tickets:action_center'))
-        self.assertContains(response, visible.title)
-        self.assertNotContains(response, 'Other org recommendation')
-        self.assertNotContains(response, hidden.title)
-
-        response = self.client.get(reverse('tickets:home'))
-        self.assertContains(response, visible.title)
-        self.assertNotContains(response, hidden.title)
-
-    def test_action_center_renders_review_link_for_marketing_unconfirmed(self):
-        rec = self._recommendation(
-            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
-            dedupe_key=f'marketing_unconfirmed:{self.event.id}',
-            title='AI Event has 1 marketing match to confirm',
-            recommended_action_json={
-                'type': 'open_url',
-                'label': 'Review and confirm',
-                'url': reverse('tickets:event_detail', args=[self.event.id]) + '#marketing',
-            },
-        )
-        response = self.client.get(reverse('tickets:action_center'))
-        self.assertContains(response, rec.title)
-        self.assertContains(response, 'Review and confirm')
-        content = response.content.decode()
-        # Admin sees the unconfirmed-matches modal trigger with a marketing-tab fallback URL.
-        self.assertIn('data-bs-target="#unconfirmedMatchesModal"', content)
-        self.assertIn(f'data-recommendation-id="{rec.id}"', content)
-        self.assertIn(
-            reverse('tickets:event_detail', args=[self.event.id]) + '#marketing',
-            content,
-        )
-        # The empty-modal-bug shouldn't recur: this kind must not attach the link-campaigns modal.
-        self.assertNotIn(
-            f'data-bs-target="#linkCampaignsModal" data-recommendation-id="{rec.id}"',
-            content,
-        )
-
-    def test_recommendation_review_dismiss_and_resolve_views(self):
-        rec = self._recommendation()
-        response = self.client.post(reverse('tickets:ai_recommendation_review', args=[rec.id]))
-        self.assertEqual(response.status_code, 302)
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.REVIEWED)
-
-        response = self.client.post(reverse('tickets:ai_recommendation_dismiss', args=[rec.id]))
-        self.assertEqual(response.status_code, 302)
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
-
-        response = self.client.post(reverse('tickets:ai_recommendation_resolve', args=[rec.id]))
-        self.assertEqual(response.status_code, 302)
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
-
-    def test_task_handles_detector_failure(self):
-        from tickets.tasks import generate_org_ai_opportunities_task
-
-        with patch(
-            'tickets.services.ai_recommendations.generator.AIRecommendationGenerator.detect_sales_pacing_risks',
-            side_effect=RuntimeError('boom'),
-        ):
-            generated = generate_org_ai_opportunities_task.run(str(self.org.id))
-        self.assertGreaterEqual(generated, 0)
-
-    def test_management_command_enqueues_one_task_per_org(self):
-        with patch(
-            'tickets.management.commands.generate_ai_opportunities.generate_org_ai_opportunities_task.delay'
-        ) as mock_delay:
-            call_command('generate_ai_opportunities')
-        self.assertGreaterEqual(mock_delay.call_count, 2)
-
-
 class MultiOrgTests(TestCase):
     """Tests for multi-organization support: create, switch, invite, role isolation."""
 
@@ -9575,7 +9239,8 @@ class MarketingAnalyticsServiceTests(TestCase):
 
 
 class MarketingOverviewViewTests(TestCase):
-    """View-level tests for the marketing overview page."""
+    """View-level tests for the unified SMS page: the legacy /marketing/ redirect
+    and the Grow tab that hosts the shareable subscribe link."""
 
     def setUp(self):
         self.client = Client()
@@ -9591,31 +9256,36 @@ class MarketingOverviewViewTests(TestCase):
         response = anon.get(reverse('tickets:marketing_overview'))
         self.assertEqual(response.status_code, 302)
 
-    def test_overview_renders_with_default_window(self):
+    def test_marketing_url_redirects_to_sms_grow(self):
         response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertRedirects(
+            response, reverse('tickets:sms_campaign_list') + '?view=grow',
+        )
+
+    def test_sms_page_default_window(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(response.status_code, 200)
-        self.assertIn('metrics', response.context)
         self.assertEqual(response.context['window_key'], '90')
 
     def test_window_querystring_overrides_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=all')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=all')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], 'all')
 
     def test_invalid_window_falls_back_to_default(self):
-        response = self.client.get(reverse('tickets:marketing_overview') + '?window=banana')
+        response = self.client.get(reverse('tickets:sms_campaign_list') + '?window=banana')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], '90')
 
-    def test_overview_shows_shareable_subscribe_link(self):
-        response = self.client.get(reverse('tickets:marketing_overview'))
+    def test_grow_view_shows_shareable_subscribe_link(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'grow'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context['subscribe_url'],
             f"http://testserver/subscribe/{self.org.slug}/",
         )
         self.assertContains(response, f'/subscribe/{self.org.slug}/')
-        self.assertContains(response, 'Grow your audience')
+        self.assertContains(response, '<h2>Grow your audience</h2>')
         self.assertContains(response, 'subscribeLinkCopy')
 
 
@@ -10008,165 +9678,6 @@ class CampaignConfirmViewTests(TestCase):
         self.assertIsNotNone(refreshed.confirmed_at)
         self.assertIsNotNone(refreshed.api_data_changed_at)
         self.assertGreater(refreshed.api_data_changed_at, refreshed.confirmed_at)
-
-
-class MarketingDetectorTests(TestCase):
-    """Tests for the new marketing detectors in AIRecommendationGenerator."""
-
-    def setUp(self):
-        from .models import EventEmailCampaign, EventSMSCampaign
-        self.org = Organization.objects.create(name='Detector Org', slug='detector-org')
-        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
-        self.event = Event.objects.create(
-            organization=self.org, name='Event A', venue=venue,
-            start_date=date.today() - timedelta(days=10), start_time=time(20, 0, 0),
-            computed_total_revenue=Decimal('100.00'),
-        )
-
-        self.high_unsub_email = EventEmailCampaign.objects.create(
-            event=self.event, source='mailchimp', external_id='em-bad',
-            campaign_title='Bad blast', send_time=timezone.now() - timedelta(days=5),
-            emails_sent=1000, unsubscribes=25, unique_opens=100, unique_clicks=20,
-        )
-        EventExpense.objects.create(
-            event=self.event, category='marketing', description='Meta Ads',
-            amount=Decimal('500.00'), expense_date=date.today() - timedelta(days=5),
-            source='meta_ads', external_id='ad-bad',
-            confirmed_at=timezone.now(),
-        )
-
-    def test_high_unsubscribe_rate_detector_creates_one_rec(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_high_unsubscribe_rate()
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0].kind, AIRecommendation.Kind.MARKETING_ATTRIBUTION)
-        self.assertEqual(recs[0].dedupe_key, f'marketing_unsub:email:{self.high_unsub_email.id}')
-
-        # Idempotent on re-run
-        recs2 = gen.detect_high_unsubscribe_rate()
-        self.assertEqual(len(recs2), 1)
-        self.assertEqual(AIRecommendation.objects.filter(organization=self.org).count(), 1)
-
-    def test_low_channel_roi_detector_fires_when_roas_below_one(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_low_channel_roi()
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0].dedupe_key, 'marketing_low_roi:ads:90')
-        self.assertEqual(recs[0].priority, AIRecommendation.Priority.HIGH)
-
-    def test_channel_imbalance_detector_flags_ads_without_email(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        self.high_unsub_email.hard_delete()
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_channel_imbalance()
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0].dedupe_key, f'marketing_imbalance:{self.event.id}')
-
-    def test_dismissed_recommendation_is_not_reopened(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_high_unsubscribe_rate()
-        recs[0].dismiss()
-
-        # Re-run; the dismissed record stays dismissed.
-        gen.detect_high_unsubscribe_rate()
-        kept = AIRecommendation.objects.get(id=recs[0].id)
-        self.assertEqual(kept.status, AIRecommendation.Status.DISMISSED)
-
-    def test_channel_imbalance_detector_resolves_when_email_linked(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-        from .models import EventEmailCampaign
-
-        # Start with no email campaigns and a confirmed Meta Ads expense already in setUp.
-        self.high_unsub_email.hard_delete()
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_channel_imbalance()
-        self.assertEqual(len(recs), 1)
-        rec = recs[0]
-        self.assertEqual(rec.status, AIRecommendation.Status.NEW)
-
-        # User links a Mailchimp campaign; rerunning the detector should resolve the stale rec.
-        EventEmailCampaign.objects.create(
-            event=self.event, source='mailchimp', external_id='em-new',
-            campaign_title='Linked blast', send_time=timezone.now() - timedelta(days=3),
-            emails_sent=500,
-        )
-        gen.detect_channel_imbalance()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
-
-    def test_channel_imbalance_detector_emits_modal_evidence_keys(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        self.org.mailchimp_access_token = 'fake-token'
-        self.org.mailchimp_dc = 'us1'
-        self.org.meta_ads_account_id = '12345'
-        self.org.save(update_fields=['mailchimp_access_token', 'mailchimp_dc', 'meta_ads_account_id'])
-
-        self.high_unsub_email.hard_delete()
-        recs = AIRecommendationGenerator(self.org).detect_channel_imbalance()
-        self.assertEqual(len(recs), 1)
-        evidence = recs[0].evidence_json
-        self.assertEqual(evidence.get('missing_items'), ['Mailchimp campaign report'])
-        self.assertTrue(evidence.get('mailchimp_connected'))
-        self.assertTrue(evidence.get('meta_connected'))
-
-    def test_unconfirmed_matches_detector_fires_for_unconfirmed_email(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        # setUp already created an unconfirmed Mailchimp email campaign for self.event.
-        recs = AIRecommendationGenerator(self.org).detect_unconfirmed_marketing_matches()
-        matching = [r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}']
-        self.assertEqual(len(matching), 1)
-        rec = matching[0]
-        self.assertEqual(rec.kind, AIRecommendation.Kind.MARKETING_UNCONFIRMED)
-        self.assertEqual(rec.evidence_json['channels']['mailchimp'], 1)
-        self.assertEqual(rec.evidence_json['channels']['slicktext'], 0)
-        self.assertEqual(rec.evidence_json['channels']['meta_ads'], 0)
-        self.assertEqual(rec.evidence_json['total'], 1)
-        self.assertTrue(rec.recommended_action_json['url'].endswith('#marketing'))
-
-    def test_unconfirmed_matches_detector_resolves_when_confirmed(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-
-        gen = AIRecommendationGenerator(self.org)
-        recs = gen.detect_unconfirmed_marketing_matches()
-        rec = next(r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}')
-        self.assertEqual(rec.status, AIRecommendation.Status.NEW)
-
-        self.high_unsub_email.confirmed_at = timezone.now()
-        self.high_unsub_email.save(update_fields=['confirmed_at'])
-
-        gen.detect_unconfirmed_marketing_matches()
-        rec.refresh_from_db()
-        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
-
-    def test_unconfirmed_matches_detector_counts_across_channels(self):
-        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
-        from .models import EventSMSCampaign
-
-        EventSMSCampaign.objects.create(
-            event=self.event, source='slicktext', external_id='sms-1',
-            name='SMS blast', send_time=timezone.now() - timedelta(days=2),
-        )
-        EventExpense.objects.create(
-            event=self.event, category='marketing', description='Another Meta Ads campaign',
-            amount=Decimal('100.00'), expense_date=date.today() - timedelta(days=2),
-            source='meta_ads', external_id='ad-unconfirmed',
-        )
-
-        recs = AIRecommendationGenerator(self.org).detect_unconfirmed_marketing_matches()
-        rec = next(r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}')
-        self.assertEqual(rec.evidence_json['channels']['mailchimp'], 1)
-        self.assertEqual(rec.evidence_json['channels']['slicktext'], 1)
-        self.assertEqual(rec.evidence_json['channels']['meta_ads'], 1)
-        self.assertEqual(rec.evidence_json['total'], 3)
 
 
 class ScannerCheckinAPITests(TestCase):
@@ -12976,134 +12487,6 @@ class BackfillRefundStateCommandTests(TestCase):
         self.assertIn('Skipped: 1', output)
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
-
-
-class UnconfirmedMatchesEndpointTests(TestCase):
-    """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
-
-    def setUp(self):
-        from .models import EventEmailCampaign, EventSMSCampaign
-
-        self.client = Client()
-        self.org = Organization.objects.create(name='Modal Org', slug='modal-org')
-        self.user = User.objects.create_user(
-            username='modaladmin', email='modaladmin@example.com', password='testpass123',
-        )
-        UserProfile.objects.create(
-            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
-        )
-        OrganizationMembership.objects.create(
-            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
-        )
-        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
-        self.event = Event.objects.create(
-            organization=self.org, name='Match Modal Show', venue=venue,
-            start_date=date.today() - timedelta(days=5), start_time=time(20, 0, 0),
-        )
-
-        # One unconfirmed row per channel + one confirmed Mailchimp row that must be excluded.
-        EventExpense.objects.create(
-            event=self.event, category='marketing', description='ad1',
-            amount=Decimal('250.00'), source='meta_ads', external_id='ad-1',
-            external_metadata={'campaign_name': 'Spring Push'},
-        )
-        EventEmailCampaign.objects.create(
-            event=self.event, source='mailchimp', external_id='mc-1',
-            campaign_title='Newsletter', subject_line='Hello',
-            send_time=timezone.now() - timedelta(days=3),
-        )
-        EventEmailCampaign.objects.create(
-            event=self.event, source='mailchimp', external_id='mc-2',
-            campaign_title='Already confirmed', send_time=timezone.now() - timedelta(days=4),
-            confirmed_at=timezone.now(), confirmed_by=self.user,
-        )
-        EventSMSCampaign.objects.create(
-            event=self.event, source='slicktext', external_id='st-1',
-            name='SMS blast', message='Doors at 8',
-            send_time=timezone.now() - timedelta(days=2),
-        )
-
-        self.unconfirmed_rec = AIRecommendation.objects.create(
-            organization=self.org,
-            event=self.event,
-            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
-            priority=AIRecommendation.Priority.HIGH,
-            confidence=Decimal('0.900'),
-            title='3 matches to confirm',
-            summary='Review and confirm',
-            dedupe_key=f'marketing_unconfirmed:{self.event.id}',
-            recommended_action_json={'type': 'open_url', 'label': 'Review and confirm', 'url': '/x/'},
-        )
-        self.other_kind_rec = AIRecommendation.objects.create(
-            organization=self.org,
-            event=self.event,
-            kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
-            priority=AIRecommendation.Priority.MEDIUM,
-            confidence=Decimal('0.500'),
-            title='Link campaigns',
-            summary='Link',
-            dedupe_key=f'marketing_attribution:{self.event.id}',
-        )
-
-    def _login(self):
-        self.client.login(username='modaladmin@example.com', password='testpass123')
-        self.client.get(reverse('tickets:home'))
-
-    def test_requires_login(self):
-        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.unconfirmed_rec.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn('/login', response['Location'])
-
-    def test_returns_unconfirmed_rows_grouped_by_channel(self):
-        self._login()
-        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.unconfirmed_rec.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertTrue(body['ok'])
-        self.assertEqual(body['event_id'], str(self.event.id))
-        self.assertEqual(body['event_name'], 'Match Modal Show')
-        self.assertEqual(len(body['meta_ads']), 1)
-        self.assertEqual(len(body['mailchimp']), 1)  # confirmed row excluded
-        self.assertEqual(len(body['slicktext']), 1)
-        self.assertEqual(body['total'], 3)
-        self.assertEqual(body['meta_ads'][0]['label'], 'Spring Push')
-        self.assertEqual(body['meta_ads'][0]['amount'], '250.00')
-        self.assertEqual(body['mailchimp'][0]['label'], 'Newsletter')
-        self.assertEqual(body['slicktext'][0]['label'], 'SMS blast')
-        self.assertIn('confirm_url', body['meta_ads'][0])
-        self.assertIn('remove_url', body['meta_ads'][0])
-        self.assertIn('meta_ads', body['confirm_all_urls'])
-
-    def test_rejects_non_marketing_unconfirmed_kind(self):
-        self._login()
-        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.other_kind_rec.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 404)
-        self.assertFalse(response.json()['ok'])
-
-    def test_does_not_leak_across_orgs(self):
-        other_org = Organization.objects.create(name='Outsider', slug='outsider')
-        other_venue = Venue.objects.create(organization=other_org, name='V2', city='LA')
-        other_event = Event.objects.create(
-            organization=other_org, name='Other', venue=other_venue,
-            start_date=date.today(), start_time=time(20, 0, 0),
-        )
-        outside_rec = AIRecommendation.objects.create(
-            organization=other_org,
-            event=other_event,
-            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
-            priority=AIRecommendation.Priority.HIGH,
-            confidence=Decimal('0.900'),
-            title='not yours',
-            summary='nope',
-            dedupe_key=f'marketing_unconfirmed:{other_event.id}',
-        )
-        self._login()
-        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[outside_rec.id])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 404)
 
 
 class LinkCustomerToBuyerTests(TestCase):
@@ -22016,115 +21399,6 @@ class CheckinCurveTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
-class ActionCenterKindTogglesTests(TestCase):
-    """Enable/disable AIRecommendation kinds per org (Action Center settings)."""
-
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(name='Toggle Org', slug='toggle-org')
-        self.admin_user = User.objects.create_user(
-            username='toggleadmin', email='toggleadmin@example.com', password='testpass123',
-        )
-        UserProfile.objects.create(
-            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
-        )
-        OrganizationMembership.objects.create(
-            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
-        )
-        self.venue = Venue.objects.create(
-            organization=self.org, name='Toggle Venue', city='Toggle City',
-        )
-        self.event = Event.objects.create(
-            organization=self.org, name='Toggle Fest', venue=self.venue,
-            start_date=date(2026, 9, 1),
-        )
-        # One unresolved recommendation of two different kinds, both linked to the event.
-        self.pacing = AIRecommendation.objects.create(
-            organization=self.org, event=self.event,
-            kind=AIRecommendation.Kind.SALES_PACING,
-            priority=AIRecommendation.Priority.HIGH,
-            title='Pacing behind', summary='Slow sales', dedupe_key='sales_pacing:1',
-        )
-        self.winback = AIRecommendation.objects.create(
-            organization=self.org, event=self.event,
-            kind=AIRecommendation.Kind.WINBACK_AUDIENCE,
-            priority=AIRecommendation.Priority.MEDIUM,
-            title='Win them back', summary='Lapsed customers', dedupe_key='winback_audience:90',
-        )
-
-    def _login_admin(self):
-        self.client.login(username='toggleadmin@example.com', password='testpass123')
-        self.client.get(reverse('tickets:home'))
-
-    def test_all_kinds_visible_by_default(self):
-        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 2)
-        self._login_admin()
-        resp = self.client.get(reverse('tickets:action_center'))
-        self.assertEqual(resp.status_code, 200)
-        titles = {r.title for r in resp.context['page_obj'].object_list}
-        self.assertEqual(titles, {'Pacing behind', 'Win them back'})
-
-    def test_disabling_a_kind_hides_it_everywhere(self):
-        self._login_admin()
-        resp = self.client.post(
-            reverse('tickets:settings_action_center'),
-            {AIRecommendation.Kind.SALES_PACING: '', AIRecommendation.Kind.WINBACK_AUDIENCE: 'on'},
-        )
-        self.assertRedirects(resp, reverse('tickets:settings_action_center'))
-
-        self.org.refresh_from_db()
-        self.assertIn(AIRecommendation.Kind.SALES_PACING, self.org.disabled_action_kinds)
-        self.assertNotIn(AIRecommendation.Kind.WINBACK_AUDIENCE, self.org.disabled_action_kinds)
-
-        # Outstanding count (sidebar) drops to just the enabled kind.
-        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 1)
-
-        # Action Center page hides the disabled kind and its filter option.
-        resp = self.client.get(reverse('tickets:action_center'))
-        titles = {r.title for r in resp.context['page_obj'].object_list}
-        self.assertEqual(titles, {'Win them back'})
-        kind_values = {value for value, _label in resp.context['kind_choices']}
-        self.assertNotIn(AIRecommendation.Kind.SALES_PACING, kind_values)
-
-        # Per-event badge count on the events list excludes the disabled kind.
-        resp = self.client.get(reverse('tickets:event_list'))
-        page_events = {e.pk: e for e in resp.context['page_obj'].object_list}
-        self.assertEqual(page_events[self.event.pk].action_count, 1)
-
-    def test_re_enabling_restores_suggestions_without_regeneration(self):
-        self.org.disabled_action_kinds = [AIRecommendation.Kind.SALES_PACING]
-        self.org.save(update_fields=['disabled_action_kinds'])
-        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 1)
-
-        self._login_admin()
-        # Turn every kind back on.
-        resp = self.client.post(
-            reverse('tickets:settings_action_center'),
-            {value: 'on' for value, _label in AIRecommendation.Kind.choices},
-        )
-        self.assertRedirects(resp, reverse('tickets:settings_action_center'))
-
-        self.org.refresh_from_db()
-        self.assertEqual(self.org.disabled_action_kinds, [])
-        # The existing rows reappear — no regeneration needed.
-        self.assertEqual(AIRecommendation.outstanding_for_org(self.org).count(), 2)
-
-    def test_non_admin_cannot_open_settings(self):
-        host = User.objects.create_user(
-            username='togglehost', email='togglehost@example.com', password='testpass123',
-        )
-        UserProfile.objects.create(
-            user=host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
-        )
-        OrganizationMembership.objects.create(
-            user=host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
-        )
-        self.client.login(username='togglehost@example.com', password='testpass123')
-        self.client.get(reverse('tickets:home'))
-        resp = self.client.get(reverse('tickets:settings_action_center'))
-        self.assertEqual(resp.status_code, 403)
-
-
 class EventListEmptyStateTests(TestCase):
     """The events-page empty state guides new organizers to create/import an event."""
 
@@ -22510,3 +21784,69 @@ class EventImageGalleryTests(TestCase):
         resp = self.client.get(reverse('tickets:public_event_buy', args=[self.event.public_id]))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'event-photos')
+
+
+class ViewModeOrganizerGuardTests(TestCase):
+    """The Attendee View toggle must win over the superuser bypass.
+
+    Regression: a superuser (who is also an organizer) in Attendee View used to
+    render organizer page bodies (e.g. the event list) inside attendee chrome,
+    because require_organizer returned early for superusers before checking the
+    session view mode. Now the view-mode check runs first for everyone.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='View Mode Org', slug='view-mode-org')
+
+        # Superuser who is also an organizer member of the org.
+        self.superuser = User.objects.create_superuser(
+            username='vmsuper', email='vmsuper@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.superuser, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.superuser, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Plain organizer (not superuser) for the baseline path.
+        self.organizer = User.objects.create_user(
+            username='vmorg', email='vmorg@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.organizer, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.organizer, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _set_view_mode(self, mode):
+        session = self.client.session
+        session['_view_mode'] = mode
+        session['_org_id'] = str(self.org.pk)
+        session.save()
+
+    def test_superuser_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
+
+    def test_superuser_in_organizer_mode_sees_event_list(self):
+        self.client.force_login(self.superuser)
+        self._set_view_mode('organizer')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_organizer_in_attendee_mode_redirected_from_event_list(self):
+        self.client.force_login(self.organizer)
+        self._set_view_mode('attendee')
+        resp = self.client.get(reverse('tickets:event_list'))
+        self.assertRedirects(
+            resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
+        )
