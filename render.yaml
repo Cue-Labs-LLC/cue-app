@@ -136,29 +136,6 @@ services:
       - key: APNS_USE_SANDBOX
         value: "false"
 
-  # Daily AI opportunity scan. Enqueues one Celery task per organization.
-  - type: cron
-    name: ltv-updater-ai-opportunities
-    runtime: python
-    schedule: "0 9 * * *"
-    branch: main
-    buildCommand: pip install -r requirements.txt
-    startCommand: python manage.py generate_ai_opportunities
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.0
-      - key: DJANGO_ENV
-        value: production
-      - key: SECRET_KEY
-        sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: CELERY_BROKER_URL
-        fromService:
-          name: ltv-updater-redis
-          type: redis
-          property: connectionString
-
   # Daily AI event-summary refresh. Enqueues one Celery task per candidate event;
   # each task regenerates the summary only if the event ended and its underlying
   # data changed since the last generation. 14:00 UTC = 6:00 AM PST (Render cron is
