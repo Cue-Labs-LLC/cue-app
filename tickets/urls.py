@@ -99,11 +99,6 @@ urlpatterns = [
     path('dashboard/', views.home, name='home'),
     path('onboarding/dismiss/', views.dismiss_onboarding, name='dismiss_onboarding'),
     path('onboarding/dismiss-upsell/', views.dismiss_directticketing_upsell, name='dismiss_directticketing_upsell'),
-    path('actions/', views.action_center, name='action_center'),
-    path('actions/<uuid:recommendation_id>/review/', views.ai_recommendation_review, name='ai_recommendation_review'),
-    path('actions/<uuid:recommendation_id>/dismiss/', views.ai_recommendation_dismiss, name='ai_recommendation_dismiss'),
-    path('actions/<uuid:recommendation_id>/resolve/', views.ai_recommendation_resolve, name='ai_recommendation_resolve'),
-    path('actions/<uuid:recommendation_id>/unconfirmed-matches/', views.ai_recommendation_unconfirmed_matches, name='ai_recommendation_unconfirmed_matches'),
 
     # CSV Upload (price entry and results used when uploading from an event)
     path('sample-import.csv', views.sample_import_csv, name='sample_import_csv'),
@@ -337,7 +332,6 @@ urlpatterns = [
     # Settings
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
-    path('settings/action-center/', views.settings_action_center, name='settings_action_center'),
     path('settings/brand-voice/', views.settings_brand_voice, name='settings_brand_voice'),
     path('settings/brand-voice/example/', views.settings_brand_voice_example, name='settings_brand_voice_example'),
     path('settings/segment-tuning/', views.settings_segment_tuning, name='settings_segment_tuning'),
