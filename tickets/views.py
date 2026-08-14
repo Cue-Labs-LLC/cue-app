@@ -60,7 +60,7 @@ from .forms import (
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
-    PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
+    PromoCodeForm, UserProfileForm, OrgProfileForm,
     OrgDisplayPreferencesForm, SegmentTuningForm, BrandVoiceForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
@@ -4593,8 +4593,7 @@ def _compute_event_stats(event):
 
     Results are cached under _event_stats_cache_key(event.pk) for 300s.
     Invalidated by signals in signals.py and call-site invalidation in
-    send_survey() and survey_event_link() (which use bulk_create/queryset.update
-    that bypass signals).
+    send_survey() (which uses bulk_create/queryset.update that bypass signals).
     """
     cache_key = _event_stats_cache_key(event.pk)
     cached = safe_cache_get(cache_key)
@@ -14135,125 +14134,6 @@ def recover_pending_payouts(request):
 # ---------------------------------------------------------------------------
 # External Survey views
 # ---------------------------------------------------------------------------
-
-@login_required
-@require_org
-def survey_upload_create(request):
-    org = get_organization(request)
-    if request.method == 'POST':
-        form = SurveyUploadForm(request.POST, request.FILES)
-        if form.is_valid():
-            csv_file = form.cleaned_data['csv_file']
-            upload = ExternalSurveyUpload.objects.create(
-                organization=org,
-                filename=csv_file.name,
-                status=ExternalSurveyUpload.Status.PROCESSING,
-            )
-            try:
-                from .services.external_survey.parser import ExternalSurveyParser
-                parser = ExternalSurveyParser(organization=org, upload=upload)
-                result = parser.parse(csv_file)
-                upload.row_count = result['rows_inserted']
-                upload.status = ExternalSurveyUpload.Status.COMPLETED
-                upload.save(update_fields=['row_count', 'status', 'error_log'])
-                messages.success(
-                    request,
-                    f'Uploaded {result["rows_inserted"]} responses'
-                    + (f' ({result["rows_skipped"]} skipped).' if result['rows_skipped'] else '.'),
-                )
-                return redirect('tickets:survey_event_link', upload_id=upload.id)
-            except Exception as exc:
-                upload.status = ExternalSurveyUpload.Status.FAILED
-                upload.error_log = json.dumps([str(exc)])
-                upload.save(update_fields=['status', 'error_log'])
-                messages.error(request, f'Parse failed: {exc}')
-    else:
-        form = SurveyUploadForm()
-    return render(request, 'tickets/survey_upload_form.html', {'form': form})
-
-
-@login_required
-@require_org
-def survey_upload_detail(request, upload_id):
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-    cities = (
-        ExternalSurveyResponse.objects.filter(upload=upload)
-        .values_list('city', flat=True)
-        .distinct()
-        .order_by('city')
-    )
-    return render(request, 'tickets/survey_upload_detail.html', {
-        'upload': upload,
-        'cities': cities,
-    })
-
-
-@login_required
-@require_org
-def survey_upload_delete(request, upload_id):
-    if request.method != 'POST':
-        return redirect('tickets:survey_hub')
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-    upload.hard_delete()
-    messages.success(request, 'Survey upload deleted.')
-    return redirect('tickets:survey_hub')
-
-
-@login_required
-@require_org
-def survey_event_link(request, upload_id):
-    from collections import defaultdict
-    org = get_organization(request)
-    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
-
-    responses = (
-        ExternalSurveyResponse.objects.filter(upload=upload)
-        .select_related('event')
-        .order_by('-responded_at')
-    )
-    events = Event.objects.filter(organization=org).order_by('-start_date')
-
-    if request.method == 'POST':
-        mapping = {}
-        for resp in responses:
-            mapping[str(resp.id)] = request.POST.get(f'event_{resp.id}', '').strip()
-
-        valid_event_ids = set(
-            str(eid) for eid in Event.objects.filter(organization=org).values_list('id', flat=True)
-        )
-        by_event = defaultdict(list)
-        for resp_id, event_id in mapping.items():
-            by_event[event_id].append(resp_id)
-
-        # Collect event IDs affected before and after the update for cache invalidation.
-        # queryset.update() bypasses post_save signals — must invalidate manually.
-        old_event_ids = set(
-            str(eid) for eid in
-            ExternalSurveyResponse.objects.filter(upload=upload, event__isnull=False)
-            .values_list('event_id', flat=True)
-        )
-        for event_id, resp_ids in by_event.items():
-            if event_id and event_id in valid_event_ids:
-                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event_id=event_id)
-            else:
-                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event=None)
-
-        # Invalidate cache for all affected events (old assignments + new assignments)
-        new_event_ids = set(eid for eid in by_event if eid and eid in valid_event_ids)
-        for eid in old_event_ids | new_event_ids:
-            django_cache.delete(_event_stats_cache_key(eid))
-            _invalidate_event_upload_stats_cache(eid)
-
-        messages.success(request, 'Event links saved.')
-        return redirect(f"{reverse_lazy('tickets:survey_analytics')}?upload={upload.id}")
-
-    return render(request, 'tickets/survey_event_link.html', {
-        'upload': upload,
-        'responses': responses,
-        'events': events,
-    })
 
 
 @login_required

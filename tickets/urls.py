@@ -141,12 +141,8 @@ urlpatterns = [
     path('loyalty/<uuid:program_id>/delete/', views.loyalty_program_delete, name='loyalty_program_delete'),
     path('loyalty/<uuid:program_id>/tiers/<uuid:tier_id>/members/', views.loyalty_tier_members, name='loyalty_tier_members'),
     # External Survey
-    path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
     path('analytics/surveys/analytics/', views.survey_analytics, name='survey_analytics'),
     path('analytics/surveys/response/<str:kind>/<uuid:response_id>/', views.survey_response_detail, name='survey_response_detail'),
-    path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
-    path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
-    path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
 
     # Typeform integration (organizer settings) — see the Integrations block for the
     # full set of integration connection pages. The webhook path stays unchanged because
