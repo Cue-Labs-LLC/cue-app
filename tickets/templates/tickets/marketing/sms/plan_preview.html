@@ -91,15 +91,15 @@
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
+<div style="max-width: 1200px; margin: 0 auto;">
+<div class="page-header d-flex align-items-start justify-content-between flex-wrap gap-2">
     <div>
-        <h1 class="page-title">
+        <a href="{% url 'tickets:sms_plan_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to Sequences</a>
+        <h1 class="mb-0">
             {{ data.name }}
             <span class="unsaved-pill"><i class="bi bi-dot"></i> Unsaved</span>
         </h1>
-        <p class="page-subtitle">
-            Campaign plan · preview{% if event %} · for {{ event.name }}{% endif %}
-        </p>
+        <div class="text-muted small mt-1">Sequence · preview{% if event %} · for {{ event.name }}{% endif %}</div>
     </div>
     <div class="d-flex gap-2">
         <form method="post" action="{% url 'tickets:sms_plan_create' %}" class="m-0" id="planRegenForm">
@@ -114,14 +114,14 @@
         </form>
         <form method="post" action="{% url 'tickets:sms_plan_save' %}" class="m-0" id="planSaveForm">
             {% csrf_token %}
-            <button type="button" class="btn btn-primary btn-sm" id="planSaveBtn"><i class="bi bi-bookmark"></i> Save Plan</button>
+            <button type="button" class="btn btn-primary btn-sm" id="planSaveBtn"><i class="bi bi-bookmark"></i> Save sequence</button>
         </form>
     </div>
 </div>
 
 <div class="plan-unsaved-banner">
     <i class="bi bi-info-circle"></i>
-    <div>This plan hasn't been saved. Edit the messages, send times, and audiences below, then click <strong>Save Plan</strong> to keep it — otherwise it's discarded when you leave this page.</div>
+    <div>This sequence hasn't been saved. Edit the messages, send times, and audiences below, then click <strong>Save sequence</strong> to keep it — otherwise it's discarded when you leave this page.</div>
 </div>
 
 {% if data.objective %}
@@ -175,7 +175,7 @@
     {% empty %}
     <div class="empty-state">
         <i class="bi bi-inbox"></i>
-        <p>This plan has no steps.</p>
+        <p>This sequence has no steps.</p>
     </div>
     {% endfor %}
 </div>
@@ -235,6 +235,9 @@
         </div>
     </div>
 </div>
+
+</div>{% comment %} /max-width wrapper — the unsaved-changes modal below stays outside it so the
+Bootstrap backdrop doesn't paint over it (page-load fadeIn on .content > * traps nested modals). {% endcomment %}
 
 {% include 'tickets/marketing/sms/_unsaved_guard.html' %}
 {% endblock %}
@@ -406,8 +409,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var guard = window.initUnsavedGuard({
         isDirty: function () { return true; },   // an unsaved preview is always "unsaved"
-        saveLabel: 'Save Plan',
-        bodyText: "This plan hasn't been saved. Save it before leaving?",
+        saveLabel: 'Save sequence',
+        bodyText: "This sequence hasn't been saved. Save it before leaving?",
         save: function () { doSave(); },
         discard: function (proceed) { guard.allow(); beaconDiscard(); proceed(); },
         onAbandon: beaconDiscard,

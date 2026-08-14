@@ -1,41 +1,30 @@
+{% load tickets_extras %}
 {% comment %}
-Shared Marketing page header + primary section nav.
-Usage:  {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='…' %}
-  marketing_section : 'overview' | 'sms'  — marks the active tab
-  subtitle (optional): muted line under the "Marketing" title
-The SMS Campaigns tab is gated exactly like the old sidebar sub-link.
+Shared SMS page header.
+Usage:  {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='…' sms_page_actions=True %}
+  subtitle (optional): muted line under the "SMS" title
+  sms_page_actions (optional): render the page-level SMS actions (Tokens / New Send) on the
+    right of the title. Omitted (e.g. on the credits page) → title only. AI campaign plans
+    ("Plan with AI") live under the Sequences tab, not here.
+Marketing is a single unified SMS page; the in-page pill sub-nav (Sends / Sequences /
+Audiences / Grow) lives in the including template, not here. The actions read from the
+global `org` context, so no view plumbing is needed.
 {% endcomment %}
 <div class="marketing-head">
-    <div class="marketing-head-top">
-        <h1>Marketing</h1>
-        {% if subtitle %}<p class="marketing-head-subtitle">{{ subtitle }}</p>{% endif %}
-    </div>
-
-    <nav class="marketing-sectionnav" aria-label="Marketing sections">
-        {% comment %}Overview / Email / Paid Ads are sections of marketing_overview,
-        selected via ?tab=; highlight by active_tab there. SMS is its own page,
-        highlighted by marketing_section.{% endcomment %}
-        <a href="{% url 'tickets:marketing_overview' %}?tab=overview"
-           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'overview' %} is-active{% endif %}"
-           {% if marketing_section == 'overview' and active_tab == 'overview' %}aria-current="page"{% endif %}>
-            <i class="bi bi-grid-1x2"></i><span>Overview</span>
-        </a>
-        {% if sms_section_visible %}
-        <a href="{% url 'tickets:sms_campaign_list' %}"
-           class="marketing-sectionnav-link{% if marketing_section == 'sms' %} is-active{% endif %}"
-           {% if marketing_section == 'sms' %}aria-current="page"{% endif %}>
-            <i class="bi bi-chat-dots"></i><span>SMS</span>
-        </a>
+    <div class="marketing-head-top d-flex justify-content-between align-items-start flex-wrap gap-3">
+        <div>
+            <h1>SMS</h1>
+            {% if subtitle %}<p class="marketing-head-subtitle">{{ subtitle }}</p>{% endif %}
+        </div>
+        {% if sms_page_actions %}
+        <div class="d-flex gap-2 align-items-center sms-head-actions">
+            {% if org.sms_marketing_enabled %}
+            <a href="{% url 'tickets:sms_credits' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-coin"></i> {{ org.sms_credit_balance_cents|tokens }} tokens</a>
+            {% endif %}
+            {% if org.sms_marketing_enabled %}
+            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Send</a>
+            {% endif %}
+        </div>
         {% endif %}
-        <a href="{% url 'tickets:marketing_overview' %}?tab=email"
-           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'email' %} is-active{% endif %}"
-           {% if marketing_section == 'overview' and active_tab == 'email' %}aria-current="page"{% endif %}>
-            <i class="bi bi-envelope"></i><span>Email</span>
-        </a>
-        <a href="{% url 'tickets:marketing_overview' %}?tab=ads"
-           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'ads' %} is-active{% endif %}"
-           {% if marketing_section == 'overview' and active_tab == 'ads' %}aria-current="page"{% endif %}>
-            <i class="bi bi-bullseye"></i><span>Paid Ads</span>
-        </a>
-    </nav>
+    </div>
 </div>

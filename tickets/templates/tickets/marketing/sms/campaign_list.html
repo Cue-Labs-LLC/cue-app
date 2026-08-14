@@ -6,16 +6,18 @@
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 <style>
-.sms-toolbar {
-    display: flex; flex-wrap: wrap; gap: 12px;
-    align-items: center; justify-content: space-between; margin-bottom: 1.1rem;
-}
-.sms-actions .btn { white-space: nowrap; }
+/* No page-load fade on the SMS page — switching tabs is a full navigation, and the
+   global `.content > *` fadeIn would re-animate the whole page on every tab click. */
+.content > * { animation: none; }
+
+.sms-head-actions .btn { white-space: nowrap; }
+/* Right-aligned controls inside a .sms-section-head (window/market/filters). */
+.sms-head-controls { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* Pill sub-nav (Campaigns / Performance / Audience). Mirrors the segmented
    control on Event Detail → Marketing, but rendered as links, not buttons. */
 .marketing-subnav {
-    display: inline-flex; gap: 2px; margin-bottom: 22px;
+    display: inline-flex; gap: 2px; margin-bottom: 0;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 999px; padding: 3px;
 }
@@ -66,51 +68,46 @@ tr.campaign-row { cursor: pointer; }
 {% block content %}
 <div style="max-width: 1200px; margin: 0 auto;">
 {% if sms_native_enabled %}
-{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track SMS' sms_page_actions=True %}
 {% else %}
-{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Track results from SlickText broadcasts linked to your events.' %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Track results from SlickText broadcasts linked to your events.' sms_page_actions=True %}
 {% endif %}
-
-{# ── Toolbar: window + primary actions ───────────────────────────────── #}
-<div class="sms-toolbar">
-    <div class="window-selector">
-        <div class="dropdown">
-            <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                <i class="bi bi-calendar3"></i> {{ window_label }}
-            </button>
-            <ul class="dropdown-menu">
-                {% for key, info in window_choices.items %}
-                <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view={{ view }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
-                {% endfor %}
-            </ul>
-        </div>
-    </div>
-    {% if sms_native_enabled %}
-    <div class="d-flex gap-2 align-items-center sms-actions">
-        <a href="{% url 'tickets:sms_credits' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-coin"></i> {{ balance_cents|tokens }} tokens</a>
-        {% if org.ai_sms_strategist_enabled %}
-        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-stars"></i> Plan with AI</a>
-        {% endif %}
-        <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Send</a>
-    </div>
-    {% endif %}
-</div>
 
 {# ── Sub-view pill nav ───────────────────────────────────────────────── #}
 <nav class="marketing-subnav" role="tablist" aria-label="SMS views">
     <a class="marketing-subnav-btn{% if view == 'campaigns' %} active{% endif %}"
        href="?view=campaigns&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'campaigns' %}aria-current="page"{% endif %}>Sends</a>
+    {% if org.ai_sms_strategist_enabled %}
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_plan_list' %}">Sequences</a>
+    {% endif %}
     <a class="marketing-subnav-btn{% if view == 'audience' %} active{% endif %}"
        href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
-       {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
-    {% if org.ai_sms_strategist_enabled %}
-    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_plan_list' %}">Campaign Plans</a>
-    {% endif %}
+       {% if view == 'audience' %}aria-current="page"{% endif %}>Audiences</a>
+    <a class="marketing-subnav-btn{% if view == 'grow' %} active{% endif %}"
+       href="?view=grow"
+       {% if view == 'grow' %}aria-current="page"{% endif %}>Grow</a>
 </nav>
 
 {# ── Campaigns view (unified: native Cue + external SlickText/etc.) ─────── #}
 {% if view == 'campaigns' %}
+<div class="sms-section-head">
+    <h2>Sends</h2>
+    <div class="sms-head-controls">
+        <div class="window-selector">
+            <div class="dropdown">
+                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-calendar3"></i> {{ window_label }}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    {% for key, info in window_choices.items %}
+                    <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view=campaigns{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
 {% if sending_campaigns %}
 <div class="card mb-3">
     <div class="card-header d-flex align-items-center gap-2">
@@ -281,7 +278,7 @@ tr.campaign-row { cursor: pointer; }
 {# ── Audience view (reach: chart + by-market) ────────────────────────── #}
 {% elif view == 'audience' %}
 <div class="sms-section-head">
-    <h2>Send audiences over time</h2>
+    <h2>Audiences</h2>
     <div class="audience-head-controls">
         <div class="marketing-subnav marketing-subnav--inline" role="group" aria-label="Group audience chart by">
             <button type="button" class="marketing-subnav-btn active" data-group="send" id="audience-group-send">By send date</button>
@@ -296,6 +293,18 @@ tr.campaign-row { cursor: pointer; }
                     <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market=">All markets</a></li>
                     {% for m in market_choices %}
                     <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market={{ m|urlencode }}">{{ m }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        <div class="window-selector">
+            <div class="dropdown">
+                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-calendar3"></i> {{ window_label }}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    {% for key, info in window_choices.items %}
+                    <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view=audience{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
                     {% endfor %}
                 </ul>
             </div>
@@ -336,7 +345,104 @@ tr.campaign-row { cursor: pointer; }
         {% endif %}
     </div>
 </div>
+
+{# ── Grow view (share the public subscribe link + settings) ──────────── #}
+{% elif view == 'grow' %}
+{# Share link to grow the SMS audience — Linktree / socials / flyers. #}
+<div class="sms-section-head"><h2>Grow your audience</h2></div>
+<div class="chart-card">
+    <div class="d-flex flex-column flex-md-row gap-4 align-items-md-center">
+        <div class="flex-grow-1">
+            <p class="text-secondary small mb-2">
+                Share this link anywhere — Linktree, Instagram bio, event flyers. Fans enter
+                their name, email, and mobile, confirm a texted code, and join your SMS list.
+                No Cue account needed.
+            </p>
+            <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                {% csrf_token %}
+                <label class="form-label small text-secondary mb-1" for="subscribeTitleInput">Signup header (optional)</label>
+                <div class="input-group input-group-sm" style="max-width:420px;">
+                    <input type="text" class="form-control" id="subscribeTitleInput" name="subscribe_title"
+                           maxlength="80" value="{{ subscribe_title }}" placeholder="e.g. Join the text list">
+                    <button class="btn btn-outline-secondary" type="submit">Save</button>
+                </div>
+                <p class="text-secondary small mt-1 mb-0">Shown above the mobile number field on your subscribe page. Blank shows no header.</p>
+            </form>
+            {% if market_count > 1 %}
+            <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                {% csrf_token %}
+                <div class="form-check form-switch mb-1">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="segmentByMarket" name="segment_by_market"
+                           {% if segment_by_market %}checked{% endif %}
+                           onchange="this.form.submit()">
+                    <label class="form-check-label" for="segmentByMarket">Ask subscribers which market they're in</label>
+                </div>
+                <p class="text-secondary small mb-0" style="margin-left:2.6em;">
+                    When on, the subscribe page adds an area picker so new fans join the right
+                    market — market-specific texts then reach them right away.
+                </p>
+            </form>
+            {% if segment_by_market %}
+            <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3" style="margin-left:2.6em;">
+                {% csrf_token %}
+                <label class="form-label small text-secondary mb-1" for="marketLabelInput">Picker label</label>
+                <div class="input-group input-group-sm" style="max-width:340px;">
+                    <input type="text" class="form-control" id="marketLabelInput" name="market_label"
+                           maxlength="60" value="{{ market_label }}" placeholder="Your area">
+                    <button class="btn btn-outline-secondary" type="submit">Save</button>
+                </div>
+                <p class="text-secondary small mt-1 mb-0">Shown above the area picker (e.g. "Which city?"). Blank uses "Your area".</p>
+            </form>
+            {% endif %}
+            {% endif %}
+            <div class="input-group">
+                <input type="text" class="form-control" id="subscribeLinkInput"
+                       value="{{ subscribe_url }}" readonly aria-label="Your subscribe link">
+                <button class="btn btn-primary" type="button" id="subscribeLinkCopy"
+                        data-url="{{ subscribe_url }}">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+                <a class="btn btn-outline-secondary" href="{{ subscribe_url }}" target="_blank" rel="noopener">
+                    <i class="bi bi-box-arrow-up-right"></i> Open
+                </a>
+            </div>
+        </div>
+        {% if subscribe_qr %}
+        <div class="text-center">
+            <img src="{{ subscribe_qr }}" alt="QR code for your subscribe link"
+                 width="132" height="132" style="border-radius:10px;background:#fff;padding:6px">
+            <div class="small text-secondary mt-1">Scan to subscribe</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var btn = document.getElementById('subscribeLinkCopy');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var url = btn.getAttribute('data-url');
+        var done = function () {
+            var original = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+            setTimeout(function () { btn.innerHTML = original; }, 1800);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(done, function () {});
+        } else {
+            var input = document.getElementById('subscribeLinkInput');
+            input.select(); document.execCommand('copy'); done();
+        }
+    });
+});
+</script>
 {% endif %}
+</div>{% comment %} /max-width wrapper. Modals live OUTSIDE it: the page-load fadeIn on
+`.content > *` (dashboard.css) animates transform with fill-mode:forwards, which makes the
+wrapper a permanent stacking context. A modal nested inside would be trapped below the
+Bootstrap backdrop (appended to body), so the overlay paints over the modal. Keeping modals
+out of the wrapper avoids it. {% endcomment %}
 
 {% if sms_native_enabled %}
 {% include 'tickets/marketing/sms/_link_event_modal.html' %}
@@ -374,7 +480,6 @@ tr.campaign-row { cursor: pointer; }
   </div>
 </div>
 {% endif %}
-</div>
 {% endblock %}
 
 {% block extra_js %}
