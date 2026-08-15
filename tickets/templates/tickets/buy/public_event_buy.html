@@ -238,14 +238,41 @@
         }
         .event-description-wrap { position: relative; }
 
+        .event-photos-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 22px 0 10px;
+        }
         .event-photos__label {
             font-family: var(--font-mono);
             font-size: var(--fs-micro);
             letter-spacing: 0.18em;
             text-transform: uppercase;
             color: var(--text-2);
-            margin: 22px 0 10px;
+            margin: 0;
         }
+        .event-photos__nav { display: flex; gap: 6px; }
+        .event-photos__arrow {
+            width: 30px;
+            height: 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: 50%;
+            color: var(--text-2);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, opacity 0.15s;
+        }
+        .event-photos__arrow:hover { background: var(--surface-3); color: var(--text); }
+        .event-photos__arrow:disabled { opacity: 0.35; cursor: default; }
+        .event-photos__arrow svg { width: 15px; height: 15px; display: block; }
+        @media (max-width: 640px) { .event-photos__nav { display: none; } }
+
+        .event-photos-viewport { position: relative; }
         .event-photos {
             display: flex;
             gap: 10px;
@@ -254,11 +281,21 @@
             -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
             padding-bottom: 2px;
-            margin: 0 -20px;          /* bleed to the column edges so the strip reads as a rail */
-            padding-left: 20px;
-            padding-right: 20px;
         }
         .event-photos::-webkit-scrollbar { display: none; }
+        .event-photos-edge {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 48px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        .event-photos-edge--left  { left: 0;  background: linear-gradient(to left,  transparent, var(--bg)); }
+        .event-photos-edge--right { right: 0; background: linear-gradient(to right, transparent, var(--bg)); }
+        .event-photos-block.can-scroll-left  .event-photos-edge--left  { opacity: 1; }
+        .event-photos-block.can-scroll-right .event-photos-edge--right { opacity: 1; }
         .event-photo {
             flex: 0 0 auto;
             width: clamp(132px, 42%, 168px);
@@ -1146,13 +1183,29 @@
     {% endif %}
 
     {% if event_images %}
-    <div class="event-photos__label">Photos</div>
-    <div class="event-photos">
-        {% for im in event_images %}
-        <figure class="event-photo">
-            <img src="{{ im.image.url }}" alt="{{ event.name }} photo" loading="lazy">
-        </figure>
-        {% endfor %}
+    <div class="event-photos-block" id="event-photos-block">
+        <div class="event-photos-head">
+            <div class="event-photos__label">Photos</div>
+            <div class="event-photos__nav">
+                <button type="button" class="event-photos__arrow" data-dir="-1" aria-label="Previous photos">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+                </button>
+                <button type="button" class="event-photos__arrow" data-dir="1" aria-label="Next photos">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="event-photos-viewport">
+            <div class="event-photos" id="event-photos">
+                {% for im in event_images %}
+                <figure class="event-photo">
+                    <img src="{{ im.image.url }}" alt="{{ event.name }} photo" loading="lazy">
+                </figure>
+                {% endfor %}
+            </div>
+            <div class="event-photos-edge event-photos-edge--left" aria-hidden="true"></div>
+            <div class="event-photos-edge event-photos-edge--right" aria-hidden="true"></div>
+        </div>
     </div>
     {% endif %}
 
@@ -1573,6 +1626,42 @@ document.addEventListener('DOMContentLoaded', function() {
             toggle.textContent = 'View more';
         }
     });
+})();
+
+(function() {
+    var block = document.getElementById('event-photos-block');
+    var strip = document.getElementById('event-photos');
+    if (!block || !strip) return;
+    var nav = block.querySelector('.event-photos__nav');
+    var arrows = Array.prototype.slice.call(block.querySelectorAll('.event-photos__arrow'));
+
+    function update() {
+        var maxScroll = strip.scrollWidth - strip.clientWidth;
+        var overflowing = maxScroll > 1;
+        block.classList.toggle('can-scroll-left', overflowing && strip.scrollLeft > 1);
+        block.classList.toggle('can-scroll-right', overflowing && strip.scrollLeft < maxScroll - 1);
+        if (nav) nav.style.display = overflowing ? '' : 'none';
+        arrows.forEach(function(a) {
+            var dir = parseInt(a.getAttribute('data-dir'), 10);
+            a.disabled = dir < 0 ? strip.scrollLeft <= 1 : strip.scrollLeft >= maxScroll - 1;
+        });
+    }
+
+    arrows.forEach(function(a) {
+        a.addEventListener('click', function() {
+            var dir = parseInt(a.getAttribute('data-dir'), 10);
+            var first = strip.querySelector('.event-photo');
+            var step = first ? first.getBoundingClientRect().width + 10 : strip.clientWidth * 0.8;
+            strip.scrollBy({ left: dir * step, behavior: 'smooth' });
+        });
+    });
+
+    strip.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    strip.querySelectorAll('img').forEach(function(img) {
+        if (!img.complete) img.addEventListener('load', update, { once: true });
+    });
+    update();
 })();
 
 (function() {
