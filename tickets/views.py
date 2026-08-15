@@ -7257,6 +7257,9 @@ def event_create(request, ticketing_type):
                         if unlock_target and current_tt and unlock_target.pk != current_tt.pk:
                             current_tt.unlocks_after = unlock_target
                             current_tt.save(update_fields=['unlocks_after'])
+                    photo_files = request.FILES.getlist('event_photos')
+                    if photo_files:
+                        _create_event_images(event, photo_files)
                     _invalidate_event_list_cache(org)
                     _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
@@ -7403,6 +7406,7 @@ def event_edit(request, event_id):
             'event': event,
             'ticketing_type': event.ticketing_type,
             'saleable_ticket_types': saleable_tts,
+            'event_images': list(event.images.all()),
             'direct_total_revenue': sum(tt.quantity_sold * tt.price for tt in saleable_tts),
             'promo_codes': list(PromoCode.objects.filter(event=event, organization=org).order_by('code')),
             'venue_capacities_json': json.dumps({
@@ -10595,6 +10599,129 @@ def event_flyer_upload(request, event_id):
     return JsonResponse({'success': True, 'url': event.flyer.url})
 
 
+_EVENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+def _create_event_images(event, files, start_order=0):
+    """Create EventImage rows from uploaded files (validates + HEIC-converts).
+
+    Shared by the create form (multi-file) and the async edit-page uploader.
+    Returns (created list, error message or None on the first bad file).
+    """
+    from .models import EventImage
+    created = []
+    order = start_order
+    for file in files:
+        if not file:
+            continue
+        content_type = getattr(file, 'content_type', '') or ''
+        name = getattr(file, 'name', '') or ''
+        if not content_type.startswith('image/') and not name.lower().endswith(('.heic', '.heif')):
+            return created, 'File must be an image.'
+        if file.size > _EVENT_IMAGE_MAX_BYTES:
+            return created, 'Image must be 8 MB or smaller.'
+        if content_type in _HEIC_CONTENT_TYPES or name.lower().endswith(('.heic', '.heif')):
+            try:
+                file = _convert_heic_to_jpeg(file)
+            except Exception as e:
+                logger.warning("HEIC conversion failed: %s", e)
+                return created, 'Could not process HEIC image.'
+        img = EventImage(event=event, image=file, sort_order=order)
+        img.save()
+        created.append(img)
+        order += 1
+    return created, None
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def event_image_upload(request, event_id):
+    """Add one or more photos to an event's public buy-page gallery. Returns JSON."""
+    from .models import TICKETING_TYPE_DIRECT, EventImage
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if event.ticketing_type != TICKETING_TYPE_DIRECT:
+        return JsonResponse({'success': False, 'error': 'Not a direct ticketing event.'}, status=400)
+    files = request.FILES.getlist('image')
+    if not files:
+        return JsonResponse({'success': False, 'error': 'No file provided.'}, status=400)
+    next_order = (EventImage.objects.filter(event=event).aggregate(m=Max('sort_order'))['m'] or -1) + 1
+    try:
+        created, error = _create_event_images(event, files, start_order=next_order)
+    except Exception as e:
+        logger.warning("Event image upload failed: %s", e, exc_info=True)
+        try:
+            from botocore.exceptions import ClientError
+            if isinstance(e, ClientError):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Storage upload failed. Check AWS credentials and S3 permissions (s3:PutObject, s3:PutObjectAcl).',
+                }, status=503)
+        except ImportError:
+            pass
+        return JsonResponse({'success': False, 'error': 'Invalid or unsupported image.'}, status=400)
+    if error and not created:
+        return JsonResponse({'success': False, 'error': error}, status=400)
+    _invalidate_event_list_cache(org)
+    return JsonResponse({
+        'success': True,
+        'images': [{'id': str(im.id), 'url': im.image.url} for im in created],
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def event_image_delete(request, event_id, image_id):
+    """Delete a single event gallery photo. Returns JSON."""
+    from .models import EventImage
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    img = get_object_or_404(EventImage.objects.filter(event=event), id=image_id)
+    img.image.delete(save=False)
+    img.delete()
+    _invalidate_event_list_cache(org)
+    return JsonResponse({'success': True})
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def event_image_reorder(request, event_id):
+    """Persist a new display order for an event's gallery photos.
+
+    Accepts JSON {"order": ["<uuid>", ...]}, writing sort_order = index.
+    """
+    from .models import EventImage
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+        ids = payload.get('order') or []
+        if not isinstance(ids, list):
+            raise ValueError('order must be a list')
+    except (ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Invalid payload'}, status=400)
+    images = {str(im.id): im for im in EventImage.objects.filter(event=event)}
+    to_update = []
+    for index, raw_id in enumerate(ids):
+        im = images.get(str(raw_id))
+        if im is not None and im.sort_order != index:
+            im.sort_order = index
+            to_update.append(im)
+    if to_update:
+        EventImage.objects.bulk_update(to_update, ['sort_order'], batch_size=100)
+        _invalidate_event_list_cache(org)
+    return JsonResponse({'success': True, 'updated': len(to_update)})
+
+
 # ---------------------------------------------------------------------------
 # Direct Ticket Selling - Public Views
 # ---------------------------------------------------------------------------
@@ -10821,6 +10948,7 @@ def public_event_buy(request, public_id):
             'attendee_count': attendee_count,
             'wl_held_tt_id': None,
             'user_is_authenticated': request.user.is_authenticated,
+            'event_images': list(event.images.all()),
             **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
         })
     if eff == EVENT_STATUS_CANCELLED:
@@ -10998,6 +11126,7 @@ def public_event_buy(request, public_id):
         'attendee_count': attendee_count,
         'wl_held_tt_id': wl_held_tt_id,
         'user_is_authenticated': request.user.is_authenticated,
+        'event_images': list(event.images.all()),
         **_build_public_event_preview_context(event, suffix='Buy Tickets'),
     })
 

@@ -7,7 +7,7 @@ from django.db.models.functions import Coalesce
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventImage, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -388,6 +388,12 @@ class EventExpenseInline(admin.TabularInline):
     fields = ['category', 'description', 'amount', 'expense_date', 'notes']
 
 
+class EventImageInline(admin.TabularInline):
+    model = EventImage
+    extra = 1
+    fields = ['image', 'sort_order']
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ['name', 'venue', 'organization', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'scanner_pin', 'order_count', 'created_at']
@@ -396,7 +402,7 @@ class EventAdmin(admin.ModelAdmin):
     readonly_fields = ['id', 'created_at', 'updated_at']
     autocomplete_fields = ['venue']
     date_hierarchy = 'start_date'
-    inlines = [EventTalentInline, EventExpenseInline]
+    inlines = [EventTalentInline, EventExpenseInline, EventImageInline]
     actions = ['refire_event_created_webhook']
 
     fieldsets = (

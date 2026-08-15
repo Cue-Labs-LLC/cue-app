@@ -16,6 +16,16 @@
 .tt-quill-wrap { display: flex; flex-direction: column; height: 260px; margin-bottom: 1rem; }
 .tt-quill-wrap .ql-container { flex: 1 1 auto; min-height: 0; }
 .tt-quill-wrap .ql-editor { overflow-y: auto; }
+.event-photos-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.event-photos-grid:empty { display: none; }
+.event-photo-thumb { position: relative; width: 120px; height: 120px; border-radius: 8px; overflow: hidden; border: 1px solid var(--bs-border-color); cursor: grab; }
+.event-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.event-photo-remove { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: none; border-radius: 50%; background: rgba(0,0,0,0.55); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; line-height: 1; cursor: pointer; padding: 0; }
+.event-photo-remove:hover { background: rgba(220,53,69,0.9); }
+.event-photo-ghost { opacity: 0.4; }
+.event-photos-drop { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); padding: 24px; text-align: center; margin-top: 12px; }
+.event-photos-grid:empty + .event-photos-drop { margin-top: 0; }
+#event-photos-dropzone.dragover .event-photos-drop { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
 #addTicketTypeModal .modal-body .form-label,
 #editTicketTypeModal .modal-body .form-label {
     font-weight: 500;
@@ -133,6 +143,37 @@
                             <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
                         </p>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        {# Event Photos gallery — shown on the public buy page below the description #}
+        <div class="card mb-4" id="event-photos-card"
+             data-upload-url="{% url 'tickets:event_image_upload' event.id %}"
+             data-reorder-url="{% url 'tickets:event_image_reorder' event.id %}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 class="mb-1">Event Photos</h5>
+                    <p class="mb-0 text-muted small">Optional. Shown on your public buy page, below the description. Drag to reorder.</p>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="add-photos-btn">
+                    <i class="bi bi-plus-lg"></i> Add Photos
+                </button>
+            </div>
+            <div class="card-body" id="event-photos-dropzone">
+                <input type="hidden" id="event-photos-csrf" value="{{ csrf_token }}">
+                <input type="file" id="event-photos-input" accept="image/*,.heic,.heif" multiple class="d-none">
+                <div id="event-photos-grid" class="event-photos-grid">
+                    {% for im in event_images %}
+                    <div class="event-photo-thumb" data-image-id="{{ im.id }}">
+                        <img src="{{ im.image.url }}" alt="Event photo">
+                        <button type="button" class="event-photo-remove" data-image-id="{{ im.id }}" title="Remove photo" aria-label="Remove photo"><i class="bi bi-x-lg"></i></button>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div id="event-photos-empty" class="event-photos-drop text-muted{% if event_images %} d-none{% endif %}">
+                    <i class="bi bi-images fs-3 d-block mb-2"></i>
+                    Click "Add Photos" or drop images here
                 </div>
             </div>
         </div>
@@ -513,6 +554,120 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
     });
+});
+document.addEventListener('DOMContentLoaded', function() {
+    // ── Event Photos gallery: add / drag-drop / delete / reorder ──
+    var card = document.getElementById('event-photos-card');
+    if (!card) return;
+    var dropzone = document.getElementById('event-photos-dropzone');
+    var input = document.getElementById('event-photos-input');
+    var grid = document.getElementById('event-photos-grid');
+    var emptyHint = document.getElementById('event-photos-empty');
+    var addBtn = document.getElementById('add-photos-btn');
+    var csrf = document.getElementById('event-photos-csrf');
+    var uploadUrl = card.getAttribute('data-upload-url');
+    var reorderUrl = card.getAttribute('data-reorder-url');
+    var IMG_RE = /^image\//;
+    var HEIC_RE = /\.(heic|heif)$/i;
+
+    function photoAlert(type, message) {
+        var div = document.createElement('div');
+        div.className = 'alert alert-' + type + ' alert-dismissible fade show';
+        div.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+        var content = document.querySelector('.content');
+        if (content) content.insertBefore(div, content.firstChild);
+        setTimeout(function() { div.classList.remove('show'); setTimeout(function() { div.remove(); }, 150); }, 5000);
+    }
+    function syncEmpty() {
+        if (!emptyHint) return;
+        emptyHint.classList.toggle('d-none', grid.children.length > 0);
+    }
+    function addThumb(id, url) {
+        var thumb = document.createElement('div');
+        thumb.className = 'event-photo-thumb';
+        thumb.setAttribute('data-image-id', id);
+        var img = document.createElement('img');
+        img.src = url;
+        img.alt = 'Event photo';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'event-photo-remove';
+        btn.setAttribute('data-image-id', id);
+        btn.title = 'Remove photo';
+        btn.setAttribute('aria-label', 'Remove photo');
+        btn.innerHTML = '<i class="bi bi-x-lg"></i>';
+        thumb.appendChild(img);
+        thumb.appendChild(btn);
+        grid.appendChild(thumb);
+        syncEmpty();
+    }
+    function uploadFiles(files) {
+        var picked = Array.prototype.filter.call(files, function(f) {
+            return IMG_RE.test(f.type) || HEIC_RE.test(f.name);
+        });
+        if (!picked.length) { photoAlert('danger', 'Please choose image files.'); return; }
+        var fd = new FormData();
+        picked.forEach(function(f) { fd.append('image', f); });
+        fd.append('csrfmiddlewaretoken', csrf.value);
+        fetch(uploadUrl, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.success) { photoAlert('danger', d.error || 'Upload failed.'); return; }
+                (d.images || []).forEach(function(im) { addThumb(im.id, im.url); });
+            })
+            .catch(function() { photoAlert('danger', 'Upload failed.'); });
+    }
+
+    if (addBtn) addBtn.addEventListener('click', function() { input.click(); });
+    input.addEventListener('change', function() { if (this.files && this.files.length) uploadFiles(this.files); this.value = ''; });
+    dropzone.addEventListener('dragover', function(e) { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', function(e) { e.preventDefault(); dropzone.classList.remove('dragover'); });
+    dropzone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+    });
+
+    // Delete (event-delegated so newly added thumbs work too).
+    grid.addEventListener('click', function(e) {
+        var btn = e.target.closest('.event-photo-remove');
+        if (!btn) return;
+        var id = btn.getAttribute('data-image-id');
+        var thumb = btn.closest('.event-photo-thumb');
+        fetch(card.getAttribute('data-upload-url').replace(/\/$/, '') + '/' + id + '/delete/', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': csrf.value, 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.success) { thumb.remove(); syncEmpty(); }
+                else { photoAlert('danger', d.error || 'Could not remove photo.'); }
+            })
+            .catch(function() { photoAlert('danger', 'Could not remove photo.'); });
+    });
+
+    // Drag reorder.
+    if (typeof Sortable !== 'undefined') {
+        Sortable.create(grid, {
+            animation: 150,
+            ghostClass: 'event-photo-ghost',
+            onEnd: function() {
+                var ids = Array.from(grid.querySelectorAll('.event-photo-thumb')).map(function(t) {
+                    return t.getAttribute('data-image-id');
+                });
+                fetch(reorderUrl, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': csrf.value,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: JSON.stringify({ order: ids })
+                }).catch(function() {});
+            }
+        });
+    }
 });
 document.addEventListener('DOMContentLoaded', function() {
     var venueCapacities = {{ venue_capacities_json|default:'{}'|safe }};
