@@ -1671,6 +1671,8 @@ class DirectEventForm(EventDateTimeFormMixin, forms.ModelForm):
         file = self.cleaned_data.get('flyer')
         if not file or not hasattr(file, 'name'):
             return file
+        if file.size > 25 * 1024 * 1024:
+            raise forms.ValidationError('Image must be 25 MB or smaller.')
         heic_types = {'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'}
         is_heic = (
             getattr(file, 'content_type', '') in heic_types

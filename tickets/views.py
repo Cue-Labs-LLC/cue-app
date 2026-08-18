@@ -10646,6 +10646,8 @@ def event_flyer_upload(request, event_id):
     # Validate image (ImageField will reject invalid images on save)
     if not file.content_type.startswith('image/'):
         return JsonResponse({'success': False, 'error': 'File must be an image.'}, status=400)
+    if file.size > 25 * 1024 * 1024:
+        return JsonResponse({'success': False, 'error': 'Image must be 25 MB or smaller.'}, status=400)
     # Convert HEIC/HEIF → JPEG for browser compatibility
     if (file.content_type in _HEIC_CONTENT_TYPES
             or file.name.lower().endswith(('.heic', '.heif'))):
@@ -10686,7 +10688,7 @@ def event_flyer_upload(request, event_id):
     return JsonResponse({'success': True, 'url': event.flyer.url})
 
 
-_EVENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+_EVENT_IMAGE_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 def _create_event_images(event, files, start_order=0):
@@ -10706,7 +10708,7 @@ def _create_event_images(event, files, start_order=0):
         if not content_type.startswith('image/') and not name.lower().endswith(('.heic', '.heif')):
             return created, 'File must be an image.'
         if file.size > _EVENT_IMAGE_MAX_BYTES:
-            return created, 'Image must be 8 MB or smaller.'
+            return created, 'Image must be 25 MB or smaller.'
         if content_type in _HEIC_CONTENT_TYPES or name.lower().endswith(('.heic', '.heif')):
             try:
                 file = _convert_heic_to_jpeg(file)
