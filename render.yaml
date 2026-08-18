@@ -212,6 +212,35 @@ services:
           type: redis
           property: connectionString
 
+  # SMS opt-out reconciler. Daily: scan Twilio's message logs for STOP-block
+  # (21610) failures over the last 30 days and mirror each blocked number into
+  # PhoneSuppression as a global TWILIO_STOP. Keeps our suppression list (which
+  # gates campaign audiences AND the "Unsubscribed" label) in sync with Twilio,
+  # closing the gap where a Twilio-side opt-out never reached us via the inbound
+  # webhook. Calls the Twilio REST API, so it needs the Twilio account creds; no
+  # broker (writes directly to the DB, no Celery). 13:30 UTC = ~30 min before the
+  # daily 14:00 UTC jobs.
+  - type: cron
+    name: cue-sms-optout-reconcile
+    runtime: python
+    schedule: "30 13 * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py reconcile_sms_opt_outs --apply --days 30
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+
   # ----------------------------------------------------------------------
   # STAGING — TEMPORARILY DISABLED (2026-06-05) to avoid Render charges.
   #

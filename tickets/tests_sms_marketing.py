@@ -1401,18 +1401,31 @@ class SMSViewTests(TestCase):
 
     # --- Suppression visibility UX (an opt-in can't override a STOP) ---
 
-    def test_bulk_opt_in_warns_when_selection_is_suppressed(self):
+    def test_bulk_opt_in_excludes_suppressed_and_opts_in_others(self):
+        # A suppressed (STOP) number must NOT be re-subscribed by a manual opt-in;
+        # a normal number in the same selection still opts in.
         self.customer.sms_opt_in = False
+        self.other_customer.sms_opt_in = False
         self.customer.save(update_fields=['sms_opt_in'])
+        self.other_customer.save(update_fields=['sms_opt_in'])
         PhoneSuppression.objects.create(phone=self.customer.phone, organization=None)
 
         resp = self.client.post(
             reverse('tickets:customers_bulk_sms_status'),
-            {'customer_ids': [str(self.customer.id)], 'sms_status': 'opt_in'},
+            {
+                'customer_ids': [str(self.customer.id), str(self.other_customer.id)],
+                'sms_status': 'opt_in',
+            },
             follow=True,
         )
+        self.customer.refresh_from_db()
+        self.other_customer.refresh_from_db()
+        # Suppressed number stays opted out; the other flips on.
+        self.assertFalse(self.customer.sms_opt_in)
+        self.assertTrue(self.other_customer.sms_opt_in)
         msgs = [m.message for m in resp.context['messages']]
         self.assertTrue(any('texting START' in m for m in msgs), msgs)
+        self.assertTrue(any('Opted in 1' in m for m in msgs), msgs)
 
     def test_bulk_opt_in_no_warning_when_not_suppressed(self):
         self.customer.sms_opt_in = False
@@ -1422,6 +1435,8 @@ class SMSViewTests(TestCase):
             {'customer_ids': [str(self.customer.id)], 'sms_status': 'opt_in'},
             follow=True,
         )
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.sms_opt_in)
         msgs = [m.message for m in resp.context['messages']]
         self.assertFalse(any('texting START' in m for m in msgs), msgs)
 
@@ -1432,7 +1447,15 @@ class SMSViewTests(TestCase):
         rows = {c.id: c for c in resp.context['page_obj']}
         self.assertTrue(rows[self.customer.id].sms_suppressed)
         self.assertFalse(rows[self.other_customer.id].sms_suppressed)
-        self.assertContains(resp, 'texting START')
+        self.assertContains(resp, 'Unsubscribed')
+
+    def test_customer_list_stop_filter_returns_only_suppressed(self):
+        PhoneSuppression.objects.create(phone=self.customer.phone, organization=None)
+        resp = self.client.get(reverse('tickets:customer_list'), {'sms_filter': 'stop'})
+        self.assertEqual(resp.status_code, 200)
+        ids = {c.id for c in resp.context['page_obj']}
+        self.assertIn(self.customer.id, ids)
+        self.assertNotIn(self.other_customer.id, ids)
 
     def test_customer_detail_shows_opted_out_badge(self):
         self.customer.sms_opt_in = True
@@ -1442,7 +1465,7 @@ class SMSViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.context['sms_suppressed'])
         # Suppression badge wins over the opted-in badge.
-        self.assertContains(resp, 'Opted out (STOP)')
+        self.assertContains(resp, 'Unsubscribed')
 
 
 @override_settings(E2E_TEST_MODE=True)

@@ -32,7 +32,7 @@ from datetime import date, datetime
 
 from django.db.models import Q, Exists, OuterRef
 
-from tickets.models import Customer, TicketOrder, Market
+from tickets.models import Customer, TicketOrder, Market, PhoneSuppression
 
 # Customers imported from CSVs without a real email get a placeholder address;
 # they are never a valid contact target for the UI or marketing.
@@ -160,6 +160,13 @@ def filter_customers(org, criteria):
     sms_opt_in = criteria.get('sms_opt_in')
     if sms_opt_in is not None:
         qs = qs.filter(sms_opt_in=sms_opt_in)
+
+    # Unsubscribed (opted out via STOP): keyed by phone in PhoneSuppression (global
+    # or per-org), not a Customer flag. Best-effort match on the stored E.164 phone —
+    # numbers stored in a non-normalized form may not match. An empty suppression set
+    # yields `phone__in=[]`, i.e. nobody, which is the correct "no one unsubscribed".
+    if criteria.get('sms_suppressed'):
+        qs = qs.filter(phone__in=PhoneSuppression.suppressed_phones(org))
 
     min_ltv = criteria.get('min_ltv')
     if min_ltv not in (None, ''):

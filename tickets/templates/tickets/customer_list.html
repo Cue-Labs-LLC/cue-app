@@ -444,6 +444,7 @@
                                             <option value="" {% if not sms_filter %}selected{% endif %}>All</option>
                                             <option value="1" {% if sms_filter == '1' %}selected{% endif %}>Subscribed</option>
                                             <option value="0" {% if sms_filter == '0' %}selected{% endif %}>Not subscribed</option>
+                                            <option value="stop" {% if sms_filter == 'stop' %}selected{% endif %}>Unsubscribed</option>
                                         </select>
                                     </div>
                                 </div>
@@ -692,7 +693,7 @@
                                 {% endif %}
                                 <span class="customer-card-ltv">${{ customer.lifetime_value|currency }}</span>
                                 {% if customer.sms_suppressed %}
-                                <span class="customer-card-sms text-danger"><i class="bi bi-slash-circle-fill"></i> STOP</span>
+                                <span class="customer-card-sms"><span class="badge bg-danger">Unsubscribed</span></span>
                                 {% elif customer.sms_opt_in %}
                                 <span class="customer-card-sms text-success"><i class="bi bi-check-circle-fill"></i> SMS</span>
                                 {% endif %}
@@ -707,7 +708,7 @@
                         {% if not apply_column_prefs or 'sms' in visible_columns %}
                         <td class="d-none d-sm-table-cell">
                             {% if customer.sms_suppressed %}
-                            <span class="text-danger" title="Opted out via STOP — can only re-subscribe by texting START"><i class="bi bi-slash-circle-fill"></i> STOP</span>
+                            <span class="badge bg-danger" title="Opted out via STOP — can only re-subscribe by texting START">Unsubscribed</span>
                             {% elif customer.sms_opt_in %}
                             <span class="text-success" title="Subscribed{% if customer.sms_opt_in_date %} {{ customer.sms_opt_in_date|date:'M d, Y' }}{% endif %}"><i class="bi bi-check-circle-fill"></i></span>
                             {% else %}
