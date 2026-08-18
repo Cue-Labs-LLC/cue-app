@@ -425,11 +425,39 @@ a:hover {
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
+    gap: 12px;
     padding: 0 16px;
     position: sticky;
     top: 0;
     z-index: 50;
+}
+
+/* Brand lockup next to the mobile menu toggle so the bar reads as intentional */
+.topbar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    text-decoration: none;
+    color: var(--text-primary);
+}
+
+.topbar-brand .sidebar-brand-avatar {
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+}
+
+.topbar-brand-text {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .mobile-toggle {
@@ -536,6 +564,17 @@ a:hover {
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+}
+
+/* Section heading above the events list — echoes the page (Dashboard) title */
+.events-section-header {
+    margin-top: 4px;
+    margin-bottom: 14px;
+}
+
+.events-section-header h2 {
+    font-size: 1.625rem;
+    margin: 0;
 }
 
 /* Keeps a primary action + its overflow dropdown side-by-side at all viewports */
@@ -1717,10 +1756,12 @@ code {
 
     .stat-card {
         padding: 12px 14px 14px;
+        min-width: 0; /* allow the card to shrink so long values wrap instead of overflowing */
     }
 
     .stat-value {
-        font-size: 1.25rem;
+        font-size: 1.15rem;
+        overflow-wrap: anywhere; /* long currency values ($1,332,777.91) never spill past the card */
     }
 
     .page-header {
@@ -1756,10 +1797,12 @@ code {
     }
 }
 
-/* -- Block 13: Single-Column Stat Grid (small phones) --- */
+/* -- Block 13: Keep KPIs in a 2x2 grid on small phones --- */
+/* A single column stacked all four cards into a tall column, pushing the
+   Events list far below the fold. A 2x2 grid keeps every KPI in view. */
 @media (max-width: 419px) {
     .stats-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
         gap: 8px;
     }
 
@@ -1768,7 +1811,7 @@ code {
     }
 
     .stat-value {
-        font-size: 1.5rem;
+        font-size: 1.1rem;
     }
 }
 
@@ -1796,6 +1839,12 @@ code {
 
     .table-hover > tbody > tr:hover > * {
         background-color: inherit;
+    }
+
+    /* Action icons reveal on row hover, which never fires on touch — show
+       them at full opacity so they don't look permanently disabled. */
+    .table tbody tr .btn-icon {
+        opacity: 1;
     }
 }
 
@@ -2386,6 +2435,15 @@ code {
 
 /* -- Block 12: Mobile Card Transform (generic + per-table) --- */
 @media (max-width: 575px) {
+    /* Events list: rows are already standalone cards on mobile, so drop the
+       outer card chrome — the list sits directly on the page background. */
+    .events-card {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        overflow: visible;
+    }
+
     /* Generic: any table tagged .mobile-card-table renders rows as cards */
     .mobile-card-table thead {
         display: none;
@@ -2408,27 +2466,50 @@ code {
         padding: 0;
     }
 
-    /* Event-list specific: name+flyer composition, meta strip, actions footer */
-    .event-list-table tbody tr:hover {
-        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
-        border-color: rgba(255, 255, 255, 0.13);
+    /* Each event is its own white card on the page (separated by gaps, not
+       joined by an outer wrapper). */
+    .event-list-table tbody tr {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 10px;
+        overflow: hidden;
     }
 
-    /* Cell 1: flex row - name area left, flyer right */
+    .event-list-table tbody tr:hover {
+        box-shadow: none;
+    }
+
+    /* Cell 1: optional flyer thumbnail (left) + text content */
     .event-list-table tbody td:nth-child(1) {
         display: flex;
         flex-direction: row;
-        align-items: flex-start;
-        padding: 0;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 14px 6px;
+    }
+
+    .event-card-flyer {
+        display: block;
+        flex-shrink: 0;
+    }
+
+    .event-card-flyer-img {
+        display: block;
+        width: 52px;
+        aspect-ratio: 4 / 5;
+        height: auto;
+        border-radius: 5px;
+        object-fit: cover;
     }
 
     .event-card-name-area {
         flex: 1;
         min-width: 0;
-        padding: 13px 14px;
+        padding: 0;
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 2px;
     }
 
     .event-card-name-line {
@@ -2450,39 +2531,41 @@ code {
         white-space: nowrap;
     }
 
-    /* Mobile metadata strip */
+    /* Single muted meta line: date · revenue · tickets */
     .event-card-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 1px;
-        margin-top: 7px;
-        padding-top: 7px;
-        border-top: 1px solid var(--border-light);
+        display: block;
+        margin-top: 3px;
     }
 
-    .event-card-meta-date {
-        font-size: 11.5px;
-        color: var(--text-secondary);
+    .event-card-meta-line {
+        font-size: 12px;
+        color: var(--text-tertiary);
         letter-spacing: 0.01em;
     }
 
-    .event-card-meta-stats {
-        font-size: 12.5px;
-        font-weight: 700;
-        letter-spacing: -0.01em;
-        color: var(--text-primary);
-    }
-
-    /* Actions footer - class-based so column count doesn't matter */
+    /* Actions: light, borderless icons tucked at the bottom-right of each card */
     .event-list-table tbody td.event-actions-cell {
         display: block;
-        padding: 8px 12px 10px;
-        border-top: 1px solid var(--border-light);
-        background: var(--bg-inset);
+        padding: 0 8px 8px;
+        border-top: none;
+        background: transparent;
     }
 
-    .event-list-table tbody td.event-actions-cell .d-flex {
-        gap: 8px;
+    .event-list-table tbody td.event-actions-cell .event-card-action-row {
+        justify-content: flex-end;
+        flex-wrap: nowrap;
+        gap: 2px;
+    }
+
+    .event-list-table tbody td.event-actions-cell .event-card-action-row .btn-icon {
+        flex: 0 0 auto;
+        width: 40px;
+        height: 40px;
+        min-height: 40px;
+        border: none;
+        background: transparent;
+        color: var(--text-tertiary);
+        opacity: 1; /* the hover-reveal never fires on touch */
     }
 
     .event-list-table tbody td.event-actions-cell .btn-group {
@@ -2495,7 +2578,7 @@ code {
     .event-list-table tbody td.event-actions-cell .btn-group .btn {
         flex: 1;
         border-radius: var(--radius-sm) !important;
-        min-height: 38px;
+        min-height: 44px;
         font-size: 13px;
     }
 

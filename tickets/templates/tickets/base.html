@@ -275,6 +275,14 @@
                 <button class="mobile-toggle" id="mobileToggle" type="button" aria-label="Open navigation">
                     <i class="bi bi-list"></i>
                 </button>
+                <a href="{% if view_mode == 'attendee' %}{% url 'tickets:attendee_dashboard' %}{% else %}{% url 'tickets:home' %}{% endif %}" class="topbar-brand">
+                    {% if org and org.photo %}
+                    <img src="{{ org.photo.url }}" alt="{{ org_name }}" class="sidebar-brand-avatar">
+                    {% else %}
+                    <div class="sidebar-brand-avatar sidebar-brand-avatar--initial">{{ org_name|make_list|first|upper }}</div>
+                    {% endif %}
+                    <span class="topbar-brand-text">{{ org_name }}</span>
+                </a>
             </div>
 {% endif %}
             <div class="content{% if not user.is_authenticated %} content--auth{% endif %}">
