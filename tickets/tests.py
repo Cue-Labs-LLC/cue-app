@@ -6885,6 +6885,124 @@ class EventDailyPageViewTest(TestCase):
         self.assertEqual(payload, [{'date': view_date.isoformat(), 'views': 9}])
 
 
+class PageViewComparisonTest(TestCase):
+    """Page Views comparison card on the event-detail Analytics tab + its API."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='PV Compare Org', slug='pv-compare-org')
+        self.user = User.objects.create_user(
+            username='pvcompare',
+            email='pvcompare@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='PV Venue', city='Los Angeles',
+        )
+        # Current (upcoming) direct event with its own page-view data.
+        self.event = Event.objects.create(
+            organization=self.org, name='Current Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=10),
+            ticketing_type='direct', status='live',
+        )
+        EventDailyPageView.objects.create(
+            event=self.event, date=date.today(), view_count=5,
+        )
+        # Past direct event with page-view data — a valid comparison candidate.
+        self.past_event = Event.objects.create(
+            organization=self.org, name='Past Event', venue=self.venue,
+            start_date=date.today() - timedelta(days=30),
+            ticketing_type='direct', status='live',
+        )
+        EventDailyPageView.objects.create(
+            event=self.past_event,
+            date=date.today() - timedelta(days=35),  # 5 days before its start
+            view_count=8,
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _login(self):
+        self.assertTrue(self.client.login(username='pvcompare@example.com', password='testpass123'))
+        self.client.get(reverse('tickets:home'))
+
+    def test_series_shape(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+
+        data = SalesCurveCalculator().get_page_view_series(self.past_event)
+
+        self.assertEqual(data, {'series': [{'d': 5, 'views': 8}], 'total_views': 8})
+
+    def test_series_empty_without_start_date(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+
+        self.event.start_date = None
+        data = SalesCurveCalculator().get_page_view_series(self.event)
+
+        self.assertEqual(data, {'series': [], 'total_views': 0})
+
+    def test_card_shown_with_candidate(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.context['show_page_views_comparison_card'], True)
+        self.assertEqual(response.context['pageviews_default_compare_id'], str(self.past_event.id))
+        self.assertContains(response, 'id="pageViewsCompareChart"')
+
+    def test_card_hidden_without_candidate(self):
+        self.past_event.hard_delete()  # no comparison candidate remains
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertIs(response.context['show_page_views_comparison_card'], False)
+        self.assertNotContains(response, 'id="pageViewsCompareChart"')
+
+    def test_api_returns_series_for_in_org_event(self):
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:event_page_views_api', args=[self.past_event.id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertEqual(payload['series'], [{'d': 5, 'views': 8}])
+        self.assertEqual(payload['total_views'], 8)
+        self.assertEqual(payload['id'], str(self.past_event.id))
+        self.assertEqual(payload['name'], 'Past Event')
+
+    def test_api_cross_org_event_404(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Seattle',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Org Event', venue=other_venue,
+            start_date=date.today() - timedelta(days=5),
+            ticketing_type='direct', status='live',
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:event_page_views_api', args=[other_event.id])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
 class EventDeleteViewTests(TestCase):
     """Regression coverage for customer reconciliation during event deletion."""
 

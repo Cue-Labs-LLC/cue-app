@@ -31,6 +31,7 @@ from tickets.models import (
     Customer,
     CustomerTag,
     Event,
+    EventDailyPageView,
     EventExpense,
     EventIncome,
     EventSMSCampaign,
@@ -317,6 +318,7 @@ class Command(BaseCommand):
             tags = self._create_tags(org)
             customers = self._create_customers(org, tags, rng)
             events = self._create_events(org, venues, markets, owner, today, rng)
+            self._create_page_views(events, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
             # Direct-ticketing catalog must exist before orders so direct events
             # sell against their real SaleableTicketTypes (keeps quantity_sold and
@@ -650,6 +652,56 @@ class Command(BaseCommand):
             events.append(event)
         self.stdout.write(self.style.SUCCESS(f"Events: {len(events)}"))
         return events
+
+    def _create_page_views(self, events, today, rng):
+        """Daily public buy-page view rows for direct events.
+
+        Feeds the Overview "Views" series and the Analytics tab's Page Views
+        comparison chart. Only direct-ticketing events have a public buy page, so
+        only they get rows. Traffic ramps toward the event date (a slow early
+        trickle building as the show approaches) over a 90-day pre-sale window,
+        capped at ``today`` so upcoming events only have views up to now. The
+        event's cumulative ``public_buy_page_views`` counter is set to the row sum
+        so the counter, the conversion rate, and the daily chart stay consistent.
+        """
+        horizon = 90
+        total_rows = 0
+        seeded_events = 0
+        for event in events:
+            if event.ticketing_type != TICKETING_TYPE_DIRECT:
+                continue
+            if event.status not in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED):
+                continue
+            if not event.start_date:
+                continue
+            window_start = event.start_date - timedelta(days=horizon)
+            window_end = min(today, event.start_date)
+            if window_end < window_start:
+                continue  # upcoming event whose pre-sale window hasn't opened yet
+            rows = []
+            running_total = 0
+            span_days = (window_end - window_start).days
+            for offset in range(span_days + 1):
+                day = window_start + timedelta(days=offset)
+                days_before = (event.start_date - day).days
+                # Proximity 0 (far out) -> ~1 (event day): views rise toward the show.
+                proximity = 1.0 - min(days_before / horizon, 1.0)
+                base = 4 + proximity * 40  # ~4/day early, ~44/day near the event
+                count = max(0, int(rng.gauss(base, base * 0.35)))
+                if count == 0:
+                    continue
+                rows.append(EventDailyPageView(event=event, date=day, view_count=count))
+                running_total += count
+            if not rows:
+                continue
+            EventDailyPageView.objects.bulk_create(rows)
+            event.public_buy_page_views = running_total
+            event.save(update_fields=["public_buy_page_views"])
+            total_rows += len(rows)
+            seeded_events += 1
+        self.stdout.write(self.style.SUCCESS(
+            f"Page views: {total_rows} daily rows across {seeded_events} direct events"
+        ))
 
     def _create_promo_codes(self, org, events, now):
         codes = []
