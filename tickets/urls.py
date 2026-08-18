@@ -197,6 +197,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
     path('events/<uuid:event_id>/pacing/', views.event_pacing_api, name='event_pacing_api'),
     path('events/<uuid:event_id>/checkin-curve/', views.event_checkin_curve_api, name='event_checkin_curve_api'),
+    path('events/<uuid:event_id>/page-views/', views.event_page_views_api, name='event_page_views_api'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
     path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),

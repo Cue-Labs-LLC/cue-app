@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', function () {
 <!-- Tab navigation -->
 <nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    {% if show_pacing_card %}
+    {% if show_pacing_card or show_checkin_curve_card or show_page_views_comparison_card %}
     <button class="nav-link" id="tab-analytics-btn" data-bs-toggle="tab" data-bs-target="#tab-analytics" type="button" role="tab">Analytics</button>
     {% endif %}
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
@@ -1002,7 +1002,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div><!-- /tab-overview -->
 
 <!-- ===== TAB: Analytics ===== -->
-{% if show_pacing_card or show_checkin_curve_card %}
+{% if show_pacing_card or show_checkin_curve_card or show_page_views_comparison_card %}
 <div class="tab-pane fade" id="tab-analytics" role="tabpanel">
 <style>
 .pacing-combo { position: relative; }
@@ -1126,6 +1126,49 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 <script type="application/json" id="checkin-current-data">{{ checkin_curve_current_json|safe }}</script>
 <script type="application/json" id="checkin-compare-data">{{ checkin_curve_compare_json|safe }}</script>
+{% endif %}
+
+{% if show_page_views_comparison_card %}
+<div class="card mb-4" id="pageViewsCard"
+     data-pageviews-url="{% url 'tickets:event_page_views_api' '00000000-0000-0000-0000-000000000000' %}"
+     data-current-name="{{ event.name }}"
+     data-today-days-before="{% if pageviews_today_days_before is not None %}{{ pageviews_today_days_before }}{% endif %}">
+    <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="d-flex flex-column">
+            <h5 class="mb-0">Page Views</h5>
+            <small class="text-muted">Cumulative buy-page views vs. a past event, by days before the event</small>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Page views scale">
+                <button type="button" class="chart-control-btn active" id="btnPvAbs">Absolute</button>
+                <button type="button" class="chart-control-btn" id="btnPvPct">% Final</button>
+            </div>
+            <label class="d-flex align-items-center gap-2 mb-0">
+                <span class="pacing-compare-label">vs</span>
+                <div class="pacing-combo" id="pageViewsCompare">
+                    <input type="text" class="pacing-compare-input" id="pageViewsCompareInput"
+                           role="combobox" aria-expanded="false" aria-controls="pageViewsCompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search events&hellip;" aria-label="Comparison event">
+                    <ul class="pacing-combo-list" id="pageViewsCompareList" role="listbox" aria-label="Comparison event" hidden>
+                        {% for c in pageviews_candidates %}
+                        <li class="pacing-combo-option{% if c.id == pageviews_default_compare_id %} is-selected{% endif %}"
+                            role="option" id="pageViewsOpt-{{ forloop.counter }}"
+                            data-id="{{ c.id }}"
+                            data-label="{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}"
+                            {% if c.id == pageviews_default_compare_id %}aria-selected="true"{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </label>
+        </div>
+    </div>
+    <div class="card-body" style="position: relative; height: 260px;">
+        <canvas id="pageViewsCompareChart"></canvas>
+    </div>
+</div>
+<script type="application/json" id="pageviews-current-data">{{ pageviews_current_json|safe }}</script>
+<script type="application/json" id="pageviews-compare-data">{{ pageviews_compare_json|safe }}</script>
 {% endif %}
 </div><!-- /tab-analytics -->
 {% endif %}
@@ -6438,6 +6481,339 @@ document.addEventListener('DOMContentLoaded', function () {
                 headers: { 'X-Requested-With': 'XMLHttpRequest' }
             })
                 .then(function (r) { if (!r.ok) throw new Error('checkin fetch failed'); return r.json(); })
+                .then(function (json) { compareData = json; render(); })
+                .catch(function (err) { console.error(err); })
+                .finally(function () { input.disabled = false; });
+        }
+
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
+        });
+        // mousedown (not click) so we act before the input's blur fires.
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    })();
+
+    // The chart lives in the (initially hidden) Analytics tab, so its canvas has no
+    // size until the tab is shown. Re-measure on first reveal.
+    var tabsEl = document.getElementById('eventDetailTabs');
+    if (tabsEl) {
+        tabsEl.addEventListener('shown.bs.tab', function (e) {
+            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
+                chart.resize();
+            }
+        });
+    }
+
+    render();
+});
+</script>
+
+<script>
+// Page Views — cumulative public buy-page views for this event vs. a comparison
+// event, aligned on a days-before-event axis. Scale (absolute/%) is a client-side
+// transform over one embedded payload; changing the comparison event fetches its
+// series from the page-views API.
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('pageViewsCompareChart');
+    if (!canvas) return;
+    var card = document.getElementById('pageViewsCard');
+
+    var currentData = JSON.parse(document.getElementById('pageviews-current-data').textContent);
+    var compareData = JSON.parse(document.getElementById('pageviews-compare-data').textContent);
+    var currentName = card.getAttribute('data-current-name') || 'This event';
+    var pageViewsUrlTemplate = card.getAttribute('data-pageviews-url');
+
+    var rootStyle = getComputedStyle(document.documentElement);
+    function token(name, fallback) {
+        var v = (rootStyle.getPropertyValue(name) || '').trim();
+        return v || fallback;
+    }
+    var gridColor = token('--border-light', 'rgba(255,255,255,0.05)');
+    var labelColor = token('--text-tertiary', '#7A7672');
+    var currentColor = token('--accent', '#00FF87');
+    var compareColor = token('--info', '#7B8FBF');
+    var todayColor = token('--text-secondary', '#9A9691');
+
+    // "Today" on the days-before axis for the current event (blank = past event).
+    var rawToday = card.getAttribute('data-today-days-before');
+    var todayDaysBefore = rawToday === '' || rawToday === null ? null : Number(rawToday);
+    var currentAxis = [];   // day values behind the x labels, kept for the marker
+
+    var scale = 'abs';        // 'abs' | 'pct'
+
+    // Cumulative views at each axis label: sum for all days-before >= the label
+    // (axis is sorted descending, so cumulative grows toward day 0).
+    function cumulativeFor(series, axis) {
+        var sorted = series.slice().sort(function (a, b) { return b.d - a.d; });
+        var out = [], running = 0, idx = 0;
+        axis.forEach(function (label) {
+            while (idx < sorted.length && sorted[idx].d >= label) {
+                running += sorted[idx].views;
+                idx++;
+            }
+            out.push(running);
+        });
+        return out;
+    }
+
+    function labelFor(d) {
+        if (d === 0) return 'Event day';
+        return d > 0 ? (d + 'd before') : (Math.abs(d) + 'd after');
+    }
+
+    function buildConfig() {
+        var series = [currentData.series || []];
+        if (compareData) series.push(compareData.series || []);
+        // Continuous axis: every day from the earliest view (largest days-before)
+        // down to the last day, so days with no views aren't skipped.
+        var maxD = null, minD = null;
+        series.forEach(function (s) {
+            s.forEach(function (p) {
+                if (maxD === null || p.d > maxD) maxD = p.d;
+                if (minD === null || p.d < minD) minD = p.d;
+            });
+        });
+        var axis = [];
+        if (maxD === null) { axis = [0]; }
+        else { for (var d = maxD; d >= minD; d--) axis.push(d); }
+        currentAxis = axis;
+
+        function dataset(data, name, color, dashed) {
+            var values = cumulativeFor(data.series || [], axis);
+            if (scale === 'pct') {
+                var total = data.total_views;
+                values = values.map(function (v) { return total > 0 ? (v / total * 100) : 0; });
+            }
+            return {
+                label: name,
+                data: values,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                borderDash: dashed ? [5, 4] : [],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                fill: false,
+                tension: 0.35,
+            };
+        }
+
+        var datasets = [dataset(currentData, currentName, currentColor, false)];
+        if (compareData) {
+            datasets.push(dataset(compareData, compareData.name || 'Comparison', compareColor, true));
+        }
+
+        var suffix = scale === 'pct' ? '%' : '';
+        function fmt(v) {
+            var n = scale === 'pct' ? Math.round(v * 10) / 10 : Math.round(v);
+            return n.toLocaleString() + suffix;
+        }
+
+        return {
+            labels: axis.map(labelFor),
+            datasets: datasets,
+            suffix: suffix,
+            fmt: fmt,
+        };
+    }
+
+    // Interpolate the x-pixel for an arbitrary days-before value across the
+    // category axis (labels only exist on days with views, so "today" usually
+    // falls between two ticks). Returns null if it lies outside the drawn range.
+    function pixelForDay(chart, day) {
+        var axis = currentAxis, labels = chart.data.labels;
+        if (!axis.length) return null;
+        var xScale = chart.scales.x;
+        if (day > axis[0] || day < axis[axis.length - 1]) return null;   // off-scale
+        for (var i = 0; i < axis.length - 1; i++) {
+            var a = axis[i], b = axis[i + 1];   // descending: a > b
+            if (day <= a && day >= b) {
+                var t = a === b ? 0 : (a - day) / (a - b);
+                // Category scales resolve by label value, not numeric index.
+                var xa = xScale.getPixelForValue(labels[i]);
+                var xb = xScale.getPixelForValue(labels[i + 1]);
+                return xa + (xb - xa) * t;
+            }
+        }
+        return xScale.getPixelForValue(labels[axis.length - 1]);
+    }
+
+    var todayMarkerPlugin = {
+        id: 'pageViewsTodayMarker',
+        afterDatasetsDraw: function (chart) {
+            if (todayDaysBefore === null || isNaN(todayDaysBefore)) return;
+            var x = pixelForDay(chart, todayDaysBefore);
+            if (x === null) return;
+            var area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([4, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = todayColor;
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // "Today" pill anchored to the top of the line.
+            var label = 'Today';
+            ctx.font = '600 10px Sora, sans-serif';
+            var padX = 5, w = ctx.measureText(label).width + padX * 2, h = 15;
+            var lx = Math.min(Math.max(x - w / 2, area.left), area.right - w);
+            ctx.fillStyle = todayColor;
+            if (ctx.roundRect) {
+                ctx.beginPath(); ctx.roundRect(lx, area.top - h - 2, w, h, 3); ctx.fill();
+            } else {
+                ctx.fillRect(lx, area.top - h - 2, w, h);
+            }
+            ctx.fillStyle = token('--text-inverse', '#0E0E0E');
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, lx + w / 2, area.top - h / 2 - 2);
+            ctx.restore();
+        }
+    };
+
+    var chart = null;
+    function render() {
+        var cfg = buildConfig();
+        if (chart) {
+            chart.data.labels = cfg.labels;
+            chart.data.datasets = cfg.datasets;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y);
+            };
+            chart.options.scales.y.ticks.callback = function (v) { return cfg.fmt(v); };
+            chart.update();
+            return;
+        }
+        chart = new Chart(canvas, {
+            type: 'line',
+            plugins: [todayMarkerPlugin],
+            data: { labels: cfg.labels, datasets: cfg.datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                layout: { padding: { top: 18 } },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: labelColor, usePointStyle: true, boxWidth: 8, boxHeight: 8 }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: { label: function (ctx) { return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y); } }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return cfg.fmt(v); } }
+                    }
+                }
+            }
+        });
+    }
+
+    // Scale toggle
+    function bindToggle(id, group, apply) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            group.forEach(function (o) { document.getElementById(o).classList.remove('active'); });
+            btn.classList.add('active');
+            apply();
+            render();
+        });
+    }
+    bindToggle('btnPvAbs', ['btnPvAbs', 'btnPvPct'], function () { scale = 'abs'; });
+    bindToggle('btnPvPct', ['btnPvAbs', 'btnPvPct'], function () { scale = 'pct'; });
+
+    // Comparison-event combobox: type to filter the past-event list.
+    (function () {
+        var combo = document.getElementById('pageViewsCompare');
+        if (!combo) return;
+        var input = document.getElementById('pageViewsCompareInput');
+        var list = document.getElementById('pageViewsCompareList');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label; input.value = selectedLabel; }
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function showEmpty() {
+            if (emptyEl) return;
+            emptyEl = document.createElement('li');
+            emptyEl.className = 'pacing-combo-empty';
+            emptyEl.textContent = 'No matching events';
+            list.appendChild(emptyEl);
+        }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) showEmpty();
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label;
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            loadComparison(selectedId);
+        }
+
+        function loadComparison(id) {
+            if (!id) return;
+            input.disabled = true;
+            fetch(pageViewsUrlTemplate.replace('00000000-0000-0000-0000-000000000000', id), {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function (r) { if (!r.ok) throw new Error('page-views fetch failed'); return r.json(); })
                 .then(function (json) { compareData = json; render(); })
                 .catch(function (err) { console.error(err); })
                 .finally(function () { input.disabled = false; });

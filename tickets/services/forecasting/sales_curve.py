@@ -228,6 +228,46 @@ class SalesCurveCalculator:
             'total_revenue': round(sum(revenue_by_day.values()), 2),
         }
 
+    def get_page_view_series(self, event: Event) -> dict:
+        """Daily public buy-page views per days-before-event for one event.
+
+        Powers the "Page Views" comparison card on the Analytics tab, letting two
+        direct-ticketing events be compared on a shared "days before the event"
+        axis. Views come from ``EventDailyPageView`` daily rows (recorded on each
+        public buy-page load). Absolute (non-cumulative) daily counts are returned
+        so the caller builds the cumulative and percentage views client-side.
+
+        Both ``EventDailyPageView.date`` and ``Event.start_date`` are naive
+        ``DateField``s, so ``calculate_days_before`` does a pure calendar
+        subtraction here (no timezone conversion).
+
+        Returns:
+            {
+                'series': [{'d': days_before, 'views': int}, ...]
+                          sorted by 'd' descending,
+                'total_views': int,
+            }
+        """
+        if not event.start_date:
+            return {'series': [], 'total_views': 0}
+
+        views_by_day = defaultdict(int)
+        for view_date, view_count in event.daily_page_views.values_list(
+            'date', 'view_count'
+        ):
+            days_before = self.calculate_days_before(view_date, event.start_date)
+            views_by_day[days_before] += view_count
+
+        series = [
+            {'d': day, 'views': views_by_day[day]}
+            for day in sorted(views_by_day, reverse=True)
+        ]
+
+        return {
+            'series': series,
+            'total_views': sum(views_by_day.values()),
+        }
+
     def get_checkin_series(self, event: Event) -> dict:
         """Check-ins bucketed by minutes relative to the event's scheduled start.
 

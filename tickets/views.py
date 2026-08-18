@@ -5212,6 +5212,32 @@ def _get_checkin_comparison_candidates(org, event, limit=100):
     return same_venue + other
 
 
+def _get_page_view_comparison_candidates(org, event, limit=100):
+    """Past events available to compare against for the buy-page views curve.
+
+    Mirrors ``_get_pacing_comparison_candidates`` (most recent first, same-venue
+    events first) but limited to direct-ticketing events that actually have
+    public buy-page view rows (``EventDailyPageView``). Page views only exist for
+    ``direct`` events (the only ones with a public buy page), and an event with no
+    recorded views has no curve to overlay.
+    """
+    past = list(
+        Event.objects.filter(
+            organization=org,
+            start_date__lt=event.start_date,
+            ticketing_type='direct',
+            daily_page_views__isnull=False,
+        )
+        .exclude(id=event.id)
+        .distinct()
+        .only('id', 'name', 'start_date', 'venue_id')
+        .order_by('-start_date')[:limit]
+    )
+    same_venue = [e for e in past if e.venue_id == event.venue_id]
+    other = [e for e in past if e.venue_id != event.venue_id]
+    return same_venue + other
+
+
 def _recompute_utm_attribution_for_event(org, event):
     """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
 
@@ -5911,6 +5937,39 @@ def event_detail(request, event_id):
                 for e in checkin_curve_candidates
             ]
 
+    # Page Views — cumulative public buy-page views for this event vs. a comparable
+    # past event, aligned on the same days-before-event axis as sales pacing. Only
+    # applies to direct-ticketing events (the only ones with a public buy page); the
+    # comparison combobox lists past direct events that also have recorded views.
+    pageviews_candidates = (
+        _get_page_view_comparison_candidates(org, event)
+        if event.ticketing_type == 'direct' else []
+    )
+    show_page_views_comparison_card = (
+        event.ticketing_type == 'direct'
+        and bool(stats['page_views_over_time'])
+        and bool(pageviews_candidates)
+    )
+    pageviews_current_json = 'null'
+    pageviews_compare_json = 'null'
+    pageviews_candidate_list = []
+    pageviews_default_compare_id = None
+    pageviews_today_days_before = None
+    if show_page_views_comparison_card:
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        pv_calc = SalesCurveCalculator()
+        default_pv_compare = pageviews_candidates[0]
+        pageviews_default_compare_id = str(default_pv_compare.id)
+        pageviews_current_json = json.dumps(pv_calc.get_page_view_series(event))
+        pageviews_compare_json = json.dumps(
+            pv_calc.get_page_view_series(default_pv_compare)
+        )
+        pageviews_candidate_list = [
+            {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
+            for e in pageviews_candidates
+        ]
+        pageviews_today_days_before = (event.start_date - django_tz.localdate()).days
+
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
     from tickets.sms_views import _annotate_counts
@@ -6034,6 +6093,12 @@ def event_detail(request, event_id):
         'checkin_curve_compare_json': checkin_curve_compare_json,
         'checkin_curve_candidates': checkin_curve_candidate_list,
         'checkin_curve_default_compare_id': checkin_curve_default_compare_id,
+        'show_page_views_comparison_card': show_page_views_comparison_card,
+        'pageviews_current_json': pageviews_current_json,
+        'pageviews_compare_json': pageviews_compare_json,
+        'pageviews_candidates': pageviews_candidate_list,
+        'pageviews_default_compare_id': pageviews_default_compare_id,
+        'pageviews_today_days_before': pageviews_today_days_before,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6227,6 +6292,26 @@ def event_checkin_curve_api(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     from tickets.services.forecasting.sales_curve import SalesCurveCalculator
     data = SalesCurveCalculator().get_checkin_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
+
+
+@login_required
+@require_org
+def event_page_views_api(request, event_id):
+    """Return the buy-page-view series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so the curve can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_page_view_series(event)
     data.update({
         'id': str(event.id),
         'name': event.name,
