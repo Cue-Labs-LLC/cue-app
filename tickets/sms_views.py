@@ -123,6 +123,7 @@ def _customer_list_criteria_from_post(post):
         'last_order_before': post.get('last_order_to') or None,
         'phone': post.get('phone_filter') or None,
         'sms_opt_in': True if sms_f == '1' else (False if sms_f == '0' else None),
+        'sms_suppressed': sms_f == 'stop',
         'max_ltv': post.get('max_ltv') or None,
     }
 
@@ -300,33 +301,23 @@ def customers_bulk_sms_status(request):
     back = _customer_list_back_url(request.POST)
 
     opt_in = request.POST.get('sms_status') == 'opt_in'
-    count = set_sms_opt_in(customers, opt_in=opt_in)
+    # Opting in can't override a STOP: set_sms_opt_in excludes suppressed numbers
+    # (anyone who texted STOP) and reports them as `skipped` — an organizer can't
+    # re-consent on their behalf; only the recipient texting START can.
+    count, skipped = set_sms_opt_in(customers, opt_in=opt_in, organization=org)
     verb = 'Opted in' if opt_in else 'Opted out'
-    if count == 0:
+    if count == 0 and skipped == 0:
         # Either nothing was selected or every selected customer was already in
         # the target state — nothing actually changed either way.
         messages.info(request, 'No customers needed updating.')
-    else:
+    elif count:
         messages.success(request, f'{verb} {count} customer(s).')
-
-    # Opting in can't override a STOP: a number that replied STOP stays suppressed
-    # (Twilio + our mirror) and won't be texted until the person texts START — an
-    # organizer can't re-consent on their behalf. Flag any so the opt-in isn't a
-    # silent no-op. Counts distinct phones on the selection against the suppression
-    # list in one query.
-    if opt_in:
-        suppressed = PhoneSuppression.suppressed_phones(org)
-        if suppressed:
-            blocked = len({
-                normalize_phone(p) for p in customers.values_list('phone', flat=True)
-                if normalize_phone(p) in suppressed
-            })
-            if blocked:
-                messages.warning(
-                    request,
-                    f"{blocked} of these opted out via STOP and can only re-subscribe by "
-                    f"texting START — they won't receive messages until they do."
-                )
+    if skipped:
+        messages.warning(
+            request,
+            f"{skipped} were skipped — they previously unsubscribed (STOP) and can only "
+            f"rejoin by texting START."
+        )
     return redirect(back)
 
 

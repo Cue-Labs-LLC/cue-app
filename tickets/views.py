@@ -2603,6 +2603,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     if customer_type not in ('customers', 'subscribers', 'contacts'):
         customer_type = ''
     sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
+    sms_suppressed_filter = sms_filter == 'stop'
     has_active_filters = any([
         search_query,
         segment_filter,
@@ -2631,6 +2632,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'last_order_before': last_order_to or None,
         'phone': phone_filter or None,
         'sms_opt_in': sms_opt_in_filter,
+        'sms_suppressed': sms_suppressed_filter,
         'min_ltv': min_ltv or None,
         'max_ltv': max_ltv or None,
     })

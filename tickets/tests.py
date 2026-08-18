@@ -5094,6 +5094,33 @@ class SMSComplianceGuardTests(TestCase):
             ).exists()
         )
 
+    def test_reconcile_sms_opt_outs_command_backfills(self):
+        from io import StringIO
+        from unittest.mock import patch, MagicMock
+        from django.core.management import call_command
+        from django.test import override_settings
+        from .models import PhoneSuppression
+
+        # Two Twilio log messages: a 21610 STOP-block and a normal delivery (ignored).
+        blocked = MagicMock(error_code=21610, to='+15550007777', status='failed')
+        delivered = MagicMock(error_code=None, to='+15550008888', status='delivered')
+        fake_client = MagicMock()
+        fake_client.messages.list.return_value = [blocked, delivered]
+
+        with override_settings(TWILIO_ACCOUNT_SID='AC_test', TWILIO_AUTH_TOKEN='tok'), \
+                patch('twilio.rest.Client', return_value=fake_client):
+            # Dry run writes nothing.
+            call_command('reconcile_sms_opt_outs', stdout=StringIO())
+            self.assertFalse(PhoneSuppression.objects.filter(phone='+15550007777').exists())
+            # --apply mirrors the block into a global TWILIO_STOP suppression.
+            call_command('reconcile_sms_opt_outs', '--apply', stdout=StringIO())
+
+        supp = PhoneSuppression.objects.filter(phone='+15550007777', organization__isnull=True)
+        self.assertTrue(supp.exists())
+        self.assertEqual(supp.first().reason, PhoneSuppression.Reason.TWILIO_STOP)
+        # The delivered number is never suppressed.
+        self.assertFalse(PhoneSuppression.objects.filter(phone='+15550008888').exists())
+
 
 class SMSThroughputGuardTests(TestCase):
     """Carrier-throughput guards on the send path: paced (staggered) dispatch to avoid
