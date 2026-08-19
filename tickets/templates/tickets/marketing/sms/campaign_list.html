@@ -58,6 +58,19 @@
 tr.campaign-row { cursor: pointer; }
 #campaignDetailModal .cdm-message { white-space: pre-wrap; word-break: break-word; }
 
+/* Searchable event-filter dropdown */
+.event-filter-menu { max-height: 340px; overflow-y: auto; min-width: 240px; }
+.event-filter-search { position: relative; padding: 4px 8px 8px; }
+.event-filter-search .bi-search {
+    position: absolute; left: 18px; top: 50%; transform: translateY(-40%);
+    color: var(--text-secondary); pointer-events: none; font-size: 13px;
+}
+.event-filter-search input { padding-left: 30px; }
+.event-filter-option { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.event-filter-option .event-filter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-filter-option .event-filter-date { flex: 0 0 auto; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.event-filter-option.active .event-filter-date { color: var(--text-inverse); opacity: 0.85; }
+
 /* Source badges for unified Campaigns table */
 /* Blue is the default for all external providers; Cue is green. */
 .source-badge { font-weight: 500; font-size: 11px; border-radius: 4px; padding: 2px 7px; background: rgba(79,124,255,0.12); color: #4f7cff; }
@@ -94,6 +107,29 @@ tr.campaign-row { cursor: pointer; }
 <div class="sms-section-head">
     <h2>Sends</h2>
     <div class="sms-head-controls">
+        {% if event_choices %}
+        <div class="window-selector">
+            <div class="dropdown" id="eventFilterDropdown">
+                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                    <i class="bi bi-calendar-event"></i> {% if selected_event %}{{ selected_event_label|truncatechars:28 }}{% else %}All events{% endif %}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end event-filter-menu">
+                    <li class="event-filter-search">
+                        <i class="bi bi-search"></i>
+                        <input type="search" class="form-control form-control-sm" placeholder="Search events" aria-label="Search events" autocomplete="off" data-event-filter-search>
+                    </li>
+                    <li class="event-filter-all"><a class="dropdown-item{% if not selected_event %} active{% endif %}" href="?window={{ window_key }}&view=campaigns{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">All events</a></li>
+                    {% for ev in event_choices %}
+                    <li><a class="dropdown-item event-filter-option{% if ev.id == selected_event %} active{% endif %}" data-ev-name="{{ ev.name|lower }}" href="?window={{ window_key }}&view=campaigns&event={{ ev.id }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">
+                        <span class="event-filter-name">{{ ev.name }}</span>
+                        {% if ev.start_date %}<span class="event-filter-date">{{ ev.start_date|date:"M d, Y" }}</span>{% endif %}
+                    </a></li>
+                    {% endfor %}
+                    <li class="event-filter-empty text-muted small px-3 py-2" hidden>No events match.</li>
+                </ul>
+            </div>
+        </div>
+        {% endif %}
         <div class="window-selector">
             <div class="dropdown">
                 <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -101,7 +137,7 @@ tr.campaign-row { cursor: pointer; }
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
                     {% for key, info in window_choices.items %}
-                    <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view=campaigns{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
+                    <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view=campaigns{% if selected_event %}&event={{ selected_event }}{% endif %}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
                     {% endfor %}
                 </ul>
             </div>
@@ -248,13 +284,13 @@ tr.campaign-row { cursor: pointer; }
         <nav aria-label="Send pagination" class="d-flex justify-content-center py-3">
             <ul class="pagination pagination-sm mb-0">
                 {% if campaigns_page.has_previous %}
-                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.previous_page_number }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&lsaquo;</a></li>
+                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.previous_page_number }}{% if selected_event %}&event={{ selected_event }}{% endif %}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&lsaquo;</a></li>
                 {% else %}
                 <li class="page-item disabled"><span class="page-link">&lsaquo;</span></li>
                 {% endif %}
                 <li class="page-item disabled"><span class="page-link">{{ campaigns_page.number }} / {{ campaigns_page.paginator.num_pages }}</span></li>
                 {% if campaigns_page.has_next %}
-                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.next_page_number }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&rsaquo;</a></li>
+                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.next_page_number }}{% if selected_event %}&event={{ selected_event }}{% endif %}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&rsaquo;</a></li>
                 {% else %}
                 <li class="page-item disabled"><span class="page-link">&rsaquo;</span></li>
                 {% endif %}
@@ -264,7 +300,8 @@ tr.campaign-row { cursor: pointer; }
         {% else %}
         <div class="empty-state">
             <i class="bi bi-chat-dots" style="font-size:2rem;opacity:.35;"></i>
-            <p>No sends in this window.</p>
+            {% if selected_event %}<p>No sends for {{ selected_event_label }} in this window.</p>
+            {% else %}<p>No sends in this window.</p>{% endif %}
             {% if sms_native_enabled %}
             <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-sm btn-primary">New Send</a>
             {% endif %}
@@ -653,6 +690,46 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('tr.campaign-row a').forEach(function (a) {
         a.addEventListener('click', function (e) { e.stopPropagation(); });
     });
+});
+</script>
+
+<script>
+// Type-to-filter the event dropdown. Options are navigation links; the search
+// only shows/hides them client-side (auto-close="outside" keeps the menu open
+// while typing).
+document.addEventListener('DOMContentLoaded', function () {
+    var dd = document.getElementById('eventFilterDropdown');
+    if (!dd) return;
+    var input = dd.querySelector('[data-event-filter-search]');
+    if (!input) return;
+    var allItem = dd.querySelector('.event-filter-all');
+    var emptyEl = dd.querySelector('.event-filter-empty');
+    var options = Array.prototype.slice.call(dd.querySelectorAll('.dropdown-item[data-ev-name]'));
+
+    function apply() {
+        var q = input.value.trim().toLowerCase();
+        var shown = 0;
+        options.forEach(function (opt) {
+            var match = !q || (opt.getAttribute('data-ev-name') || '').indexOf(q) !== -1;
+            opt.parentElement.style.display = match ? '' : 'none';
+            if (match) shown++;
+        });
+        if (allItem) allItem.style.display = q ? 'none' : '';
+        if (emptyEl) emptyEl.hidden = shown !== 0;
+    }
+    function reset() {
+        input.value = '';
+        options.forEach(function (opt) { opt.parentElement.style.display = ''; });
+        if (allItem) allItem.style.display = '';
+        if (emptyEl) emptyEl.hidden = true;
+    }
+
+    input.addEventListener('input', apply);
+    // Keep clicks/keys in the search box from bubbling to the dropdown toggle.
+    input.addEventListener('click', function (e) { e.stopPropagation(); });
+    input.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    dd.addEventListener('shown.bs.dropdown', function () { input.focus(); });
+    dd.addEventListener('hidden.bs.dropdown', reset);
 });
 </script>
 {% endblock %}

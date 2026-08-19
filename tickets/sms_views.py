@@ -442,31 +442,60 @@ def sms_campaign_list(request):
 
     _epoch = datetime.min.replace(tzinfo=stdlib_tz.utc)
     unified_campaigns.sort(key=lambda b: b['when'] or _epoch, reverse=True)
+
+    # Event filter: applied in Python over the unified list (like the market
+    # filter below) so native + external sends are scoped uniformly. Choices are
+    # built from the events actually present in this window's sends, so the
+    # dropdown never lists an event with nothing to show.
+    event_choices = []
+    _seen_event_ids = set()
+    for b in unified_campaigns:
+        ev = b['event']
+        if ev and str(ev.id) not in _seen_event_ids:
+            _seen_event_ids.add(str(ev.id))
+            event_choices.append({
+                'id': str(ev.id), 'name': ev.name, 'start_date': ev.start_date,
+            })
+    event_choices.sort(key=lambda c: c['name'].lower())
+    selected_event = request.GET.get('event', '')
+    if selected_event not in _seen_event_ids:
+        selected_event = ''
+    selected_event_label = next(
+        (c['name'] for c in event_choices if c['id'] == selected_event), '',
+    )
+    if selected_event:
+        unified_campaigns = [
+            b for b in unified_campaigns
+            if b['event'] and str(b['event'].id) == selected_event
+        ]
+
     paginator = Paginator(unified_campaigns, 25)
     campaigns_page = paginator.get_page(request.GET.get('page'))
 
     # Upcoming band: native campaigns that are scheduled but not yet sent, soonest first.
     # Not window-filtered — future sends should always be visible regardless of the
     # analytics window — so the organizer can find (and cancel) a queued send.
-    scheduled_campaigns = list(
-        SMSCampaign.objects.filter(
-            organization=org, deleted_at__isnull=True,
-            status=SMSCampaign.Status.SCHEDULED,
-        ).select_related('event').order_by('scheduled_at')
-    )
+    scheduled_qs = SMSCampaign.objects.filter(
+        organization=org, deleted_at__isnull=True,
+        status=SMSCampaign.Status.SCHEDULED,
+    ).select_related('event')
+    if selected_event:
+        scheduled_qs = scheduled_qs.filter(event_id=selected_event)
+    scheduled_campaigns = list(scheduled_qs.order_by('scheduled_at'))
 
     # In-progress band: native campaigns actively sending — or stuck mid-send after
     # a chunk errored (status stays 'sending' until the cron recovery pass finishes
     # it). Not window-filtered (sent_at is null while sending) so an in-flight send
     # is always visible; annotated so the table can show sent-so-far vs audience,
     # which is what distinguishes a healthy send from a stalled one. Newest first.
+    sending_qs = SMSCampaign.objects.filter(
+        organization=org, deleted_at__isnull=True,
+        status=SMSCampaign.Status.SENDING,
+    ).select_related('event')
+    if selected_event:
+        sending_qs = sending_qs.filter(event_id=selected_event)
     sending_campaigns = list(
-        _annotate_counts(
-            SMSCampaign.objects.filter(
-                organization=org, deleted_at__isnull=True,
-                status=SMSCampaign.Status.SENDING,
-            ).select_related('event')
-        ).order_by('-started_at')
+        _annotate_counts(sending_qs).order_by('-started_at')
     )
 
     # Broadcast audience over time + by market. The cached series is
@@ -548,6 +577,9 @@ def sms_campaign_list(request):
         'top_sms_campaigns': metrics['top_sms_campaigns'],
         'selected_market': selected_market,
         'market_choices': market_choices,
+        'selected_event': selected_event,
+        'selected_event_label': selected_event_label,
+        'event_choices': event_choices,
         'market_breakdown': market_breakdown,
         'audience_points_json': json.dumps(audience_points),
         'link_events': _org_events_for_picker(org),

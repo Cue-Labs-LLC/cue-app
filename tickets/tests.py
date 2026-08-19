@@ -4828,6 +4828,72 @@ class SMSBroadcastAudienceTests(TestCase):
         self.assertEqual(response.context['selected_market'], '')
 
 
+class SMSCampaignListEventFilterTests(TestCase):
+    """The Sends view can be scoped to a single event via ?event=<id>. Choices are
+    built from the events with sends in the current window; an unknown id clears."""
+
+    def setUp(self):
+        from .models import SMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Filter Org', slug='filter-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='filterhost', email='filter@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='filter@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event_a = Event.objects.create(
+            organization=self.org, name='Alpha Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+        )
+        self.event_b = Event.objects.create(
+            organization=self.org, name='Beta Show', venue=self.venue,
+            start_date=date(2026, 7, 1), start_time=time(20, 0, 0),
+        )
+        self.camp_a = SMSCampaign.objects.create(
+            organization=self.org, name='Alpha Blast', body='Tickets!',
+            event=self.event_a, status=SMSCampaign.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=2), audience_size=50,
+        )
+        self.camp_b = SMSCampaign.objects.create(
+            organization=self.org, name='Beta Blast', body='Tickets!',
+            event=self.event_b, status=SMSCampaign.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=2), audience_size=60,
+        )
+        self.url = reverse('tickets:sms_campaign_list')
+
+    def test_event_choices_lists_events_with_sends(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        choices = response.context['event_choices']
+        choice_ids = {c['id'] for c in choices}
+        self.assertIn(str(self.event_a.id), choice_ids)
+        self.assertIn(str(self.event_b.id), choice_ids)
+        # Each choice carries the event's date so same-named events are distinguishable.
+        by_id = {c['id']: c for c in choices}
+        self.assertEqual(by_id[str(self.event_a.id)]['start_date'], self.event_a.start_date)
+
+    def test_event_filter_scopes_send_list(self):
+        response = self.client.get(self.url, {'event': str(self.event_a.id)})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_event'], str(self.event_a.id))
+        names = {row['name'] for row in response.context['campaigns_page'].object_list}
+        self.assertEqual(names, {'Alpha Blast'})
+
+    def test_unknown_event_clears_filter(self):
+        response = self.client.get(self.url, {'event': str(uuid.uuid4())})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_event'], '')
+        names = {row['name'] for row in response.context['campaigns_page'].object_list}
+        self.assertEqual(names, {'Alpha Blast', 'Beta Blast'})
+
+
 class SMSComplianceGuardTests(TestCase):
     """Guards that keep the Twilio Compliance subscore healthy: country gating
     (avoids Geo-Permission blocks / Error 21408) and learning from opt-out blocks
