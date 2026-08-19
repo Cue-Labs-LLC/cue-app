@@ -534,6 +534,32 @@ a:hover {
     gap: 4px;
 }
 
+/* Desktop events table: keep every row on a single line. A long event name
+   truncates with an ellipsis instead of squeezing the Date column into a
+   two-line wrap. Scoped above the mobile card transform (max-width: 575px). */
+@media (min-width: 576px) {
+    /* Date / Venue / Revenue / Profit / Tickets never wrap */
+    .event-list-table tbody td {
+        white-space: nowrap;
+    }
+    /* Cap the name column so a long name truncates rather than pushing columns */
+    .event-list-table tbody td:first-child {
+        max-width: 320px;
+    }
+    .event-list-table .event-card-name-line {
+        flex-wrap: nowrap;
+        min-width: 0;
+    }
+    .event-list-table .event-card-name-line a {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .event-list-table .event-card-badges {
+        flex-shrink: 0;
+    }
+}
+
 /* Auth pages (login/signup): center content when no sidebar */
 .content--auth {
     margin-left: auto;
