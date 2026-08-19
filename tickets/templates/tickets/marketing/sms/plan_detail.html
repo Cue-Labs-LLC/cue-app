@@ -345,6 +345,7 @@
                     <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
                             data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
                             data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}"
+                            data-unschedule-url="{% url 'tickets:sms_plan_unschedule_step' pk=plan.id step=step.order %}"
                             {% if not plan.enabled %}disabled title="Enable the sequence to send"{% endif %}>
                         <i class="bi bi-send"></i> Confirm &amp; Schedule
                     </button>
@@ -1215,7 +1216,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     if (topupPayBtn) topupPayBtn.addEventListener('click', payTopup);
 
-    function markLaunched(card, step, campaignUrl, scheduled) {
+    function markLaunched(card, step, campaignUrl, scheduled, unscheduleUrl) {
         const wrap = card.closest('.plan-step');
         if (wrap) wrap.classList.add('is-launched');
         const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
@@ -1234,6 +1235,33 @@ document.addEventListener('DOMContentLoaded', function () {
             const timing = head.querySelector('.plan-step-timing');
             if (timing && timing.nextSibling) head.insertBefore(pill, timing.nextSibling);
             else head.appendChild(pill);
+        }
+        // The trash-can "remove" form was rendered server-side while this step was still a
+        // draft. Now that it's launched, mirror what a page refresh would render: swap it for
+        // the reverse-arrow unschedule control (scheduled), or drop it entirely (sent).
+        const removeForm = head && head.querySelector('[data-remove-form]');
+        if (removeForm) {
+            if (scheduled && unscheduleUrl) {
+                const uf = document.createElement('form');
+                uf.method = 'post';
+                uf.action = unscheduleUrl;
+                uf.className = 'plan-step-remove m-0';
+                uf.setAttribute('data-unschedule-form', '');
+                uf.innerHTML =
+                    '<input type="hidden" name="csrfmiddlewaretoken" value="' + CSRF + '">' +
+                    '<button type="button" class="plan-step-remove-btn" data-unschedule-trigger ' +
+                    'title="Move back to draft" aria-label="Move back to draft">' +
+                    '<i class="bi bi-arrow-counterclockwise"></i></button>';
+                removeForm.replaceWith(uf);
+                if (typeof unschedModal !== 'undefined' && unschedModal) {
+                    uf.querySelector('[data-unschedule-trigger]').addEventListener('click', function () {
+                        pendingUnschedForm = uf;
+                        unschedModal.show();
+                    });
+                }
+            } else {
+                removeForm.remove();
+            }
         }
     }
 
@@ -1409,7 +1437,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 warnEl.hidden = false; goBtn.disabled = false;
                 return;
             }
-            markLaunched(card, step, data.campaign_url, data.scheduled);
+            markLaunched(card, step, data.campaign_url, data.scheduled, openBtn.dataset.unscheduleUrl);
         }
 
         goBtn.addEventListener('click', function () {
