@@ -1,19 +1,13 @@
 {% comment %}
 Meta Ads provider card for the event detail Marketing → Integrations view.
 Rendered (only when connected) via registry marketing_providers(); inherits the
-event_detail context (meta_ads_expenses, meta_ads_pending_count, org, event).
+event_detail context (meta_ads_expenses, org, event).
 {% endcomment %}
 {% load tickets_extras %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Meta Ads</h5>
         <div class="d-inline-flex gap-2 align-items-center">
-            {% if is_org_admin and meta_ads_pending_count %}
-            <form method="post" action="{% url 'tickets:event_meta_ads_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="ads">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ meta_ads_pending_count }})</button>
-            </form>
-            {% endif %}
             {% if is_org_admin %}
                 {% if org.meta_ads_access_token and org.meta_ads_account_id %}
                 <button type="button"
@@ -47,7 +41,6 @@ event_detail context (meta_ads_expenses, meta_ads_pending_count, org, event).
                             <th>Attributed orders</th>
                             <th>Attributed revenue</th>
                             <th>Spend</th>
-                            <th>Status</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -66,22 +59,11 @@ event_detail context (meta_ads_expenses, meta_ads_pending_count, org, event).
                             <td data-field="effective_attributed_orders" data-editable="true" data-field-name="manual_attributed_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_orders is not None %}{{ meta_ads_expense.manual_attributed_orders }}{% elif meta_ads_expense.effective_attributed_orders %}{{ meta_ads_expense.effective_attributed_orders }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">{{ meta_ads_expense.effective_attributed_orders|default:"—" }}</td>
                             <td data-field="effective_attributed_revenue" data-editable="true" data-field-name="manual_attributed_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_revenue is not None %}{{ meta_ads_expense.manual_attributed_revenue }}{% elif meta_ads_expense.effective_attributed_revenue %}{{ meta_ads_expense.effective_attributed_revenue }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">${{ meta_ads_expense.effective_attributed_revenue|currency }}</td>
                             <td data-field="amount"><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
-                            <td data-field="status">
-                                <span class="badge {% if meta_ads_expense.needs_review %}bg-warning text-dark{% elif meta_ads_expense.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if meta_ads_expense.needs_review %}Re-review{% elif meta_ads_expense.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
-                            </td>
                             <td class="text-end">
                                 <div class="d-inline-flex gap-1 flex-wrap">
                                     {% if meta_ads_expense.external_id %}
                                     <button type="button" class="btn btn-sm btn-outline-primary" data-copy-tracked-url="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' event.public_id %}?utm_source=facebook&utm_medium=paid&utm_id={{ meta_ads_expense.external_id }}" title="Copy this campaign's tracked ticket URL to paste into the ad's destination">Copy tracked URL</button>
                                     {% endif %}
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_unconfirm' event.id meta_ads_expense.id %}" class="d-inline{% if not meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_confirm' event.id meta_ads_expense.id %}" class="d-inline{% if meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
-                                    </form>
                                     <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>

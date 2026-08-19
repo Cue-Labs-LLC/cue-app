@@ -176,7 +176,6 @@ class MarketingAnalyticsService:
             event__organization=self.organization,
             event__deleted_at__isnull=True,
             deleted_at__isnull=True,
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(send_time__gte=self.window_start)
@@ -187,7 +186,6 @@ class MarketingAnalyticsService:
             event__organization=self.organization,
             event__deleted_at__isnull=True,
             deleted_at__isnull=True,
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(send_time__gte=self.window_start)
@@ -199,7 +197,6 @@ class MarketingAnalyticsService:
             event__deleted_at__isnull=True,
             source='meta_ads',
             deleted_at__isnull=True,
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(expense_date__gte=self.window_start.date())
@@ -572,7 +569,7 @@ class MarketingAnalyticsService:
     def _top_events_by_roi(self, limit=10):
         """Per-event ROI using the isolated-Subquery pattern (CLAUDE.md).
 
-        Confirmed-only: revenue and spend roll up from confirmed campaigns/expenses.
+        Revenue and spend roll up from all linked campaigns/expenses.
         Manual overrides take precedence via Coalesce.
         """
         event_qs = Event.objects.filter(
@@ -583,7 +580,6 @@ class MarketingAnalyticsService:
         email_subq = EventEmailCampaign.objects.filter(
             event=OuterRef('pk'),
             deleted_at__isnull=True,
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             email_subq = email_subq.filter(send_time__gte=self.window_start)
@@ -598,7 +594,6 @@ class MarketingAnalyticsService:
         sms_subq = EventSMSCampaign.objects.filter(
             event=OuterRef('pk'),
             deleted_at__isnull=True,
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             sms_subq = sms_subq.filter(send_time__gte=self.window_start)
@@ -614,7 +609,6 @@ class MarketingAnalyticsService:
             event=OuterRef('pk'),
             deleted_at__isnull=True,
             source='meta_ads',
-            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             ads_subq = ads_subq.filter(expense_date__gte=self.window_start.date())

@@ -5847,10 +5847,6 @@ def event_detail(request, event_id):
         sms_campaign.send_time_display = _format_meta_ads_datetime(sms_campaign.send_time.isoformat() if sms_campaign.send_time else '')
         sms_campaign.last_synced_display = _format_meta_ads_datetime(sms_campaign.last_synced_at.isoformat() if sms_campaign.last_synced_at else '')
 
-    mailchimp_pending_count = sum(1 for c in mailchimp_campaigns if not c.is_confirmed)
-    slicktext_pending_count = sum(1 for c in slicktext_campaigns if not c.is_confirmed)
-    meta_ads_pending_count = sum(1 for e in meta_ads_expenses if not e.is_confirmed)
-
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
     ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
 
@@ -6032,9 +6028,6 @@ def event_detail(request, event_id):
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,
         'slicktext_campaigns': slicktext_campaigns,
-        'mailchimp_pending_count': mailchimp_pending_count,
-        'slicktext_pending_count': slicktext_pending_count,
-        'meta_ads_pending_count': meta_ads_pending_count,
         'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
         'expense_form': EventExpenseForm(initial={'expense_date': event.start_date}),
@@ -8335,22 +8328,6 @@ def _wants_marketing_json(request):
     return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
 
-def _status_label(obj):
-    if obj.needs_review:
-        return 'Re-review'
-    if obj.is_confirmed:
-        return 'Confirmed'
-    return 'Pending'
-
-
-def _status_badge_class(obj):
-    if obj.needs_review:
-        return 'bg-warning text-dark'
-    if obj.is_confirmed:
-        return 'bg-success'
-    return 'bg-secondary'
-
-
 def _serialize_email_row(c):
     return {
         'id': str(c.id),
@@ -8368,10 +8345,6 @@ def _serialize_email_row(c):
         'manual_unsubscribes': c.manual_unsubscribes,
         'manual_orders': c.manual_orders,
         'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
-        'is_confirmed': c.is_confirmed,
-        'needs_review': c.needs_review,
-        'status_label': _status_label(c),
-        'status_badge_class': _status_badge_class(c),
     }
 
 
@@ -8388,10 +8361,6 @@ def _serialize_sms_row(c):
         'manual_unsubscribes': c.manual_unsubscribes,
         'manual_orders': c.manual_orders,
         'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
-        'is_confirmed': c.is_confirmed,
-        'needs_review': c.needs_review,
-        'status_label': _status_label(c),
-        'status_badge_class': _status_badge_class(c),
     }
 
 
@@ -8408,10 +8377,6 @@ def _serialize_ads_row(e):
         'cue_attributed_orders': e.cue_attributed_orders,
         'cue_attributed_revenue': f'{e.cue_attributed_revenue:.2f}' if e.cue_attributed_revenue is not None else '',
         'attribution_source': e.attribution_source,
-        'is_confirmed': e.is_confirmed,
-        'needs_review': e.needs_review,
-        'status_label': _status_label(e),
-        'status_badge_class': _status_badge_class(e),
     }
 
 
@@ -8431,35 +8396,6 @@ def _serialize_ads_row(e):
 
 
 
-
-
-def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_row, label):
-    """Shared helper: bulk-confirm all unconfirmed rows of one channel on an event."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    now = django_tz.now()
-
-    pending_qs = model_cls.objects.filter(
-        event=event, deleted_at__isnull=True, confirmed_at__isnull=True,
-        **extra_filter,
-    )
-    pending_ids = list(pending_qs.values_list('pk', flat=True))
-    if pending_ids:
-        model_cls.objects.filter(pk__in=pending_ids).update(
-            confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now,
-        )
-        _invalidate_marketing_cache(org)
-
-    if _wants_marketing_json(request):
-        # Re-fetch so the serializers reflect the new confirmed_at.
-        rows = [serialize_row(obj) for obj in model_cls.objects.filter(pk__in=pending_ids)]
-        return JsonResponse({'ok': True, 'rows': rows, 'count': len(rows)})
-
-    if pending_ids:
-        messages.success(request, f'Confirmed {len(pending_ids)} {label}.')
-    else:
-        messages.info(request, f'Nothing to confirm — every {label} is already confirmed.')
-    return _marketing_tab_redirect(event)
 
 
 
