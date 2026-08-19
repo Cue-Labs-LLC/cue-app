@@ -73,7 +73,7 @@
                                             <i class="bi bi-exclamation-triangle-fill text-warning"></i>
                                         </button>
                                     {% endif %}
-                                    <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
+                                    <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none" title="{{ event.name }}"><strong>{{ event.name }}</strong></a>
                                     <div class="event-card-badges">
                                         {% if event.ticketing_type == 'direct' %}
                                             {% with eff=event.effective_status %}
