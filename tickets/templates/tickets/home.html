@@ -119,120 +119,45 @@
 </div>
 {% endif %}
 
-<div class="events-section-header">
+<div class="events-section-header d-flex justify-content-between align-items-center">
     <h2>Events</h2>
+    {% if has_events %}
+    <a href="{% url 'tickets:event_list' %}" class="btn btn-link btn-sm text-decoration-none">View all events <i class="bi bi-arrow-right"></i></a>
+    {% endif %}
 </div>
+
+{% if has_events %}
+    {% if upcoming_events %}
+    <h3 class="event-spotlight-heading"><i class="bi bi-calendar-event me-2"></i>Upcoming</h3>
+    <div class="row g-3 mb-4">
+        {% for event in upcoming_events %}
+        <div class="col-12 col-md-6">
+            {% include 'tickets/partials/_spotlight_card.html' with event=event variant='upcoming' %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if ended_events %}
+    <h3 class="event-spotlight-heading"><i class="bi bi-check2-circle me-2"></i>Recently ended</h3>
+    <div class="row g-3 mb-4">
+        {% for event in ended_events %}
+        <div class="col-12 col-md-6">
+            {% include 'tickets/partials/_spotlight_card.html' with event=event variant='ended' %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+{% else %}
 <div class="card events-card">
     <div class="card-body p-0">
-        {% if page_obj %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 mobile-card-table event-list-table">
-                <thead>
-                    <tr>
-                        <th>Event Name</th>
-                        <th>Date</th>
-                        <th class="d-none d-md-table-cell">Venue</th>
-                        <th>Revenue</th>
-                        <th>Tickets</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for event in page_obj %}
-                    <tr>
-                        <td>
-                            {% if event.ticketing_type == 'direct' and event.flyer %}
-                            <div class="event-card-flyer">
-                                <img src="{{ event.flyer.url }}" alt="{{ event.name }}" class="event-card-flyer-img">
-                            </div>
-                            {% endif %}
-                            <div class="event-card-name-area">
-                                <div class="event-card-name-line">
-                                    {% if event.id in event_ids_show_warning %}
-                                        <button type="button"
-                                                class="js-dismiss-upload-warning btn btn-link p-0 border-0 align-baseline me-1"
-                                                data-event-id="{{ event.id }}"
-                                                title="No uploads for past event — click to dismiss"
-                                                aria-label="Dismiss missing uploads warning">
-                                            <i class="bi bi-exclamation-triangle-fill text-warning"></i>
-                                        </button>
-                                    {% endif %}
-                                    <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none" title="{{ event.name }}"><strong>{{ event.name }}</strong></a>
-                                    <div class="event-card-badges">
-                                        {% if event.ticketing_type == 'direct' %}
-                                            {% with eff=event.effective_status %}
-                                            {% if eff == 'draft' %}
-                                            <span class="badge bg-warning text-dark" style="font-size: 0.7em;">Draft</span>
-                                            {% elif eff == 'live' %}
-                                            <span class="badge bg-success" style="font-size: 0.7em;">Live</span>
-                                            {% elif eff == 'cancelled' %}
-                                            <span class="badge bg-danger" style="font-size: 0.7em;">Cancelled</span>
-                                            {% else %}
-                                            <span class="badge bg-secondary" style="font-size: 0.7em;">Ended</span>
-                                            {% endif %}
-                                            {% endwith %}
-                                        {% else %}
-                                        <span class="badge bg-secondary" style="font-size: 0.7em;">CSV Import</span>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                <span class="event-card-venue">{{ event.venue.name }}</span>
-                                <!-- Mobile-only metadata strip -->
-                                <div class="event-card-meta">
-                                    <span class="event-card-meta-line">{{ event.start_date|date:"M j, Y" }}{% if event.id not in event_ids_show_placeholder %} · ${{ event.net_revenue|currency }} · {{ event.total_tickets|default:0 }} tkts{% endif %}</span>
-                                </div>
-                            </div>
-                        </td>
-                        <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
-                        <td class="d-none d-md-table-cell">{{ event.venue.name|default:"-" }}</td>
-                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.net_revenue|currency }}</span>{% endif %}</td>
-                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
-                        <td class="event-actions-cell">
-                            <div class="event-card-action-row d-flex align-items-center gap-2 flex-wrap justify-content-end">
-                                {# View → public ticket page (disabled when a CSV-imported event has none) #}
-                                {% if event.ticketing_type == 'direct' %}
-                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
-                                {% elif event.ticket_link %}
-                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
-                                {% else %}
-                                <span class="btn btn-sm btn-icon text-muted" aria-disabled="true" title="No ticket page set" style="opacity: 0.3; pointer-events: none; border: none;"><i class="bi bi-link-45deg fs-6"></i></span>
-                                {% endif %}
-                                <button type="button" class="btn btn-sm btn-icon js-duplicate-event" title="Duplicate event"
-                                    data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
-                                    data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
-                                    data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
-                                    data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
-                                    data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files fs-6"></i></button>
-                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-icon" title="Edit event"><i class="bi bi-pencil fs-6"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="d-flex justify-content-center py-3">
-            <nav>
-                <ul class="pagination mb-0">
-                    {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
-                    {% endif %}
-                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
-                    {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
-                    {% endif %}
-                </ul>
-            </nav>
-        </div>
-        {% else %}
         <div class="empty-state">
             <i class="bi bi-calendar-event d-block"></i>
             <p>No events yet. Create your first event to get started.</p>
         </div>
-        {% endif %}
     </div>
 </div>
+{% endif %}
 </div>
 
 {% include 'tickets/partials/_duplicate_event_modal.html' %}

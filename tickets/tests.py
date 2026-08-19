@@ -18090,6 +18090,70 @@ class OnboardingChecklistTests(TestCase):
         self.assertIn('customer_email', body)
 
 
+class DashboardSpotlightTests(TestCase):
+    """Dashboard spotlights up to 2 upcoming + 2 recently-ended events instead
+    of a full paginated table."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Spotlight Org', slug='spotlight-org')
+        self.user = User.objects.create_user(
+            username='spot', email='spot@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='spot@test.com', password='pass12345')
+        self.venue = Venue.objects.create(organization=self.org, name='The Venue', city='SF')
+        self.today = date.today()
+
+    def _event(self, name, start_offset_days):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=self.venue,
+            start_date=self.today + timedelta(days=start_offset_days),
+        )
+
+    def _get(self):
+        return self.client.get(reverse('tickets:home'))
+
+    def test_splits_upcoming_and_ended(self):
+        past = self._event('Past Show', -10)
+        future = self._event('Future Show', 10)
+        resp = self._get()
+        upcoming_ids = {e.id for e in resp.context['upcoming_events']}
+        ended_ids = {e.id for e in resp.context['ended_events']}
+        self.assertIn(future.id, upcoming_ids)
+        self.assertIn(past.id, ended_ids)
+        self.assertNotIn(past.id, upcoming_ids)
+        self.assertNotIn(future.id, ended_ids)
+
+    def test_caps_at_two_each_soonest_and_most_recent(self):
+        # Three upcoming, three ended — only the 2 nearest "now" on each side show.
+        self._event('Up +30', 30)
+        near_up_a = self._event('Up +2', 2)
+        near_up_b = self._event('Up +5', 5)
+        self._event('End -30', -30)
+        near_end_a = self._event('End -2', -2)
+        near_end_b = self._event('End -5', -5)
+        resp = self._get()
+        upcoming = list(resp.context['upcoming_events'])
+        ended = list(resp.context['ended_events'])
+        self.assertEqual([e.id for e in upcoming], [near_up_a.id, near_up_b.id])
+        self.assertEqual([e.id for e in ended], [near_end_a.id, near_end_b.id])
+
+    def test_links_to_full_event_list(self):
+        self._event('Some Show', 5)
+        html = self._get().content.decode()
+        self.assertIn(reverse('tickets:event_list'), html)
+        self.assertIn('View all events', html)
+
+    def test_no_events_shows_empty_state(self):
+        resp = self._get()
+        self.assertFalse(resp.context['has_events'])
+        self.assertContains(resp, 'No events yet')
+
+
 class VenueCreateInlineTests(TestCase):
     """Tests for the inline venue creation AJAX endpoint."""
 

@@ -2017,6 +2017,34 @@ def sample_import_csv(request):
     return response
 
 
+def _decorate_spotlight(ev, today):
+    """Attach display attributes used by the dashboard spotlight cards.
+
+    Reuses the denormalized stats from _annotate_events (total_revenue,
+    total_tickets, total_expenses, platform_fees_cents). Net revenue subtracts
+    Stripe platform fees for direct events only (external events are gross).
+    """
+    if ev.ticketing_type == 'direct':
+        fees = Decimal(ev.platform_fees_cents) / Decimal('100')
+    else:
+        fees = Decimal('0.00')
+    # computed_total_revenue = ticket_revenue + additional_income (signal-maintained)
+    ev.net_revenue = ev.total_revenue - fees
+    ev.net_profit = ev.net_revenue - (ev.total_expenses or Decimal('0.00'))
+    if ev.net_revenue > 0:
+        ev.margin_pct = int(round((ev.net_profit / ev.net_revenue) * 100))
+    else:
+        ev.margin_pct = None
+    # Tickets sold vs capacity (progress bar only rendered when capacity is set)
+    tickets_sold = ev.total_tickets or 0
+    if ev.capacity:
+        ev.pct_sold = min(100, int(round((tickets_sold / ev.capacity) * 100)))
+    else:
+        ev.pct_sold = None
+    ev.days_until = (ev.start_date - today).days
+    return ev
+
+
 @login_required
 @require_org
 @require_organizer
@@ -2024,49 +2052,48 @@ def home(request):
     """Home/dashboard page with overview statistics."""
     org = get_organization(request)
 
-    # Paginate lightweight queryset first, then annotate only the page
-    recent_events = (
-        Event.objects.filter(organization=org)
-        .select_related('venue')
-        .order_by('-start_date')
+    # Spotlight a handful of events instead of the full list (which lives on the
+    # dedicated /events/ page). Pull two small annotated candidate pools around
+    # "now", then classify precisely with Event.end_datetime() so multi-day
+    # still-running events and same-day matinees land on the right side.
+    today = date.today()
+    now = django_tz.now()
+    upcoming_candidates = list(
+        _annotate_events(
+            Event.objects.filter(organization=org, start_date__gte=today)
+        ).select_related('venue').order_by('start_date', 'start_time')[:6]
     )
-    page_number = request.GET.get('page', 1)
-    paginator = Paginator(recent_events, 10)
-    page_obj = paginator.get_page(page_number)
+    ended_candidates = list(
+        _annotate_events(
+            Event.objects.filter(organization=org, start_date__lt=today)
+        ).select_related('venue').order_by('-start_date', '-start_time')[:6]
+    )
+    merged = upcoming_candidates + ended_candidates
+    upcoming_events = sorted(
+        (e for e in merged if e.end_datetime() >= now),
+        key=lambda e: (e.start_date, e.start_time or time.min),
+    )[:2]
+    ended_events = sorted(
+        (e for e in merged if e.end_datetime() < now),
+        key=lambda e: e.end_datetime(),
+        reverse=True,
+    )[:2]
 
-    page_pks = [e.pk for e in page_obj.object_list]
-    annotated_map = {
-        e.pk: e
-        for e in _annotate_events(
-            Event.objects.filter(pk__in=page_pks)
-        ).select_related('venue')
+    for ev in upcoming_events:
+        _decorate_spotlight(ev, today)
+    for ev in ended_events:
+        _decorate_spotlight(ev, today)
+
+    has_events = bool(upcoming_events or ended_events) or Event.objects.filter(
+        organization=org
+    ).exists()
+
+    # Show a nudge on a past external event that still has no uploaded report
+    event_ids_show_warning = {
+        ev.id
+        for ev in ended_events
+        if not ev.has_uploads and ev.ticketing_type == 'external'
     }
-    page_obj.object_list = [annotated_map[pk] for pk in page_pks]
-
-    # Compute net_revenue (after fees for direct events, gross for external)
-    for ev in page_obj.object_list:
-        if ev.ticketing_type == 'direct':
-            fees = Decimal(ev.platform_fees_cents) / Decimal('100')
-        else:
-            fees = Decimal('0.00')
-        # computed_total_revenue = ticket_revenue + additional_income (signal-maintained)
-        ev.net_revenue = ev.total_revenue - fees
-
-    # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
-    now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
-    event_ids_show_warning = set()
-    event_ids_show_placeholder = set()
-    for ev in page_obj:
-        if ev.has_uploads:
-            continue
-        end_date = ev.end_date or ev.start_date
-        end_time = ev.end_time or ev.start_time or time(23, 59, 59)
-        event_end = datetime.combine(end_date, end_time)
-        if now_local > event_end:
-            if ev.ticketing_type == 'external':
-                event_ids_show_warning.add(ev.id)
-        elif ev.ticketing_type == 'external':
-            event_ids_show_placeholder.add(ev.id)
 
     # Summary statistics (org-scoped via Event/Customer/UploadedFile)
     total_customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local').count()
@@ -2093,10 +2120,11 @@ def home(request):
     onboarding = _onboarding_state(org, has_customers)
 
     context = {
-        'page_obj': page_obj,
+        'upcoming_events': upcoming_events,
+        'ended_events': ended_events,
+        'has_events': has_events,
         'event_ids_show_warning': event_ids_show_warning,
-        'event_ids_show_placeholder': event_ids_show_placeholder,
-        'today': date.today(),
+        'today': today,
         'total_customers': total_customers,
         'total_orders': total_orders,
         'total_revenue': total_revenue,

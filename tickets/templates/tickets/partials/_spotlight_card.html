@@ -1,0 +1,116 @@
+{% load tickets_extras %}
+{% comment %}
+Dashboard spotlight card. Expects `event` (decorated by _decorate_spotlight),
+`variant` ('upcoming' or 'ended'), and `event_ids_show_warning` in context.
+{% endcomment %}
+<div class="card event-spotlight-card h-100">
+    <div class="card-body">
+        <div class="event-spotlight-head">
+            {% if event.ticketing_type == 'direct' and event.flyer %}
+            <div class="event-spotlight-flyer">
+                <img src="{{ event.flyer.url }}" alt="{{ event.name }}">
+            </div>
+            {% endif %}
+            <div class="event-spotlight-title">
+                <div class="event-spotlight-name-line">
+                    {% if event.id in event_ids_show_warning %}
+                    <button type="button"
+                            class="js-dismiss-upload-warning btn btn-link p-0 border-0 align-baseline me-1"
+                            data-event-id="{{ event.id }}"
+                            title="No uploads for past event — click to dismiss"
+                            aria-label="Dismiss missing uploads warning">
+                        <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+                    </button>
+                    {% endif %}
+                    <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none" title="{{ event.name }}"><strong>{{ event.name }}</strong></a>
+                    <div class="event-spotlight-badges">
+                        {% if event.ticketing_type == 'direct' %}
+                            {% with eff=event.effective_status %}
+                            {% if eff == 'draft' %}
+                            <span class="badge bg-warning text-dark">Draft</span>
+                            {% elif eff == 'live' %}
+                            <span class="badge bg-success">Live</span>
+                            {% elif eff == 'cancelled' %}
+                            <span class="badge bg-danger">Cancelled</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Ended</span>
+                            {% endif %}
+                            {% endwith %}
+                        {% else %}
+                        <span class="badge bg-secondary">CSV Import</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="event-spotlight-sub">
+                    {% if event.venue.name %}<span>{{ event.venue.name }}</span> · {% endif %}<span>{{ event.start_date|date:"M j, Y" }}{% if event.start_time %} · {{ event.start_time|time:"g:i A" }}{% endif %}</span>
+                </div>
+            </div>
+        </div>
+
+        {% if variant == 'upcoming' %}
+        <div class="event-spotlight-countdown">
+            {% if event.days_until > 1 %}<i class="bi bi-clock me-1"></i>In {{ event.days_until }} days
+            {% elif event.days_until == 1 %}<i class="bi bi-clock me-1"></i>Tomorrow
+            {% elif event.days_until == 0 %}<i class="bi bi-broadcast me-1"></i>Today
+            {% else %}<i class="bi bi-broadcast me-1"></i>Live now{% endif %}
+        </div>
+        {% if event.pct_sold is not None %}
+        <div class="event-spotlight-progress">
+            <div class="d-flex justify-content-between small mb-1">
+                <span class="text-body-secondary">Tickets sold</span>
+                <span class="fw-semibold">{{ event.total_tickets|default:0 }} / {{ event.capacity }}</span>
+            </div>
+            <div class="progress" role="progressbar" aria-label="Tickets sold"
+                 aria-valuenow="{{ event.pct_sold }}" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar bg-success" style="width: {{ event.pct_sold }}%;"></div>
+            </div>
+        </div>
+        {% endif %}
+        <div class="event-spotlight-metrics">
+            {% if event.pct_sold is None %}
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">{{ event.total_tickets|default:0 }}</div>
+                <div class="event-spotlight-metric-label">Tickets sold</div>
+            </div>
+            {% endif %}
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">${{ event.net_revenue|currency }}</div>
+                <div class="event-spotlight-metric-label">Revenue so far</div>
+            </div>
+        </div>
+        {% else %}
+        <div class="event-spotlight-metrics">
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">${{ event.net_revenue|currency }}</div>
+                <div class="event-spotlight-metric-label">Revenue</div>
+            </div>
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">{{ event.total_tickets|default:0 }}</div>
+                <div class="event-spotlight-metric-label">Tickets</div>
+            </div>
+            {% if event.margin_pct is not None %}
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">${{ event.net_profit|currency }}</div>
+                <div class="event-spotlight-metric-label">Profit · {{ event.margin_pct }}%</div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="card-footer bg-transparent event-spotlight-actions">
+        {% if event.ticketing_type == 'direct' %}
+        <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
+        {% elif event.ticket_link %}
+        <a href="{{ event.ticket_link }}" class="btn btn-sm btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-link-45deg fs-6"></i></a>
+        {% else %}
+        <span class="btn btn-sm btn-icon text-muted" aria-disabled="true" title="No ticket page set" style="opacity: 0.3; pointer-events: none; border: none;"><i class="bi bi-link-45deg fs-6"></i></span>
+        {% endif %}
+        <button type="button" class="btn btn-sm btn-icon js-duplicate-event" title="Duplicate event"
+            data-event-id="{{ event.id }}" data-event-name="{{ event.name }}"
+            data-venue-name="{{ event.venue.name }}" data-location="{{ event.venue.get_display_address }}"
+            data-start-date="{{ event.start_date|date:'Y-m-d' }}" data-start-time="{{ event.start_time|time:'H:i' }}"
+            data-end-date="{% if event.end_date %}{{ event.end_date|date:'Y-m-d' }}{% endif %}" data-end-time="{{ event.end_time|time:'H:i' }}"
+            data-flyer="{% if event.flyer %}{{ event.flyer.url }}{% endif %}"><i class="bi bi-files fs-6"></i></button>
+        <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-icon" title="Edit event"><i class="bi bi-pencil fs-6"></i></a>
+    </div>
+</div>
