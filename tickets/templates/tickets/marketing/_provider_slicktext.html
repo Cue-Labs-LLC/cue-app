@@ -1,19 +1,13 @@
 {% comment %}
 SlickText provider card for the event detail Marketing → Integrations view.
 Rendered (only when connected) via registry marketing_providers(); inherits the
-event_detail context (slicktext_connection, slicktext_campaigns, slicktext_pending_count).
+event_detail context (slicktext_connection, slicktext_campaigns).
 {% endcomment %}
 {% load tickets_extras %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">SlickText</h5>
         <div class="d-inline-flex gap-2 align-items-center">
-            {% if is_org_admin and slicktext_pending_count %}
-            <form method="post" action="{% url 'tickets:event_slicktext_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="sms">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ slicktext_pending_count }})</button>
-            </form>
-            {% endif %}
             {% if is_org_admin %}
                 {% if slicktext_connection %}
                 <button type="button"
@@ -50,7 +44,6 @@ event_detail context (slicktext_connection, slicktext_campaigns, slicktext_pendi
                             <th>Unsubscribes</th>
                             <th>Orders</th>
                             <th>Revenue</th>
-                            <th>Status</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -73,19 +66,8 @@ event_detail context (slicktext_connection, slicktext_campaigns, slicktext_pendi
                             <td data-field="effective_unsubscribes" data-editable="true" data-field-name="manual_unsubscribes" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_unsubscribes is not None %}{{ sms_campaign.manual_unsubscribes }}{% else %}{{ sms_campaign.unsubscribes }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_unsubscribes }}</td>
                             <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_orders is not None %}{{ sms_campaign.manual_orders }}{% else %}{{ sms_campaign.effective_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_orders }}</td>
                             <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if sms_campaign.manual_revenue is not None %}{{ sms_campaign.manual_revenue }}{% else %}{{ sms_campaign.effective_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">${{ sms_campaign.effective_revenue|currency }}</td>
-                            <td data-field="status">
-                                <span class="badge {% if sms_campaign.needs_review %}bg-warning text-dark{% elif sms_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if sms_campaign.needs_review %}Re-review{% elif sms_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
-                            </td>
                             <td class="text-end">
                                 <div class="d-inline-flex gap-1 flex-wrap">
-                                    <form method="post" action="{% url 'tickets:event_slicktext_unconfirm' event.id sms_campaign.id %}" class="d-inline{% if not sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_slicktext_confirm' event.id sms_campaign.id %}" class="d-inline{% if sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
-                                    </form>
                                     <form method="post" action="{% url 'tickets:event_slicktext_refresh' event.id sms_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>

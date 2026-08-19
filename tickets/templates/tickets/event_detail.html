@@ -5124,13 +5124,6 @@ document.addEventListener('click', function(evt) {
         return prefix ? document.getElementById(prefix + rowId) : null;
     }
 
-    function renderBadge(row) {
-        var cls = 'bg-secondary';
-        if (row.needs_review) cls = 'bg-warning text-dark';
-        else if (row.is_confirmed) cls = 'bg-success';
-        return '<span class="badge ' + cls + '">' + row.status_label + '</span>';
-    }
-
     var CURRENCY_FIELDS = {
         effective_revenue: true,
         effective_attributed_revenue: true,
@@ -5147,7 +5140,7 @@ document.addEventListener('click', function(evt) {
         // Update every [data-field] cell whose key is in the payload.
         tr.querySelectorAll('[data-field]').forEach(function (cell) {
             var key = cell.getAttribute('data-field');
-            if (key === 'status' || !(key in row)) return;
+            if (!(key in row)) return;
             var value = row[key];
             if (CURRENCY_FIELDS[key]) {
                 // Preserve any inner <strong> wrapper (used on the Spend cell).
@@ -5160,14 +5153,6 @@ document.addEventListener('click', function(evt) {
                 cell.textContent = value;
             }
         });
-        // Status badge.
-        var statusCell = tr.querySelector('[data-field="status"]');
-        if (statusCell) statusCell.innerHTML = renderBadge(row);
-        // Toggle confirm/unconfirm form visibility.
-        var confirmForm = document.querySelector('form[data-marketing-form="confirm"][data-row-id="' + rowId + '"]');
-        var unconfirmForm = document.querySelector('form[data-marketing-form="unconfirm"][data-row-id="' + rowId + '"]');
-        if (confirmForm) confirmForm.classList.toggle('d-none', !!row.is_confirmed);
-        if (unconfirmForm) unconfirmForm.classList.toggle('d-none', !row.is_confirmed);
         // Update manual input prefills so reopening the editor shows what was saved.
         var editForm = document.querySelector('form[data-marketing-form="metrics-edit"][data-row-id="' + rowId + '"]');
         if (editForm) {
@@ -5362,18 +5347,12 @@ document.addEventListener('click', function(evt) {
             var prompt = form.getAttribute('data-confirm-text') || 'Remove this row?';
             if (!window.confirm(prompt)) return;
         }
-        // Bulk confirm-all: light confirmation prompt with the count from the button label.
-        if (kind === 'confirm-all') {
-            var btn = form.querySelector('button[type="submit"]');
-            var label = btn ? btn.textContent.trim() : 'Confirm all';
-            if (!window.confirm('Confirm all pending records in this section? (' + label + ')')) return;
-        }
 
         var submitBtn = form.querySelector('button[type="submit"]');
         var originalLabel = submitBtn ? submitBtn.innerHTML : null;
         if (submitBtn) {
             submitBtn.disabled = true;
-            if (kind === 'refresh' || kind === 'confirm-all') {
+            if (kind === 'refresh') {
                 submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
             }
         }
@@ -5402,14 +5381,6 @@ document.addEventListener('click', function(evt) {
             }
             if (kind === 'remove') {
                 removeRow(channel, rowId);
-                return;
-            }
-            if (kind === 'confirm-all') {
-                (out.data.rows || []).forEach(function (row) {
-                    applyRowUpdate(channel, row.id, row);
-                });
-                // No more pending records in this section — hide the button entirely.
-                form.remove();
                 return;
             }
             applyRowUpdate(channel, rowId, out.data.row);

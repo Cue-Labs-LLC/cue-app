@@ -31,7 +31,6 @@ from django.conf import settings
 from datetime import timedelta
 from urllib.parse import urlencode
 from ..views import (
-    _confirm_all_channel,
     _event_stats_cache_key,
     _format_meta_ads_datetime,
     _get_active_meta_ads_expense_or_404,
@@ -510,53 +509,3 @@ def event_meta_ads_metrics_edit(request, event_id, expense_id):
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
     messages.success(request, 'Updated ad attribution.')
     return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = django_tz.now()
-    expense.confirmed_by = request.user
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Confirmed ad spend.')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_unconfirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = None
-    expense.confirmed_by = None
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Removed ad spend from reports.')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm_all(request, event_id):
-    """Confirm every unconfirmed Meta Ads expense on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventExpense,
-        extra_filter={'source': 'meta_ads'},
-        serialize_row=_serialize_ads_row,
-        label='Meta Ads expense(s)',
-    )

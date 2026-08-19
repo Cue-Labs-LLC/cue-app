@@ -9290,8 +9290,8 @@ class MarketingAnalyticsServiceTests(TestCase):
         # attributed = email_rev (600) + sms_rev (400) + ads_rev (1500 manual) = 2500
         self.assertEqual(row['attributed_revenue'], Decimal('2500.00'))
 
-    def test_unconfirmed_campaigns_excluded_from_all_metrics(self):
-        """Unconfirmed campaigns must not flow into channel totals or top tables."""
+    def test_all_linked_campaigns_count_without_confirmation(self):
+        """Confirmation no longer gates analytics: every linked campaign counts."""
         from .models import EventEmailCampaign, EventSMSCampaign
         from .services.marketing import MarketingAnalyticsService
 
@@ -9308,19 +9308,19 @@ class MarketingAnalyticsServiceTests(TestCase):
             confirmed_at=now,
         )
         EventEmailCampaign.objects.create(
-            event=self.event, source='mailchimp', external_id='mc-pending',
-            campaign_title='Pending', send_time=now - timedelta(days=3),
+            event=self.event, source='mailchimp', external_id='mc-unconfirmed',
+            campaign_title='Unconfirmed', send_time=now - timedelta(days=3),
             emails_sent=2000, unique_opens=400, unique_clicks=100,
-            ecommerce_orders=12, ecommerce_revenue=Decimal('9999.00'),
+            ecommerce_orders=12, ecommerce_revenue=Decimal('750.00'),
         )
 
         result = MarketingAnalyticsService(self.org, window_days=90).calculate()
-        self.assertEqual(result['channels']['email']['revenue'], Decimal('250.00'))
-        self.assertEqual(result['channels']['email']['campaigns'], 1)
-        self.assertEqual(len(result['top_email_campaigns']), 1)
-        self.assertEqual(result['top_email_campaigns'][0]['name'], 'Confirmed')
+        # Both campaigns count regardless of confirmed_at.
+        self.assertEqual(result['channels']['email']['revenue'], Decimal('1000.00'))
+        self.assertEqual(result['channels']['email']['campaigns'], 2)
+        self.assertEqual(len(result['top_email_campaigns']), 2)
 
-    def test_unconfirmed_meta_expense_excluded(self):
+    def test_meta_expense_counts_without_confirmation(self):
         from .services.marketing import MarketingAnalyticsService
 
         EventExpense.objects.filter(event__organization=self.org).delete()
@@ -9332,14 +9332,15 @@ class MarketingAnalyticsServiceTests(TestCase):
             confirmed_at=now,
         )
         EventExpense.objects.create(
-            event=self.event, category='marketing', description='Pending ad',
+            event=self.event, category='marketing', description='Unconfirmed ad',
             amount=Decimal('500.00'), expense_date=date.today(), source='meta_ads',
-            external_id='ad-p', manual_attributed_revenue=Decimal('9999.00'),
+            external_id='ad-u', manual_attributed_revenue=Decimal('700.00'),
         )
 
         result = MarketingAnalyticsService(self.org, window_days=90).calculate()
-        self.assertEqual(result['channels']['ads']['spend'], Decimal('100.00'))
-        self.assertEqual(result['channels']['ads']['revenue'], Decimal('300.00'))
+        # Both expenses count regardless of confirmed_at.
+        self.assertEqual(result['channels']['ads']['spend'], Decimal('600.00'))
+        self.assertEqual(result['channels']['ads']['revenue'], Decimal('1000.00'))
 
     def test_ads_api_attribution_counts_when_no_manual_override(self):
         """Confirmed ads with only Meta-pulled attribution flow into totals; manual wins when set."""
@@ -9609,7 +9610,7 @@ class CampaignReviewConfirmTests(TestCase):
 
 
 class CampaignConfirmViewTests(TestCase):
-    """View-level tests for the review/edit/confirm/unconfirm endpoints."""
+    """View-level tests for the linked-campaign metrics-edit endpoints."""
 
     def setUp(self):
         from .models import EventEmailCampaign, EventSMSCampaign
@@ -9661,29 +9662,6 @@ class CampaignConfirmViewTests(TestCase):
         self.email.refresh_from_db()
         self.assertIsNone(self.email.manual_revenue)
 
-    def test_confirm_sets_confirmed_at_and_by(self):
-        url = reverse('tickets:event_mailchimp_confirm', args=[self.event.id, self.email.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        self.assertIsNotNone(self.email.confirmed_at)
-        self.assertEqual(self.email.confirmed_by, self.admin)
-
-    def test_unconfirm_clears_confirmed_at(self):
-        self.email.confirmed_at = timezone.now()
-        self.email.confirmed_by = self.admin
-        self.email.save()
-        url = reverse('tickets:event_mailchimp_unconfirm', args=[self.event.id, self.email.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        self.assertIsNone(self.email.confirmed_at)
-        self.assertIsNone(self.email.confirmed_by)
-
-    def test_confirm_meta_ads_expense(self):
-        url = reverse('tickets:event_meta_ads_confirm', args=[self.event.id, self.ad.id])
-        self.client.post(url)
-        self.ad.refresh_from_db()
-        self.assertIsNotNone(self.ad.confirmed_at)
-
     def test_meta_ads_metrics_edit_sets_attributed(self):
         url = reverse('tickets:event_meta_ads_metrics_edit', args=[self.event.id, self.ad.id])
         resp = self.client.post(url, {'manual_attributed_orders': '8', 'manual_attributed_revenue': '950'})
@@ -9722,57 +9700,6 @@ class CampaignConfirmViewTests(TestCase):
         self.assertEqual(self.ad.effective_attributed_orders, 0)
         self.assertEqual(self.ad.effective_attributed_revenue, Decimal('0.00'))
 
-    def test_mailchimp_confirm_all_confirms_only_emails(self):
-        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        self.sms.refresh_from_db()
-        self.ad.refresh_from_db()
-        self.assertIsNotNone(self.email.confirmed_at)
-        self.assertIsNone(self.sms.confirmed_at)
-        self.assertIsNone(self.ad.confirmed_at)
-
-    def test_slicktext_confirm_all_confirms_only_sms(self):
-        url = reverse('tickets:event_slicktext_confirm_all', args=[self.event.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        self.sms.refresh_from_db()
-        self.ad.refresh_from_db()
-        self.assertIsNone(self.email.confirmed_at)
-        self.assertIsNotNone(self.sms.confirmed_at)
-        self.assertIsNone(self.ad.confirmed_at)
-
-    def test_meta_ads_confirm_all_confirms_only_ads(self):
-        url = reverse('tickets:event_meta_ads_confirm_all', args=[self.event.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        self.sms.refresh_from_db()
-        self.ad.refresh_from_db()
-        self.assertIsNone(self.email.confirmed_at)
-        self.assertIsNone(self.sms.confirmed_at)
-        self.assertIsNotNone(self.ad.confirmed_at)
-
-    def test_mailchimp_confirm_all_skips_already_confirmed(self):
-        original_time = timezone.now() - timedelta(days=1)
-        self.email.confirmed_at = original_time
-        self.email.save()
-        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
-        self.client.post(url)
-        self.email.refresh_from_db()
-        # Already-confirmed row keeps its original timestamp.
-        self.assertEqual(self.email.confirmed_at, original_time)
-
-    def test_ajax_mailchimp_confirm_all_returns_rows_json(self):
-        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
-        resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertTrue(body['ok'])
-        self.assertEqual(body['count'], 1)
-        self.assertEqual(len(body['rows']), 1)
-        self.assertTrue(body['rows'][0]['is_confirmed'])
-        self.assertEqual(body['rows'][0]['status_label'], 'Confirmed')
-
     def test_ajax_metrics_edit_returns_json_row(self):
         url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
         resp = self.client.post(
@@ -9786,17 +9713,6 @@ class CampaignConfirmViewTests(TestCase):
         row = body['row']
         self.assertEqual(row['effective_clicks'], 42)
         self.assertEqual(row['effective_revenue'], '187.50')
-        self.assertEqual(row['is_confirmed'], False)
-        self.assertEqual(row['status_label'], 'Pending')
-
-    def test_ajax_confirm_returns_json_with_status(self):
-        url = reverse('tickets:event_mailchimp_confirm', args=[self.event.id, self.email.id])
-        resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertTrue(body['ok'])
-        self.assertTrue(body['row']['is_confirmed'])
-        self.assertEqual(body['row']['status_label'], 'Confirmed')
 
     def test_manual_audience_and_unsubscribes_persist_for_sms(self):
         url = reverse('tickets:event_slicktext_metrics_edit', args=[self.event.id, self.sms.id])

@@ -31,7 +31,6 @@ from django.urls import reverse
 import secrets
 from django.conf import settings
 from ..views import (
-    _confirm_all_channel,
     _format_meta_ads_datetime,
     _get_active_mailchimp_campaign_or_404,
     _get_mailchimp_connection,
@@ -554,53 +553,3 @@ def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
         return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
     messages.success(request, f'Updated metrics for "{email_campaign.campaign_title}".')
     return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = django_tz.now()
-    email_campaign.confirmed_by = request.user
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Confirmed "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_unconfirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = None
-    email_campaign.confirmed_by = None
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Removed "{email_campaign.campaign_title}" from reports.')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm_all(request, event_id):
-    """Confirm every unconfirmed Mailchimp campaign on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventEmailCampaign,
-        extra_filter={'source': 'mailchimp'},
-        serialize_row=_serialize_email_row,
-        label='Mailchimp campaign(s)',
-    )

@@ -24,7 +24,6 @@ from ..utils import require_admin
 from django.views.decorators.http import require_http_methods
 from ..utils import require_org
 from ..views import (
-    _confirm_all_channel,
     _format_meta_ads_datetime,
     _get_active_slicktext_campaign_or_404,
     _get_slicktext_connection,
@@ -152,56 +151,6 @@ def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
         return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
     messages.success(request, f'Updated metrics for "{sms_campaign.name}".')
     return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = django_tz.now()
-    sms_campaign.confirmed_by = request.user
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Confirmed "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_unconfirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = None
-    sms_campaign.confirmed_by = None
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Removed "{sms_campaign.name}" from reports.')
-    return _marketing_tab_redirect(event)
-
-
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm_all(request, event_id):
-    """Confirm every unconfirmed SlickText broadcast on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventSMSCampaign,
-        extra_filter={'source': 'slicktext'},
-        serialize_row=_serialize_sms_row,
-        label='SlickText broadcast(s)',
-    )
 
 
 @login_required
