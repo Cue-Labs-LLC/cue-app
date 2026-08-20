@@ -2017,6 +2017,31 @@ def sample_import_csv(request):
     return response
 
 
+def _direct_sellable_capacity(event):
+    """Real sellable inventory for a direct event.
+
+    A ticket type's cap is the sum of its tier allotments when it has tiers,
+    otherwise its quantity_limit. Returns (total, is_unlimited); is_unlimited is
+    True when any active type is uncapped (null quantity_limit and no tiers).
+    Only counts is_active types (what buyers can actually purchase).
+    """
+    rows = (
+        event.saleable_ticket_types.filter(is_active=True)
+        .annotate(tier_allotment=Sum('tiers__allotment'))
+        .values_list('quantity_limit', 'tier_allotment')
+    )
+    total = 0
+    is_unlimited = False
+    for quantity_limit, tier_allotment in rows:
+        if tier_allotment is not None:
+            total += tier_allotment
+        elif quantity_limit is not None:
+            total += quantity_limit
+        else:
+            is_unlimited = True
+    return total, is_unlimited
+
+
 def _decorate_spotlight(ev, today):
     """Attach display attributes used by the dashboard spotlight cards.
 
@@ -2035,11 +2060,18 @@ def _decorate_spotlight(ev, today):
         ev.margin_pct = int(round((ev.net_profit / ev.net_revenue) * 100))
     else:
         ev.margin_pct = None
-    # Tickets sold vs capacity (progress bar only rendered when capacity is set)
+    # Tickets sold vs real sellable capacity.
     tickets_sold = ev.total_tickets or 0
-    if ev.capacity:
-        ev.pct_sold = min(100, int(round((tickets_sold / ev.capacity) * 100)))
+    if ev.ticketing_type == 'direct':
+        capacity_total, is_unlimited = _direct_sellable_capacity(ev)
+        ev.capacity_total = capacity_total
+        if is_unlimited or not capacity_total:
+            ev.pct_sold = None  # unlimited or no configured inventory -> plain count
+        else:
+            ev.pct_sold = min(100, int(round((tickets_sold / capacity_total) * 100)))
     else:
+        # External / CSV events have no real inventory -> plain sold count, no bar (D2)
+        ev.capacity_total = None
         ev.pct_sold = None
     ev.days_until = (ev.start_date - today).days
     return ev

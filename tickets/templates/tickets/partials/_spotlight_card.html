@@ -58,7 +58,7 @@ Dashboard spotlight card. Expects `event` (decorated by _decorate_spotlight),
         <div class="event-spotlight-progress">
             <div class="d-flex justify-content-between small mb-1">
                 <span class="text-body-secondary">Tickets sold</span>
-                <span class="fw-semibold">{{ event.total_tickets|default:0 }} / {{ event.capacity }}</span>
+                <span class="fw-semibold">{{ event.total_tickets|default:0 }} / {{ event.capacity_total }}</span>
             </div>
             <div class="progress" role="progressbar" aria-label="Tickets sold"
                  aria-valuenow="{{ event.pct_sold }}" aria-valuemin="0" aria-valuemax="100">
