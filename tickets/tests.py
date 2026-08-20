@@ -11623,6 +11623,10 @@ class PhoneAuthAPITests(TestCase):
         self.assertIn(res.status_code, (401, 403))
 
     # ---- App Store reviewer bypass (APP_REVIEW_TEST_PHONES) ------------
+    # The bypass lives inside tickets.sms.start_phone_verification /
+    # check_phone_verification so BOTH the web and mobile login flows share it.
+    # A whitelisted phone short-circuits before the Twilio client is ever
+    # constructed, so these assert the Twilio client is never instantiated.
 
     REVIEW_PHONE = '+15555550150'
     REVIEW_OTP = '424242'
@@ -11631,21 +11635,21 @@ class PhoneAuthAPITests(TestCase):
     def test_phone_start_bypasses_twilio_for_whitelisted_phone(self):
         from django.test import override_settings
         with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
-             patch('tickets.sms.start_phone_verification') as mock_start:
+             patch('twilio.rest.Client') as mock_client:
             res = self._post(self.START_URL, {'phone': self.REVIEW_PHONE})
         self.assertEqual(res.status_code, 200, res.content)
-        mock_start.assert_not_called()
+        mock_client.assert_not_called()
 
     def test_phone_verify_bypasses_twilio_for_whitelisted_phone_correct_code(self):
         from django.test import override_settings
         with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
-             patch('tickets.sms.check_phone_verification') as mock_check:
+             patch('twilio.rest.Client') as mock_client:
             res = self._post(
                 self.VERIFY_URL,
                 {'phone': self.REVIEW_PHONE, 'code': self.REVIEW_OTP},
             )
         self.assertEqual(res.status_code, 200, res.content)
-        mock_check.assert_not_called()
+        mock_client.assert_not_called()
         body = res.json()
         self.assertTrue(body['token'])
         self.assertTrue(body['profile_incomplete'])
@@ -11655,13 +11659,13 @@ class PhoneAuthAPITests(TestCase):
     def test_phone_verify_bypass_rejects_wrong_code(self):
         from django.test import override_settings
         with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
-             patch('tickets.sms.check_phone_verification') as mock_check:
+             patch('twilio.rest.Client') as mock_client:
             res = self._post(
                 self.VERIFY_URL,
                 {'phone': self.REVIEW_PHONE, 'code': '999999'},
             )
         self.assertEqual(res.status_code, 400)
-        mock_check.assert_not_called()
+        mock_client.assert_not_called()
         self.assertFalse(UserProfile.objects.filter(phone_number=self.REVIEW_PHONE).exists())
 
     @patch('tickets.sms.check_phone_verification', return_value=True)

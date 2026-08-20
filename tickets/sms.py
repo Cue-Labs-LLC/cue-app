@@ -410,6 +410,11 @@ def start_phone_verification(phone: str) -> bool:
     if getattr(settings, 'E2E_TEST_MODE', False):
         logger.info("E2E test mode: accepting phone verification start for %s", phone)
         return True
+    # App Store reviewer bypass — fixed phones skip Twilio Verify entirely so
+    # both the web and mobile login flows accept the mapped fixed OTP code.
+    if phone in getattr(settings, 'APP_REVIEW_TEST_PHONES', {}):
+        logger.info("App review test phone: skipping Verify start for %s", phone)
+        return True
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -429,6 +434,10 @@ def check_phone_verification(phone: str, code: str) -> bool:
     """Check a Twilio Verify code. Returns True if the code is approved."""
     if getattr(settings, 'E2E_TEST_MODE', False):
         return code == E2E_OTP_CODE
+    # App Store reviewer bypass — accept the mapped fixed code without Twilio.
+    expected = getattr(settings, 'APP_REVIEW_TEST_PHONES', {}).get(phone)
+    if expected is not None:
+        return code == expected
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)

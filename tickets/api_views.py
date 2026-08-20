@@ -840,16 +840,13 @@ def api_phone_start(request):
     Body: {phone}
     Sends a Twilio Verify SMS code. Returns 200 on success, 400 on any failure.
     """
-    from django.conf import settings as django_settings
     from .sms import start_phone_verification
 
     phone = (request.data.get('phone') or '').strip()
     if not phone:
         return Response({'error': 'phone is required'}, status=400)
 
-    if phone in django_settings.APP_REVIEW_TEST_PHONES:
-        return Response({})
-
+    # App review test phones are handled inside start_phone_verification.
     if not start_phone_verification(phone):
         return Response({'error': 'Could not send verification code'}, status=400)
 
@@ -867,7 +864,6 @@ def api_phone_verify(request):
     on first sight of the phone. Returns 400 on any verification failure.
     """
     import uuid as _uuid
-    from django.conf import settings as django_settings
     from django.contrib.auth.models import User
     from django.db import IntegrityError
     from .sms import check_phone_verification
@@ -877,11 +873,8 @@ def api_phone_verify(request):
     if not phone or not code:
         return Response({'error': 'phone and code are required'}, status=400)
 
-    expected = django_settings.APP_REVIEW_TEST_PHONES.get(phone)
-    if expected is not None:
-        if code != expected:
-            return Response({'error': 'Invalid or expired code'}, status=400)
-    elif not check_phone_verification(phone, code):
+    # App review test phones are handled inside check_phone_verification.
+    if not check_phone_verification(phone, code):
         return Response({'error': 'Invalid or expired code'}, status=400)
 
     profile = UserProfile.objects.select_related('user', 'organization').filter(
