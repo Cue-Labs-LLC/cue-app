@@ -22408,3 +22408,106 @@ class SMSPasteRecipientsTests(TestCase):
         self.assertEqual(new_step['paste_phones'], '+15550000001')
         self.assertEqual(new_step['audience_criteria'], {})
         self.assertIn('1 will send', new_step['audience_label'])
+
+
+@override_settings(SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSFailedSendRefundTests(TestCase):
+    """Reimburse tokens for limit-related failed sends (21704 no-sender / 30007
+    carrier-filtered): charged upfront, never delivered, refunded on demand."""
+
+    def setUp(self):
+        from .models import SMSCampaign
+        self.org = Organization.objects.create(
+            name='Refund Org', slug='refund-org', sms_marketing_enabled=True,
+            sms_credit_balance_cents=0,
+        )
+        self.campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            status=SMSCampaign.Status.SENT,
+        )
+
+    def _recipient(self, phone, status, error_code='', segments=1):
+        from .models import SMSMessageRecipient
+        return SMSMessageRecipient.objects.create(
+            campaign=self.campaign, phone=phone, status=status,
+            error_code=error_code, segments=segments,
+        )
+
+    def _charge_full(self):
+        """Simulate the upfront charge for the whole audience (10 segments = 30¢)."""
+        from .services.sms_credits import credit, charge
+        credit(self.org.id, 1000)  # top up
+        charge(self.org.id, 30, campaign=self.campaign, description='Campaign: Blast')
+
+    def test_refund_helper_credits_only_targeted_failures(self):
+        from .models import SMSMessageRecipient
+        from .services.sms_credits import refund_failed_recipients
+        self._charge_full()
+        # 3 delivered, 4 no-sender (21704), 2 carrier (30007), 1 opt-out (21610).
+        for i in range(3):
+            self._recipient(f'+1555000{i:04d}', SMSMessageRecipient.Status.DELIVERED)
+        for i in range(4):
+            self._recipient(f'+1555100{i:04d}', SMSMessageRecipient.Status.FAILED, '21704')
+        for i in range(2):
+            self._recipient(f'+1555200{i:04d}', SMSMessageRecipient.Status.UNDELIVERED, '30007')
+        optout = self._recipient('+15553000000', SMSMessageRecipient.Status.FAILED, '21610')
+
+        n, cents = refund_failed_recipients(self.campaign)
+        # 6 limit-related failures × 1 segment × 3¢ = 18¢.
+        self.assertEqual(n, 6)
+        self.assertEqual(cents, 18)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 30 + 18)
+        # Opt-out is untouched (not a limit failure).
+        optout.refresh_from_db()
+        self.assertIsNone(optout.refunded_at)
+        # Targeted rows are stamped.
+        self.assertEqual(
+            SMSMessageRecipient.objects.filter(
+                campaign=self.campaign, refunded_at__isnull=False).count(), 6)
+
+    def test_refund_is_idempotent(self):
+        from .models import SMSMessageRecipient
+        from .services.sms_credits import refund_failed_recipients
+        self._charge_full()
+        for i in range(4):
+            self._recipient(f'+1555100{i:04d}', SMSMessageRecipient.Status.FAILED, '21704')
+        n1, c1 = refund_failed_recipients(self.campaign)
+        self.org.refresh_from_db()
+        bal = self.org.sms_credit_balance_cents
+        n2, c2 = refund_failed_recipients(self.campaign)  # re-run
+        self.org.refresh_from_db()
+        self.assertEqual((n1, c1), (4, 12))
+        self.assertEqual((n2, c2), (0, 0))
+        self.assertEqual(self.org.sms_credit_balance_cents, bal)  # no double-refund
+
+    def test_refund_capped_at_outstanding_net(self):
+        from .models import SMSMessageRecipient
+        from .services.sms_credits import refund_failed_recipients, credit
+        # Charge only 6¢ but 4 failed segments would compute 12¢ — cap at the 6¢ charged.
+        credit(self.org.id, 1000)
+        from .services.sms_credits import charge
+        charge(self.org.id, 6, campaign=self.campaign)
+        for i in range(4):
+            self._recipient(f'+1555100{i:04d}', SMSMessageRecipient.Status.FAILED, '21704')
+        n, cents = refund_failed_recipients(self.campaign)
+        self.assertEqual(n, 4)
+        self.assertEqual(cents, 6)  # capped, not 12
+
+    def test_command_dry_run_then_apply(self):
+        from .models import SMSMessageRecipient
+        self._charge_full()
+        for i in range(4):
+            self._recipient(f'+1555100{i:04d}', SMSMessageRecipient.Status.FAILED, '21704')
+        # Dry run: no balance change, nothing stamped.
+        call_command('refund_failed_sms', '--org', str(self.org.id))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 30)
+        self.assertEqual(
+            SMSMessageRecipient.objects.filter(refunded_at__isnull=False).count(), 0)
+        # Apply: credits 12¢ and stamps rows.
+        call_command('refund_failed_sms', '--org', str(self.org.id), '--apply')
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 30 + 12)
+        self.assertEqual(
+            SMSMessageRecipient.objects.filter(refunded_at__isnull=False).count(), 4)

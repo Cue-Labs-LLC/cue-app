@@ -1470,6 +1470,35 @@ class SMSCampaignAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'status', 'created_at']
     search_fields = ['name', 'body']
     readonly_fields = ['id', 'started_at', 'sent_at', 'audience_size', 'created_at', 'updated_at']
+    actions = ['refund_failed_sends']
+
+    @admin.action(description='Refund tokens for limit-related failed sends')
+    def refund_failed_sends(self, request, queryset):
+        import math
+        from decimal import Decimal
+        from .services.sms_credits import refund_failed_recipients, price_per_segment_cents
+
+        total_recipients = 0
+        total_cents = 0
+        for campaign in queryset:
+            n, cents = refund_failed_recipients(campaign, created_by=request.user)
+            total_recipients += n
+            total_cents += cents
+        if total_recipients:
+            tokens = math.floor(Decimal(total_cents) / price_per_segment_cents())
+            self.message_user(
+                request,
+                f'Reimbursed {tokens} tokens ({total_cents}¢) across {total_recipients} '
+                f'failed send{"s" if total_recipients != 1 else ""} '
+                f'(no-sender 21704 / carrier-filtered 30007).',
+                level=messages.SUCCESS,
+            )
+        else:
+            self.message_user(
+                request,
+                'No un-refunded limit-related failed sends found in the selected campaigns.',
+                level=messages.INFO,
+            )
 
 
 @admin.register(SMSCampaignPlan)

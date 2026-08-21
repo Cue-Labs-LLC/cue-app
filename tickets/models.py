@@ -2613,6 +2613,9 @@ class SMSMessageRecipient(BaseModel):
     # Charged segment count for this recipient (schedule-time, computed on campaign.body).
     # Auditability; the actual sent count can differ for tracked-link bodies.
     segments = models.PositiveSmallIntegerField(default=0)
+    # Set when this recipient's charged segments have been reimbursed (e.g. a limit-related
+    # failure like 21704/30007). Guards refund_failed_recipients against double-refunding.
+    refunded_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
         indexes = [
