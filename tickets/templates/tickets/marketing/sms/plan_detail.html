@@ -312,6 +312,7 @@
                 <button type="button" class="plan-audience-edit" data-audience-trigger
                         data-update-url="{% url 'tickets:sms_plan_update_audience' pk=plan.id step=step.order %}"
                         data-criteria="{{ step.audience_criteria_json }}"
+                        data-paste-phones="{{ step.paste_phones }}"
                         title="Change who this is sent to" aria-label="Change audience">
                     <i class="bi bi-pencil"></i>
                 </button>
@@ -519,6 +520,21 @@ backdrop (appended to <body>) doesn't paint over them (the page-load fadeIn on
                         {% endfor %}
                     </select>
                 </div>
+
+                <div class="form-check mb-1 mt-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_paste" value="paste">
+                    <label class="form-check-label" for="aud_mode_paste">Paste a list of numbers</label>
+                </div>
+                <div id="aud-paste-wrap" class="mt-2" hidden>
+                    <textarea id="aud-paste" class="form-control aud-paste" rows="5" placeholder="Paste phone numbers, one per line or comma-separated"></textarea>
+                    <div class="form-text">Up to {{ paste_cap }} numbers. Only numbers matching a subscribed contact are texted.</div>
+                    <div class="plan-progress-counts mt-2 aud-paste-summary" hidden>
+                        <span class="pc pc--sent"><b data-paste="matched">0</b> will send</span>
+                        <span class="pc pc--scheduled"><b data-paste="unsub">0</b> unsubscribed</span>
+                        <span class="pc pc--draft"><b data-paste="unreach">0</b> unreachable</span>
+                        <span class="pc"><b data-paste="nocontact">0</b> not in contacts</span>
+                    </div>
+                </div>
                 <div class="aud-error text-danger small mt-2" hidden></div>
             </div>
             <div class="modal-footer">
@@ -612,6 +628,22 @@ backdrop (appended to <body>) doesn't paint over them (the page-load fadeIn on
                             <option value="{{ value }}">{{ name }}</option>
                             {% endfor %}
                         </select>
+                    </div>
+
+                    <div class="form-check mb-1 mt-2">
+                        <input class="form-check-input" type="radio" name="audience_mode" id="add_aud_mode_paste" value="paste">
+                        <label class="form-check-label" for="add_aud_mode_paste">Paste a list of numbers</label>
+                    </div>
+                    <div id="add-aud-paste-wrap" class="mt-2" hidden>
+                        <textarea class="form-control add-aud-paste" name="paste_phones" rows="4" placeholder="Paste phone numbers, one per line or comma-separated"></textarea>
+                        <div class="form-text">Up to {{ paste_cap }} numbers. Only numbers matching a subscribed contact are texted.</div>
+                        <div class="plan-progress-counts mt-2 add-aud-paste-summary" hidden>
+                            <span class="pc pc--sent"><b data-paste="matched">0</b> will send</span>
+                            <span class="pc pc--scheduled"><b data-paste="unsub">0</b> unsubscribed</span>
+                            <span class="pc pc--draft"><b data-paste="unreach">0</b> unreachable</span>
+                            <span class="pc"><b data-paste="nocontact">0</b> not in contacts</span>
+                        </div>
+                        <div class="text-danger small mt-2 add-aud-paste-error" hidden></div>
                     </div>
 
                     <hr class="my-3">
@@ -1016,29 +1048,90 @@ document.addEventListener('DOMContentLoaded', function () {
         var audCustom = document.getElementById('aud-custom');
         var audMarket = audModalEl.querySelector('.aud-market');
         var audError = audModalEl.querySelector('.aud-error');
+        var audPasteWrap = document.getElementById('aud-paste-wrap');
+        var audPaste = audModalEl.querySelector('.aud-paste');
+        var audPasteSummary = audModalEl.querySelector('.aud-paste-summary');
+        var audSaveBtn = document.getElementById('audienceSave');
+        var resolveUrl = "{% url 'tickets:sms_plan_resolve_audience' %}";
 
-        function audSyncMode() {
+        function audMode() {
             var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
-            audCustom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+            return checked ? checked.value : 'custom';
+        }
+        function audSyncMode() {
+            var mode = audMode();
+            audCustom.style.display = mode === 'custom' ? '' : 'none';
+            if (audPasteWrap) audPasteWrap.hidden = mode !== 'paste';
+            if (mode === 'paste') queuePastePreview();
         }
         audModalEl.querySelectorAll('input[name="aud_mode"]').forEach(function (r) {
             r.addEventListener('change', audSyncMode);
         });
 
+        // Live paste breakdown, resolved statelessly (does not persist the step).
+        var pastePreviewTimer = null;
+        function renderPasteSummary(s) {
+            if (!audPasteSummary) return;
+            if (!s || (s.total_pasted || 0) === 0) { audPasteSummary.hidden = true; return; }
+            var c = s.counts || {};
+            function set(key, n) {
+                var el = audPasteSummary.querySelector('[data-paste="' + key + '"]');
+                if (el) el.textContent = (n || 0).toLocaleString();
+            }
+            set('matched', c.matched); set('unsub', c.unsubscribed);
+            set('unreach', c.unreachable); set('nocontact', c.not_contact);
+            audPasteSummary.hidden = false;
+        }
+        async function pastePreview() {
+            if (!audPaste) return;
+            var raw = audPaste.value.trim();
+            if (!raw) { renderPasteSummary(null); audError.hidden = true; if (audSaveBtn) audSaveBtn.disabled = false; return; }
+            var params = new URLSearchParams();
+            params.set('audience_mode', 'paste');
+            params.set('paste_phones', raw);
+            try {
+                var resp = await fetch(resolveUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                var data = await resp.json();
+                renderPasteSummary(data.paste_summary);
+                if (data.ok) { audError.hidden = true; if (audSaveBtn) audSaveBtn.disabled = false; }
+                else {
+                    audError.textContent = data.error || 'Could not resolve the pasted list.';
+                    audError.hidden = false;
+                    if (audSaveBtn) audSaveBtn.disabled = true;
+                }
+            } catch (e) { /* leave prior state; Save re-validates */ }
+        }
+        function queuePastePreview() {
+            clearTimeout(pastePreviewTimer);
+            pastePreviewTimer = setTimeout(pastePreview, 300);
+        }
+        if (audPaste) audPaste.addEventListener('input', queuePastePreview);
+
         document.querySelectorAll('[data-audience-trigger]').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 var labelEl = btn.closest('.plan-step-audience').querySelector('[data-audience-label]');
-                audPending = {url: btn.dataset.updateUrl, labelEl: labelEl};
+                audPending = {url: btn.dataset.updateUrl, labelEl: labelEl, triggerEl: btn};
                 var criteria = {};
                 try { criteria = JSON.parse(btn.dataset.criteria || '{}'); } catch (e) {}
 
                 audModalEl.querySelectorAll('.aud-seg, .aud-tag').forEach(function (c) { c.checked = false; });
                 if (audMarket) audMarket.value = '';
                 audError.hidden = true;
+                if (audSaveBtn) audSaveBtn.disabled = false;
+                var pastePhones = btn.dataset.pastePhones || '';
+                if (audPaste) audPaste.value = pastePhones;
+                if (audPasteSummary) audPasteSummary.hidden = true;
 
                 var eventRadio = document.getElementById('aud_mode_event');
                 var allRadio = document.getElementById('aud_mode_all');
-                if (criteria.all_subscribers && allRadio) {
+                var pasteRadio = document.getElementById('aud_mode_paste');
+                if (pastePhones && pasteRadio) {
+                    pasteRadio.checked = true;
+                } else if (criteria.all_subscribers && allRadio) {
                     allRadio.checked = true;
                 } else if (criteria.event_id && eventRadio) {
                     eventRadio.checked = true;
@@ -1059,16 +1152,17 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         });
 
-        document.getElementById('audienceSave').addEventListener('click', async function () {
+        audSaveBtn.addEventListener('click', async function () {
             if (!audPending) return;
-            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
-            var mode = checked ? checked.value : 'custom';
+            var mode = audMode();
             var params = new URLSearchParams();
             params.set('audience_mode', mode);
             if (mode === 'custom') {
                 audModalEl.querySelectorAll('.aud-seg:checked').forEach(function (c) { params.append('rfm_segment', c.value); });
                 audModalEl.querySelectorAll('.aud-tag:checked').forEach(function (c) { params.append('tag_ids', c.value); });
                 if (audMarket && audMarket.value) params.set('market_id', audMarket.value);
+            } else if (mode === 'paste') {
+                params.set('paste_phones', audPaste ? audPaste.value.trim() : '');
             }
             var data;
             try {
@@ -1079,12 +1173,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 data = await resp.json();
                 if (!resp.ok || !data.ok) {
+                    if (data && data.paste_summary) renderPasteSummary(data.paste_summary);
                     audError.textContent = (data && data.error) || 'Could not save.';
                     audError.hidden = false;
                     return;
                 }
             } catch (e) { return; }
             audPending.labelEl.textContent = data.audience_label;
+            // Keep the trigger's paste state in sync so re-opening reflects the saved list.
+            if (audPending.triggerEl) {
+                audPending.triggerEl.dataset.pastePhones = mode === 'paste' ? (audPaste ? audPaste.value.trim() : '') : '';
+            }
             audModal.hide();
         });
     }
@@ -1594,6 +1693,13 @@ document.addEventListener('DOMContentLoaded', function () {
         var errEl = document.getElementById('addMsgError');
         var whenEl = document.getElementById('add-msg-when');
         var custom = document.getElementById('add-aud-custom');
+        var pasteWrap = document.getElementById('add-aud-paste-wrap');
+        var pasteEl = modalEl.querySelector('.add-aud-paste');
+        var pasteSummary = modalEl.querySelector('.add-aud-paste-summary');
+        var pasteErr = modalEl.querySelector('.add-aud-paste-error');
+        var pasteResolveUrl = "{% url 'tickets:sms_plan_resolve_audience' %}";
+        var pasteValid = false;
+        var pasteTimer = null;
         var draftUrl = '{% url "tickets:sms_plan_draft_message" pk=plan.id %}';
         // The plan's own audience/market — the modal opens pre-filled to it.
         var defaultAud = {};
@@ -1648,16 +1754,58 @@ document.addEventListener('DOMContentLoaded', function () {
             return { segments: segments, encoding: encoding };
         }
 
+        function addMode() {
+            var checked = modalEl.querySelector('input[name="audience_mode"]:checked');
+            return checked ? checked.value : 'custom';
+        }
+        function updateConfirm() {
+            confirmBtn.disabled = !bodyEl.value.trim() || (addMode() === 'paste' && !pasteValid);
+        }
         function refreshMeter() {
             var info = segmentInfo(withStopFooter(bodyEl.value));
             segsEl.textContent = info.segments;
             segsWord.textContent = info.segments === 1 ? 'segment' : 'segments';
             encEl.textContent = info.encoding;
-            confirmBtn.disabled = !bodyEl.value.trim();
+            updateConfirm();
         }
+        function renderAddPaste(s) {
+            if (!pasteSummary) return;
+            if (!s || (s.total_pasted || 0) === 0) { pasteSummary.hidden = true; return; }
+            var c = s.counts || {};
+            function set(key, n) {
+                var el = pasteSummary.querySelector('[data-paste="' + key + '"]');
+                if (el) el.textContent = (n || 0).toLocaleString();
+            }
+            set('matched', c.matched); set('unsub', c.unsubscribed);
+            set('unreach', c.unreachable); set('nocontact', c.not_contact);
+            pasteSummary.hidden = false;
+        }
+        async function addPastePreview() {
+            if (!pasteEl) return;
+            var raw = pasteEl.value.trim();
+            pasteValid = false;
+            if (!raw) { renderAddPaste(null); if (pasteErr) pasteErr.hidden = true; updateConfirm(); return; }
+            try {
+                var resp = await fetch(pasteResolveUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({audience_mode: 'paste', paste_phones: raw}),
+                });
+                var data = await resp.json();
+                renderAddPaste(data.paste_summary);
+                if (data.ok) { pasteValid = true; if (pasteErr) pasteErr.hidden = true; }
+                else if (pasteErr) { pasteErr.textContent = data.error || 'Could not resolve the pasted list.'; pasteErr.hidden = false; }
+            } catch (e) { /* leave invalid; server re-validates */ }
+            updateConfirm();
+        }
+        function queueAddPaste() { clearTimeout(pasteTimer); pasteTimer = setTimeout(addPastePreview, 300); }
+        if (pasteEl) pasteEl.addEventListener('input', queueAddPaste);
         function syncAudMode() {
-            var checked = modalEl.querySelector('input[name="audience_mode"]:checked');
-            custom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+            var mode = addMode();
+            custom.style.display = mode === 'custom' ? '' : 'none';
+            if (pasteWrap) pasteWrap.hidden = mode !== 'paste';
+            if (mode === 'paste') queueAddPaste();
+            updateConfirm();
         }
         modalEl.querySelectorAll('input[name="audience_mode"]').forEach(function (r) {
             r.addEventListener('change', syncAudMode);
@@ -1708,6 +1856,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 if (criteria.market_id && market) market.value = criteria.market_id;
             }
+            // A fresh "Add a message" opens on a filter audience; clear any prior paste state.
+            if (pasteEl) pasteEl.value = '';
+            if (pasteSummary) pasteSummary.hidden = true;
+            if (pasteErr) pasteErr.hidden = true;
+            pasteValid = false;
             refreshAudDd();
             syncAudMode();
         }

@@ -272,6 +272,10 @@ TWILIO_SMS_FROM = os.environ.get('TWILIO_SMS_FROM', '')
 TWILIO_VALIDATE_WEBHOOKS = os.environ.get('TWILIO_VALIDATE_WEBHOOKS', 'True') == 'True'
 # Hard ceiling on recipients per marketing-SMS campaign (cost / blast-radius guard).
 SMS_CAMPAIGN_MAX_RECIPIENTS = int(os.environ.get('SMS_CAMPAIGN_MAX_RECIPIENTS', '5000'))
+# Hard ceiling on how many phone numbers an organizer may paste into the composer's
+# "Paste numbers" audience at once. Pasting more than this blocks the send (the
+# organizer trims the list) rather than silently truncating. See classify_pasted_phones.
+SMS_PASTE_MAX_RECIPIENTS = int(os.environ.get('SMS_PASTE_MAX_RECIPIENTS', '10000'))
 # Price charged to an org per SMS segment (in cents, Decimal so sub-cent rates work,
 # e.g. "3" = 3¢/segment). Each recipient costs segments × this; debited from the
 # org's prepaid SMS credit wallet at send time.

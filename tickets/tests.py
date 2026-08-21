@@ -22195,3 +22195,216 @@ class SMSMessagingServiceTests(TestCase):
         self.assertContains(resp, '+18005551234')
         self.assertContains(resp, 'Daily limit')
         self.assertContains(resp, '2000')
+
+
+class SMSPasteRecipientsTests(TestCase):
+    """Paste a list of phone numbers as the SMS audience: numbers are classified
+    against the org's contacts (matched-subscribed / unsubscribed / unreachable /
+    not-in-contacts), only matched subscribed numbers become recipients, and the
+    list is capped at SMS_PASTE_MAX_RECIPIENTS."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Paste Org', slug='paste-org', sms_marketing_enabled=True,
+            ai_sms_strategist_enabled=True,
+        )
+
+    def _customer(self, phone, opt_in=True):
+        return Customer.objects.create(
+            organization=self.org, email=f'{phone}@example.com', name=phone,
+            phone=phone, sms_opt_in=opt_in,
+        )
+
+    def _client(self):
+        user = User.objects.create_user(
+            username=f'paste-{uuid.uuid4().hex[:8]}',
+            email=f'paste-{uuid.uuid4().hex[:8]}@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        c = Client()
+        c.force_login(user)
+        c.get(reverse('tickets:home'))  # warm org cache
+        return c
+
+    def test_classify_buckets(self):
+        from .services.sms_recipients import classify_pasted_phones
+        subscribed = self._customer('+15550000001', opt_in=True)
+        self._customer('+15550000002', opt_in=False)          # opted-out contact
+        self._customer('+15550000003', opt_in=True)            # will be STOP-suppressed
+        self._customer('+15550000004', opt_in=True)            # will be BOUNCE-suppressed
+        PhoneSuppression.objects.create(
+            phone='+15550000003', organization=self.org,
+            reason=PhoneSuppression.Reason.TWILIO_STOP)
+        PhoneSuppression.objects.create(
+            phone='+15550000004', organization=None,           # global bounce
+            reason=PhoneSuppression.Reason.BOUNCE)
+        raw = '\n'.join([
+            '+15550000001',        # matched subscribed
+            '5550000001',          # duplicate (normalizes to the same E.164)
+            '+15550000002',        # unsubscribed (opted out)
+            '+15550000003',        # unsubscribed (STOP)
+            '+15550000004',        # unreachable (bounce)
+            '123',                 # unreachable (malformed)
+            '+447700900000',       # unreachable (non-+1 geo)
+            '+15559999999',        # not in contacts
+        ])
+        r = classify_pasted_phones(self.org, raw, cap=10000)
+        self.assertEqual(r['counts']['matched'], 1)
+        self.assertEqual(r['counts']['unsubscribed'], 2)
+        self.assertEqual(r['counts']['unreachable'], 3)
+        self.assertEqual(r['counts']['not_contact'], 1)
+        self.assertEqual(r['duplicates'], 1)
+        self.assertEqual(r['matched_customer_ids'], [str(subscribed.id)])
+        self.assertFalse(r['over_cap'])
+
+    def test_over_cap_flag(self):
+        from .services.sms_recipients import classify_pasted_phones
+        raw = '\n'.join(f'+1555{i:07d}' for i in range(11))
+        r = classify_pasted_phones(self.org, raw, cap=10)
+        self.assertTrue(r['over_cap'])
+        self.assertEqual(r['total_pasted'], 11)
+
+    def test_preview_returns_paste_summary(self):
+        self._customer('+15550000001', opt_in=True)
+        self._customer('+15550000002', opt_in=False)
+        c = self._client()
+        resp = c.post(reverse('tickets:sms_audience_preview'), {
+            'audience_scope': 'paste',
+            'body': 'Tickets!',
+            'paste_phones': '+15550000001\n+15550000002\n+15559999999',
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['count'], 1)          # only the subscribed match sends
+        ps = data['paste_summary']
+        self.assertEqual(ps['counts']['matched'], 1)
+        self.assertEqual(ps['counts']['unsubscribed'], 1)
+        self.assertEqual(ps['counts']['not_contact'], 1)
+
+    def test_send_only_matches_subscribed(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._customer('+15550000001', opt_in=True)
+        self._customer('+15550000002', opt_in=False)
+        c = self._client()
+        future = (timezone.localtime(timezone.now()) + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M')
+        resp = c.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Pasted blast', 'body': 'Tickets!',
+            'audience_scope': 'paste',
+            'paste_phones': '+15550000001\n+15550000002',
+            'send_mode': 'schedule', 'scheduled_at': future,
+            'confirm': '1',
+        })
+        self.assertEqual(resp.status_code, 302)
+        campaign = SMSCampaign.objects.get(organization=self.org, name='Pasted blast')
+        phones = list(
+            SMSMessageRecipient.objects.filter(campaign=campaign).values_list('phone', flat=True))
+        self.assertEqual(phones, ['+15550000001'])
+
+    # ---- Sequences (plan) paste audience ----
+
+    def _plan(self, user, steps):
+        from .models import SMSCampaignPlan
+        return SMSCampaignPlan.objects.create(
+            organization=self.org, created_by=user, name='Seq', steps=steps,
+        )
+
+    def test_plan_resolve_audience_paste(self):
+        self._customer('+15550000001', opt_in=True)
+        self._customer('+15550000002', opt_in=False)
+        c = self._client()
+        resp = c.post(reverse('tickets:sms_plan_resolve_audience'), {
+            'audience_mode': 'paste',
+            'paste_phones': '+15550000001\n+15550000002\n+15559999999',
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['mode'], 'paste')
+        self.assertIn('1 will send', data['audience_label'])
+        self.assertEqual(data['paste_summary']['counts']['matched'], 1)
+        # No subscribed match -> not ok (can't save an unsendable audience).
+        resp2 = c.post(reverse('tickets:sms_plan_resolve_audience'), {
+            'audience_mode': 'paste', 'paste_phones': '+15559999999',
+        })
+        self.assertEqual(resp2.status_code, 400)
+        self.assertFalse(resp2.json()['ok'])
+
+    def test_plan_update_audience_paste_stores_on_step(self):
+        self._customer('+15550000001', opt_in=True)
+        user = User.objects.create_user(username='pu', email='pu@example.com', password='pw')
+        UserProfile.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        plan = self._plan(user, [{
+            'order': 0, 'purpose': 'announcement', 'body': 'Hi!',
+            'audience_criteria': {'all_subscribers': True}, 'audience_label': 'All',
+            'send_at': None, 'launched_campaign_id': None,
+        }])
+        c = Client()
+        c.login(username='pu@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+        resp = c.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'paste', 'paste_phones': '+15550000001'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        plan.refresh_from_db()
+        step = plan.steps[0]
+        self.assertEqual(step['paste_phones'], '+15550000001')
+        self.assertEqual(step['audience_criteria'], {})
+        self.assertIn('1 will send', step['audience_label'])
+
+    def test_plan_confirm_step_paste_sends_only_matched(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_credits import credit
+        credit(self.org.id, 100_000)
+        self._customer('+15550000001', opt_in=True)
+        self._customer('+15550000002', opt_in=False)
+        user = User.objects.create_user(username='pc', email='pc@example.com', password='pw')
+        UserProfile.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        future = (timezone.now() + timedelta(days=1)).isoformat()
+        plan = self._plan(user, [{
+            'order': 0, 'purpose': 'announcement', 'body': 'Tickets!',
+            'audience_criteria': {}, 'paste_phones': '+15550000001\n+15550000002',
+            'audience_label': 'Pasted list · 1 will send',
+            'send_at': future, 'launched_campaign_id': None,
+        }])
+        c = Client()
+        c.login(username='pc@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+        resp = c.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}), {})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        campaign = SMSCampaign.objects.get(id=resp.json()['campaign_id'])
+        phones = list(
+            SMSMessageRecipient.objects.filter(campaign=campaign).values_list('phone', flat=True))
+        self.assertEqual(phones, ['+15550000001'])
+
+    def test_plan_add_step_paste_audience(self):
+        self._customer('+15550000001', opt_in=True)
+        user = User.objects.create_user(username='pa', email='pa@example.com', password='pw')
+        UserProfile.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        plan = self._plan(user, [{
+            'order': 0, 'purpose': 'announcement', 'body': 'Hi!',
+            'audience_criteria': {'all_subscribers': True}, 'audience_label': 'All',
+            'send_at': None, 'launched_campaign_id': None,
+        }])
+        c = Client()
+        c.login(username='pa@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+        resp = c.post(
+            reverse('tickets:sms_plan_add_step_after', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'paste', 'paste_phones': '+15550000001', 'body': 'New msg'})
+        self.assertEqual(resp.status_code, 302)
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 2)
+        new_step = plan.steps[1]
+        self.assertEqual(new_step['paste_phones'], '+15550000001')
+        self.assertEqual(new_step['audience_criteria'], {})
+        self.assertIn('1 will send', new_step['audience_label'])

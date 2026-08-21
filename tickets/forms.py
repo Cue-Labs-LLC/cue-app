@@ -2087,6 +2087,15 @@ class SMSCampaignForm(forms.ModelForm):
     scheduled_at = forms.DateTimeField(
         required=False, widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}),
     )
+    # "Paste a list of numbers" audience source. Resolved to matched subscribed
+    # contacts in the view (classify_pasted_phones); not a model field.
+    paste_phones = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={
+            'rows': 6,
+            'placeholder': 'Paste phone numbers, one per line (or comma-separated)',
+        }),
+    )
 
     class Meta:
         model = SMSCampaign

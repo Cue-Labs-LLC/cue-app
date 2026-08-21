@@ -159,10 +159,11 @@
                 <span data-audience-label>{{ step.audience_label }}</span>
                 <button type="button" class="plan-audience-edit" data-audience-trigger
                         data-criteria="{{ step.audience_criteria_json }}"
+                        data-paste-phones="{{ step.paste_phones }}"
                         title="Change who this is sent to" aria-label="Change audience">
                     <i class="bi bi-pencil"></i>
                 </button>
-                <input type="hidden" data-step-audience="{{ step.order }}" value="{{ step.audience_criteria_json }}">
+                <input type="hidden" data-step-audience="{{ step.order }}" value="{{ step.audience_payload_json }}">
             </div>
             <textarea class="plan-step-message" data-step="{{ step.order }}"
                       maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
@@ -179,6 +180,11 @@
     </div>
     {% endfor %}
 </div>
+
+</div>{% comment %} /max-width wrapper — both the audience modal and the unsaved-changes
+modal below sit OUTSIDE this wrapper on purpose: the page-load fadeIn on .content > *
+applies a transform that creates a stacking context, which would trap a nested modal
+beneath the body-level Bootstrap backdrop (it'd paint over the dialog). {% endcomment %}
 
 <div class="modal fade" id="audienceModal" tabindex="-1" aria-labelledby="audienceModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -226,6 +232,21 @@
                         {% endfor %}
                     </select>
                 </div>
+
+                <div class="form-check mb-1 mt-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_paste" value="paste">
+                    <label class="form-check-label" for="aud_mode_paste">Paste a list of numbers</label>
+                </div>
+                <div id="aud-paste-wrap" class="mt-2" hidden>
+                    <textarea id="aud-paste" class="form-control aud-paste" rows="5" placeholder="Paste phone numbers, one per line or comma-separated"></textarea>
+                    <div class="form-text">Up to {{ paste_cap }} numbers. Only numbers matching a subscribed contact are texted.</div>
+                    <div class="plan-progress-counts mt-2 aud-paste-summary" hidden>
+                        <span class="pc pc--sent"><b data-paste="matched">0</b> will send</span>
+                        <span class="pc pc--scheduled"><b data-paste="unsub">0</b> unsubscribed</span>
+                        <span class="pc pc--draft"><b data-paste="unreach">0</b> unreachable</span>
+                        <span class="pc"><b data-paste="nocontact">0</b> not in contacts</span>
+                    </div>
+                </div>
                 <div class="aud-error text-danger small mt-2" hidden></div>
             </div>
             <div class="modal-footer">
@@ -235,9 +256,6 @@
         </div>
     </div>
 </div>
-
-</div>{% comment %} /max-width wrapper — the unsaved-changes modal below stays outside it so the
-Bootstrap backdrop doesn't paint over it (page-load fadeIn on .content > * traps nested modals). {% endcomment %}
 
 {% include 'tickets/marketing/sms/_unsaved_guard.html' %}
 {% endblock %}
@@ -297,14 +315,72 @@ document.addEventListener('DOMContentLoaded', function () {
         var audCustom = document.getElementById('aud-custom');
         var audMarket = audModalEl.querySelector('.aud-market');
         var audError = audModalEl.querySelector('.aud-error');
+        var audPasteWrap = document.getElementById('aud-paste-wrap');
+        var audPaste = audModalEl.querySelector('.aud-paste');
+        var audPasteSummary = audModalEl.querySelector('.aud-paste-summary');
+        var audSaveBtn = document.getElementById('audienceSave');
 
-        function audSyncMode() {
+        function audMode() {
             var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
-            audCustom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+            return checked ? checked.value : 'custom';
+        }
+        function audSyncMode() {
+            var mode = audMode();
+            audCustom.style.display = mode === 'custom' ? '' : 'none';
+            if (audPasteWrap) audPasteWrap.hidden = mode !== 'paste';
+            if (mode === 'paste') queuePastePreview();
         }
         audModalEl.querySelectorAll('input[name="aud_mode"]').forEach(function (r) {
             r.addEventListener('change', audSyncMode);
         });
+
+        // Live paste breakdown (matched / unsubscribed / unreachable / not-in-contacts).
+        var pastePreviewTimer = null;
+        var pasteOk = false;
+        function renderPasteSummary(s) {
+            if (!audPasteSummary) return;
+            if (!s || (s.total_pasted || 0) === 0) { audPasteSummary.hidden = true; return; }
+            var c = s.counts || {};
+            function set(key, n) {
+                var el = audPasteSummary.querySelector('[data-paste="' + key + '"]');
+                if (el) el.textContent = (n || 0).toLocaleString();
+            }
+            set('matched', c.matched); set('unsub', c.unsubscribed);
+            set('unreach', c.unreachable); set('nocontact', c.not_contact);
+            audPasteSummary.hidden = false;
+        }
+        async function pastePreview() {
+            if (!audPaste) return;
+            var raw = audPaste.value.trim();
+            pasteOk = false;
+            if (!raw) { renderPasteSummary(null); audError.hidden = true; if (audSaveBtn) audSaveBtn.disabled = false; return; }
+            var params = new URLSearchParams();
+            params.set('audience_mode', 'paste');
+            params.set('event_id', eventId);
+            params.set('paste_phones', raw);
+            try {
+                var resp = await fetch(resolveUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                var data = await resp.json();
+                renderPasteSummary(data.paste_summary);
+                if (data.ok) {
+                    pasteOk = true; audError.hidden = true;
+                    if (audSaveBtn) audSaveBtn.disabled = false;
+                } else {
+                    audError.textContent = data.error || 'Could not resolve the pasted list.';
+                    audError.hidden = false;
+                    if (audSaveBtn) audSaveBtn.disabled = true;
+                }
+            } catch (e) { /* leave prior state; Save re-validates */ }
+        }
+        function queuePastePreview() {
+            clearTimeout(pastePreviewTimer);
+            pastePreviewTimer = setTimeout(pastePreview, 300);
+        }
+        if (audPaste) audPaste.addEventListener('input', queuePastePreview);
 
         document.querySelectorAll('[data-audience-trigger]').forEach(function (btn) {
             btn.addEventListener('click', function () {
@@ -319,10 +395,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 audModalEl.querySelectorAll('.aud-seg, .aud-tag').forEach(function (c) { c.checked = false; });
                 if (audMarket) audMarket.value = '';
                 audError.hidden = true;
+                if (audSaveBtn) audSaveBtn.disabled = false;
+                var pastePhones = btn.dataset.pastePhones || '';
+                if (audPaste) audPaste.value = pastePhones;
+                if (audPasteSummary) audPasteSummary.hidden = true;
 
                 var eventRadio = document.getElementById('aud_mode_event');
                 var allRadio = document.getElementById('aud_mode_all');
-                if (criteria.all_subscribers && allRadio) {
+                var pasteRadio = document.getElementById('aud_mode_paste');
+                if (pastePhones && pasteRadio) {
+                    pasteRadio.checked = true;
+                } else if (criteria.all_subscribers && allRadio) {
                     allRadio.checked = true;
                 } else if (criteria.event_id && eventRadio) {
                     eventRadio.checked = true;
@@ -343,10 +426,9 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         });
 
-        document.getElementById('audienceSave').addEventListener('click', async function () {
+        audSaveBtn.addEventListener('click', async function () {
             if (!audPending) return;
-            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
-            var mode = checked ? checked.value : 'custom';
+            var mode = audMode();
             var params = new URLSearchParams();
             params.set('audience_mode', mode);
             params.set('event_id', eventId);
@@ -354,6 +436,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 audModalEl.querySelectorAll('.aud-seg:checked').forEach(function (c) { params.append('rfm_segment', c.value); });
                 audModalEl.querySelectorAll('.aud-tag:checked').forEach(function (c) { params.append('tag_ids', c.value); });
                 if (audMarket && audMarket.value) params.set('market_id', audMarket.value);
+            } else if (mode === 'paste') {
+                params.set('paste_phones', audPaste ? audPaste.value.trim() : '');
             }
             var data;
             try {
@@ -364,16 +448,25 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 data = await resp.json();
                 if (!resp.ok || !data.ok) {
+                    if (data && data.paste_summary) renderPasteSummary(data.paste_summary);
                     audError.textContent = (data && data.error) || 'Could not update the audience.';
                     audError.hidden = false;
                     return;
                 }
             } catch (e) { audError.textContent = 'Could not update the audience.'; audError.hidden = false; return; }
+            var pastePhones = data.mode === 'paste' ? (data.paste_phones || '') : '';
+            var criteria = data.criteria || {};
             audPending.labelEl.textContent = data.audience_label;
-            audPending.hiddenEl.value = JSON.stringify(data.criteria);
+            // Structured payload so Save Plan persists both filters and pasted lists.
+            audPending.hiddenEl.value = JSON.stringify({
+                criteria: criteria, paste_phones: pastePhones, label: data.audience_label,
+            });
             // Keep the trigger's dataset in sync so re-opening reflects the new selection.
             var trigger = audPending.hiddenEl.closest('.plan-step-audience').querySelector('[data-audience-trigger]');
-            if (trigger) trigger.dataset.criteria = JSON.stringify(data.criteria);
+            if (trigger) {
+                trigger.dataset.criteria = JSON.stringify(criteria);
+                trigger.dataset.pastePhones = pastePhones;
+            }
             audModal.hide();
         });
     }
