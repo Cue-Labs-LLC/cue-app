@@ -650,6 +650,68 @@ class FeatureFlagSettings(models.Model):
         return cls.objects.get_or_create(singleton_enforcer=True)[0]
 
 
+class SMSMessagingService(BaseModel):
+    """A selectable Twilio Messaging Service for marketing SMS.
+
+    Lets an admin switch the active sender (e.g. Toll-Free 10k/day vs A2P 2k/day)
+    live from Django admin without editing env vars and redeploying. Exactly one
+    row is active at a time; the active row's SID drives sends (``send_sms``) and
+    its ``daily_segment_cap`` drives the daily carrier guard (``daily_segment_cap``
+    in ``tickets/services/sms_limits.py``). When no row is active, both fall back
+    to the ``TWILIO_MESSAGING_SERVICE_SID`` / ``SMS_DAILY_SEGMENT_CAP`` settings.
+    """
+
+    label = models.CharField(
+        max_length=100,
+        help_text='Human-readable name, e.g. "Toll-Free" or "A2P 10DLC".',
+    )
+    messaging_service_sid = models.CharField(
+        max_length=64,
+        help_text='Twilio Messaging Service SID (starts with "MG").',
+    )
+    sms_from = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text='Optional fallback sender number (E.164) used when no Messaging '
+                  'Service SID is set on this row.',
+    )
+    daily_segment_cap = models.PositiveIntegerField(
+        default=2000,
+        help_text='Daily segment ceiling for this service (e.g. 10000 toll-free, '
+                  '2000 A2P). 0 disables the daily-cap guard.',
+    )
+    is_active = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text='Only one service is active at a time; the active one is used '
+                  'for all marketing sends.',
+    )
+
+    class Meta:
+        verbose_name = 'SMS Messaging Service'
+        verbose_name_plural = 'SMS Messaging Services'
+        ordering = ['-is_active', 'label']
+
+    def __str__(self):
+        return f"{self.label} ({'active' if self.is_active else 'inactive'})"
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if self.is_active:
+                # Enforce a single active service.
+                SMSMessagingService.objects.exclude(pk=self.pk).filter(
+                    is_active=True
+                ).update(is_active=False)
+
+    @classmethod
+    def get_active(cls):
+        """The active messaging service, or None when none is selected."""
+        return cls.objects.filter(is_active=True).first()
+
+
 class UserProfile(models.Model):
     """OneToOne profile linking a user to an organization."""
 

@@ -41,7 +41,7 @@ from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
-    with_stop_footer, handle_delivery_failure,
+    with_stop_footer, handle_delivery_failure, resolve_sms_sender_number,
 )
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
@@ -58,6 +58,25 @@ def require_sms_feature(view):
             raise Http404('SMS marketing is not enabled for this organization.')
         return view(request, *args, **kwargs)
     return wrapped
+
+
+def _sms_sender_summary():
+    """Standing display info about the marketing SMS sender + daily ceiling.
+
+    Global (account-wide) values, shown to organizers on the SMS screens so they
+    can see which number sends and how much headroom is left today. Follows the
+    admin-selected active SMSMessagingService; falls back to env settings.
+    """
+    from .models import SMSMessagingService
+    from .services.sms_limits import daily_segment_cap, remaining_daily_budget
+
+    service = SMSMessagingService.get_active()
+    return {
+        'sms_sender_number': resolve_sms_sender_number(),
+        'sms_sender_label': service.label if service is not None else '',
+        'sms_daily_cap': daily_segment_cap(),
+        'sms_daily_remaining': remaining_daily_budget(),
+    }
 
 
 # Status groupings for derived campaign counts (SMSMessageRecipient is the
@@ -583,6 +602,7 @@ def sms_campaign_list(request):
         'market_breakdown': market_breakdown,
         'audience_points_json': json.dumps(audience_points),
         'link_events': _org_events_for_picker(org),
+        **_sms_sender_summary(),
     }
 
     # Grow view: the public subscribe link + QR + settings. Built only when that
@@ -1038,6 +1058,7 @@ def sms_campaign_create(request):
         'prefill_step': prefill_step,
         'manual_include_ids_csv': ','.join(manual_include_ids),
         'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
+        **_sms_sender_summary(),
     })
 
 

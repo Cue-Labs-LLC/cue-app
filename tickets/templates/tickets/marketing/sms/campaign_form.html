@@ -69,6 +69,15 @@
         font-size: 10.5px; color: var(--text-secondary); background: var(--bg-inset);
         padding: 1px 5px; border-radius: 3px;
     }
+    /* Standing "sending from / daily limit" strip. */
+    .sms-meta-strip {
+        display: flex; flex-wrap: wrap; gap: 8px 20px;
+        margin: -14px 0 24px; font-size: 12px; color: var(--text-tertiary);
+        font-weight: 300;
+    }
+    .sms-meta-item { display: inline-flex; align-items: center; gap: 6px; }
+    .sms-meta-item i { font-size: 13px; opacity: 0.8; }
+    .sms-meta-item b { color: var(--text-secondary); font-weight: 500; }
 
     /* Style the bare form inputs (the form renders without .form-control). */
     .sms-compose input[type="text"],
@@ -441,6 +450,17 @@
     <div class="sms-head sms-reveal sms-reveal-1">
         <h1>New send</h1>
         <p>Compose a text, choose who gets it, then send now or schedule.</p>
+    </div>
+
+    <div class="sms-meta-strip sms-reveal sms-reveal-1">
+        <span class="sms-meta-item">
+            <i class="bi bi-telephone-outbound"></i>
+            Sending from <b>{{ sms_sender_number|default:"your Cue sending number" }}</b>
+        </span>
+        <span class="sms-meta-item">
+            <i class="bi bi-speedometer2"></i>
+            {% if sms_daily_cap %}Daily limit <b>{{ sms_daily_cap }}</b> segments{% if sms_daily_remaining is not None %} &middot; <b>{{ sms_daily_remaining }}</b> left today{% endif %}{% else %}No daily send limit{% endif %}
+        </span>
     </div>
 
     <form method="post" novalidate id="sms-campaign-form">
