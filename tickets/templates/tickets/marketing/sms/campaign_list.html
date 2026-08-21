@@ -75,6 +75,11 @@ tr.campaign-row { cursor: pointer; }
 /* Blue is the default for all external providers; Cue is green. */
 .source-badge { font-weight: 500; font-size: 11px; border-radius: 4px; padding: 2px 7px; background: rgba(79,124,255,0.12); color: #4f7cff; }
 .source-badge--cue { background: rgba(51,196,129,0.12); color: #33c481; }
+/* Standing "sending from / daily limit" strip. */
+.sms-meta-strip { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 2px 0 18px; font-size: 12px; color: var(--text-secondary); }
+.sms-meta-strip .sms-meta-item { display: inline-flex; align-items: center; gap: 6px; }
+.sms-meta-strip .sms-meta-item i { font-size: 13px; opacity: 0.8; }
+.sms-meta-strip .sms-meta-item b { color: var(--text-primary); font-weight: 500; }
 </style>
 {% endblock %}
 
@@ -143,6 +148,16 @@ tr.campaign-row { cursor: pointer; }
             </div>
         </div>
     </div>
+</div>
+<div class="sms-meta-strip">
+    <span class="sms-meta-item">
+        <i class="bi bi-telephone-outbound"></i>
+        Sending from <b>{{ sms_sender_number|default:"your Cue sending number" }}</b>
+    </span>
+    <span class="sms-meta-item">
+        <i class="bi bi-speedometer2"></i>
+        {% if sms_daily_cap %}Daily limit <b>{{ sms_daily_cap }}</b> segments{% if sms_daily_remaining is not None %} &middot; <b>{{ sms_daily_remaining }}</b> left today{% endif %}{% else %}No daily send limit{% endif %}
+    </span>
 </div>
 {% if sending_campaigns %}
 <div class="card mb-3">

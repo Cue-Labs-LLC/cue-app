@@ -21,6 +21,7 @@ from .models import (
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
+    SMSMessagingService,
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
     SMSConsentRecord,
     SMSCreditTransaction,
@@ -999,6 +1000,54 @@ class FeatureFlagSettingsAdmin(admin.ModelAdmin):
         from django.shortcuts import redirect
         from django.urls import reverse
         return redirect(reverse('admin:tickets_featureflagsettings_change', args=[settings_obj.pk]))
+
+
+@admin.register(SMSMessagingService)
+class SMSMessagingServiceAdmin(admin.ModelAdmin):
+    list_display = ['label', 'messaging_service_sid', 'daily_segment_cap', 'is_active']
+    list_filter = ['is_active']
+    search_fields = ['label', 'messaging_service_sid']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    actions = ['make_active']
+    fieldsets = (
+        (None, {
+            'fields': ('label', 'messaging_service_sid', 'sms_from', 'daily_segment_cap', 'is_active'),
+            'description': 'The active service is used for all marketing SMS sends and sets the '
+                           'daily segment cap. Only one service can be active at a time. When none '
+                           'is active, the app falls back to the TWILIO_MESSAGING_SERVICE_SID and '
+                           'SMS_DAILY_SEGMENT_CAP environment settings.',
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    @admin.action(description='Make active messaging service')
+    def make_active(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(
+                request,
+                'Select exactly one messaging service to make active.',
+                level=messages.ERROR,
+            )
+            return
+        service = queryset.first()
+        if not service.messaging_service_sid:
+            self.message_user(
+                request,
+                f'"{service.label}" has no Messaging Service SID; add one before activating.',
+                level=messages.ERROR,
+            )
+            return
+        service.is_active = True
+        service.save()  # model deactivates the others
+        self.message_user(
+            request,
+            f'"{service.label}" is now the active messaging service '
+            f'(daily cap {service.daily_segment_cap} segments).',
+            level=messages.SUCCESS,
+        )
 
 
 @admin.register(Payout)

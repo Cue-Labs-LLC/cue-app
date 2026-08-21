@@ -352,8 +352,15 @@ def send_sms(to: str, body: str, status_callback: str | None = None):
     if getattr(settings, 'E2E_TEST_MODE', False):
         logger.info("E2E test mode: pretending to send SMS to %s", to)
         return True, 'E2E_FAKE_SID', None
-    messaging_service_sid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
-    from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
+    # Prefer the admin-selected active Messaging Service; fall back to env settings.
+    from tickets.models import SMSMessagingService
+    service = SMSMessagingService.get_active()
+    if service is not None:
+        messaging_service_sid = service.messaging_service_sid
+        from_number = service.sms_from or getattr(settings, 'TWILIO_SMS_FROM', '')
+    else:
+        messaging_service_sid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
+        from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
     if not messaging_service_sid and not from_number:
         logger.error(
             "Cannot send SMS: set TWILIO_MESSAGING_SERVICE_SID (preferred) or TWILIO_SMS_FROM."
@@ -494,16 +501,25 @@ def resolve_sms_sender_number() -> str:
     '' when nothing resolves — callers then show a generic "reply START to any
     message from us" instead of a wrong number.
     """
-    from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
+    # Prefer the admin-selected active Messaging Service; fall back to env settings.
+    from tickets.models import SMSMessagingService
+    service = SMSMessagingService.get_active()
+    if service is not None:
+        from_number = service.sms_from or getattr(settings, 'TWILIO_SMS_FROM', '')
+        msid = service.messaging_service_sid
+    else:
+        from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
+        msid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
     if from_number:
         return from_number
     if getattr(settings, 'E2E_TEST_MODE', False):
         return ''
-    msid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
     if not msid:
         return ''
     from django.core.cache import cache
-    cached = cache.get('sms_sender_number')
+    # Key by SID so switching services doesn't return a stale cached number.
+    cache_key = f'sms_sender_number:{msid}'
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
     resolved = ''
@@ -515,7 +531,7 @@ def resolve_sms_sender_number() -> str:
             resolved = numbers[0].phone_number or ''
     except Exception as exc:
         logger.error("Could not resolve SMS sender number: %s", exc)
-    cache.set('sms_sender_number', resolved, 3600)
+    cache.set(cache_key, resolved, 3600)
     return resolved
 
 

@@ -23,8 +23,18 @@ from django.utils import timezone
 
 
 def daily_segment_cap():
-    """Account-wide daily segment ceiling, or None when the guard is disabled (cap <= 0)."""
-    cap = getattr(settings, 'SMS_DAILY_SEGMENT_CAP', 2000)
+    """Account-wide daily segment ceiling, or None when the guard is disabled (cap <= 0).
+
+    Follows the admin-selected active Messaging Service (e.g. 10000 toll-free vs
+    2000 A2P); falls back to the SMS_DAILY_SEGMENT_CAP setting when none is active.
+    """
+    from tickets.models import SMSMessagingService
+
+    service = SMSMessagingService.get_active()
+    if service is not None:
+        cap = service.daily_segment_cap
+    else:
+        cap = getattr(settings, 'SMS_DAILY_SEGMENT_CAP', 2000)
     return cap if cap and cap > 0 else None
 
 

@@ -22084,3 +22084,114 @@ class ViewModeOrganizerGuardTests(TestCase):
         self.assertRedirects(
             resp, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False,
         )
+
+
+class SMSMessagingServiceTests(TestCase):
+    """Admin-selectable active Messaging Service drives the sender SID and the
+    daily segment cap, with a clean fallback to env settings when none is active."""
+
+    def _service(self, label, sid, cap, is_active=False):
+        from .models import SMSMessagingService
+        return SMSMessagingService.objects.create(
+            label=label, messaging_service_sid=sid, daily_segment_cap=cap, is_active=is_active,
+        )
+
+    def test_activating_one_deactivates_others(self):
+        from .models import SMSMessagingService
+        tollfree = self._service('Toll-Free', 'MGtollfree', 10000, is_active=True)
+        a2p = self._service('A2P', 'MGa2p', 2000, is_active=False)
+        # Activate the A2P service; the toll-free one should flip off.
+        a2p.is_active = True
+        a2p.save()
+        tollfree.refresh_from_db()
+        a2p.refresh_from_db()
+        self.assertFalse(tollfree.is_active)
+        self.assertTrue(a2p.is_active)
+        self.assertEqual(SMSMessagingService.get_active(), a2p)
+        self.assertEqual(SMSMessagingService.objects.filter(is_active=True).count(), 1)
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2000)
+    def test_daily_cap_follows_active_service(self):
+        from .services.sms_limits import daily_segment_cap
+        # No active service -> env fallback.
+        self.assertEqual(daily_segment_cap(), 2000)
+        tollfree = self._service('Toll-Free', 'MGtollfree', 10000, is_active=True)
+        self.assertEqual(daily_segment_cap(), 10000)
+        # Switch to A2P -> cap follows.
+        a2p = self._service('A2P', 'MGa2p', 2000)
+        a2p.is_active = True
+        a2p.save()
+        self.assertEqual(daily_segment_cap(), 2000)
+        # A cap of 0 disables the guard.
+        a2p.daily_segment_cap = 0
+        a2p.save()
+        self.assertIsNone(daily_segment_cap())
+
+    @override_settings(TWILIO_MESSAGING_SERVICE_SID='MGfromenv', TWILIO_SMS_FROM='', E2E_TEST_MODE=False)
+    def test_send_sms_uses_active_service_sid(self):
+        from . import sms as sms_module
+        self._service('Toll-Free', 'MGtollfree', 10000, is_active=True)
+        fake_message = MagicMock(sid='SMxxx')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+        with patch('twilio.rest.Client', return_value=fake_client):
+            ok, sid, err = sms_module.send_sms('+15551230000', 'hi')
+        self.assertTrue(ok)
+        kwargs = fake_client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs['messaging_service_sid'], 'MGtollfree')
+
+    @override_settings(TWILIO_MESSAGING_SERVICE_SID='MGfromenv', TWILIO_SMS_FROM='', E2E_TEST_MODE=False)
+    def test_send_sms_falls_back_to_env_when_no_active_service(self):
+        from . import sms as sms_module
+        fake_message = MagicMock(sid='SMxxx')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+        with patch('twilio.rest.Client', return_value=fake_client):
+            ok, sid, err = sms_module.send_sms('+15551230000', 'hi')
+        self.assertTrue(ok)
+        kwargs = fake_client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs['messaging_service_sid'], 'MGfromenv')
+
+    @override_settings(SMS_DAILY_SEGMENT_CAP=2000, TWILIO_MESSAGING_SERVICE_SID='', TWILIO_SMS_FROM='')
+    def test_sender_summary_reflects_active_service(self):
+        from .sms_views import _sms_sender_summary
+        # No active service -> env fallback cap, neutral (empty) sender + no label.
+        summary = _sms_sender_summary()
+        self.assertEqual(summary['sms_daily_cap'], 2000)
+        self.assertEqual(summary['sms_sender_label'], '')
+        self.assertEqual(summary['sms_sender_number'], '')
+        # Active toll-free service with an explicit sender number.
+        svc = self._service('Toll-Free', 'MGtollfree', 10000, is_active=True)
+        svc.sms_from = '+18005551234'
+        svc.save()
+        summary = _sms_sender_summary()
+        self.assertEqual(summary['sms_daily_cap'], 10000)
+        self.assertEqual(summary['sms_sender_label'], 'Toll-Free')
+        self.assertEqual(summary['sms_sender_number'], '+18005551234')
+        # Remaining today equals the full cap when nothing has been sent.
+        self.assertEqual(summary['sms_daily_remaining'], 10000)
+
+    @override_settings(TWILIO_MESSAGING_SERVICE_SID='', TWILIO_SMS_FROM='')
+    def test_compose_page_shows_sender_and_limit(self):
+        org = Organization.objects.create(
+            name='Meta Org', slug='meta-org', sms_marketing_enabled=True,
+        )
+        user = User.objects.create_user(
+            username='meta', email='meta@example.com', password='pw')
+        UserProfile.objects.create(
+            user=user, organization=org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=user, organization=org, org_role=UserProfile.OrgRole.OWNER)
+        self._service('Toll-Free', 'MGtollfree', 10000, is_active=True).sms_from  # noqa
+        svc = self._service('A2P 10DLC', 'MGa2p', 2000, is_active=True)
+        svc.sms_from = '+18005551234'
+        svc.save()
+        c = Client()
+        c.login(username='meta@example.com', password='pw')
+        c.get(reverse('tickets:home'))  # warm org cache
+        resp = c.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Sending from')
+        self.assertContains(resp, '+18005551234')
+        self.assertContains(resp, 'Daily limit')
+        self.assertContains(resp, '2000')
