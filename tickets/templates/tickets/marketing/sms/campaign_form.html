@@ -246,6 +246,11 @@
     }
     .sms-aud-preview .sms-hint { margin-top: 0; }
 
+    /* ---- Pasted-list classification summary ---- */
+    .sms-paste-summary { margin-top: 12px; }
+    .sms-paste-summary .plan-progress-counts { flex-wrap: wrap; gap: 6px 16px; }
+    .sms-paste-summary .sms-prefill-gap { margin-top: 10px; }
+
     /* ---- Searchable tags dropdown (multi-select combobox) ---- */
     .sms-dropdown { position: relative; margin-top: 10px; max-width: 340px; }
     .sms-dropdown-toggle {
@@ -516,6 +521,7 @@
                                 {% if form.tag_ids.field.queryset %}
                                 <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-tag" value="tag"{% if audience_scope == 'tag' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-tag"><span class="sms-chip-dot"></span>Customers with a tag</label></span>
                                 {% endif %}
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-paste" value="paste"{% if audience_scope == 'paste' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-paste"><span class="sms-chip-dot"></span>Paste a list of numbers</label></span>
                             </div>
                             <div class="sms-hint" style="margin-top:10px;" id="scope-hint">Texting ticket buyers for <strong>{{ event.name }}</strong>.</div>
                         </div>
@@ -555,6 +561,12 @@
                         </div>
                         {% endif %}
                         {% if not event %}
+                        <div class="sms-aud-group" data-aud-group="scope">
+                            <div class="sms-aud-chips" data-aud-chips="scope">
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-filter" value="filter"{% if audience_scope != 'paste' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-filter"><span class="sms-chip-dot"></span>Choose by filter</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-paste" value="paste"{% if audience_scope == 'paste' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-paste"><span class="sms-chip-dot"></span>Paste a list of numbers</label></span>
+                            </div>
+                        </div>
                         <div class="sms-aud-group" data-aud-group="markets">
                             <div class="sms-aud-grouprow">
                                 <label class="sms-aud-grouplabel" for="{{ form.market_id.id_for_label }}">Market</label>
@@ -577,6 +589,23 @@
                         </div>
                         <div class="sms-hint">Need a custom group? Tag customers on the Customers page, then pick the tag here.</div>
                         {% endif %}
+                        <div class="sms-aud-group" data-aud-group="paste" hidden>
+                            <div class="sms-aud-grouprow">
+                                <label class="sms-aud-grouplabel" for="{{ form.paste_phones.id_for_label }}">Phone numbers</label>
+                            </div>
+                            {{ form.paste_phones }}
+                            {{ form.paste_phones.errors }}
+                            <div class="sms-hint">Paste up to {{ paste_cap }} numbers — one per line or comma-separated. Only numbers matching a subscribed contact will be texted.</div>
+                            <div class="sms-paste-summary" id="paste-summary" hidden>
+                                <div class="plan-progress-counts">
+                                    <span class="pc pc--sent"><b id="paste-matched">0</b> will send</span>
+                                    <span class="pc pc--scheduled"><b id="paste-unsub">0</b> unsubscribed</span>
+                                    <span class="pc pc--draft"><b id="paste-unreach">0</b> unreachable</span>
+                                    <span class="pc"><b id="paste-nocontact">0</b> not in contacts</span>
+                                </div>
+                                <div class="sms-prefill-gap" id="paste-over-cap" hidden></div>
+                            </div>
+                        </div>
                         {% endif %}
                         <div class="sms-aud-preview">
                             <span class="sms-hint" id="aud-note">Only opted-in, contactable, non-opted-out customers are counted.</span>
@@ -941,6 +970,37 @@
                             noteEl.textContent = 'Only opted-in, contactable, non-opted-out customers are counted.';
                         }
                     }
+                    // Paste mode: show the matched / unsubscribed / unreachable / not-in-contacts
+                    // breakdown so the organizer sees who won't receive before sending.
+                    var psEl = document.getElementById('paste-summary');
+                    if (psEl) {
+                        var ps = j.paste_summary;
+                        if (ps && ps.total_pasted > 0) {
+                            var c = ps.counts || {};
+                            var set = function (id, n) {
+                                var el = document.getElementById(id);
+                                if (el) el.textContent = (n || 0).toLocaleString();
+                            };
+                            set('paste-matched', c.matched);
+                            set('paste-unsub', c.unsubscribed);
+                            set('paste-unreach', c.unreachable);
+                            set('paste-nocontact', c.not_contact);
+                            var over = document.getElementById('paste-over-cap');
+                            if (over) {
+                                if (ps.over_cap) {
+                                    over.innerHTML = 'You pasted <b>' + ps.total_pasted.toLocaleString() +
+                                        '</b> numbers — the limit is <b>' + ps.cap.toLocaleString() +
+                                        '</b> per list. Trim the list before sending.';
+                                    over.hidden = false;
+                                } else {
+                                    over.hidden = true;
+                                }
+                            }
+                            psEl.hidden = false;
+                        } else {
+                            psEl.hidden = true;
+                        }
+                    }
                     // Warn when a prefill selection has non-subscribers that will be silently skipped.
                     if (prefillGapEl && prefillCount > 0 && !j.exceeds_cap) {
                         var reachable = parseInt(j.count, 10) || 0;
@@ -1163,23 +1223,39 @@
             sel.addEventListener('change', refreshAudience);
         });
 
-        // Event mode: the scope radios (ticket buyers / all subscribers / a tag) pick a
-        // single audience. Reveal the tag picker only for the tag scope, swap the hint,
-        // and re-size the audience on every change.
+        // Audience-source radios pick a single audience. In event mode: ticket buyers /
+        // all subscribers / a tag / paste; in non-event mode: filter / paste. "paste"
+        // reveals the phone-list textarea and hides the filter pickers in either mode.
         var scopeRadios = document.querySelectorAll('#audience-section input[name="audience_scope"]');
         var tagsGroup = document.getElementById('aud-tags-group');
+        var pasteGroup = document.querySelector('#audience-section [data-aud-group="paste"]');
         var scopeHint = document.getElementById('scope-hint');
         var eventHintHTML = scopeHint ? scopeHint.innerHTML : '';
+        var isEventMode = !!document.getElementById('scope-event');
         function selectedScope() {
             var r = document.querySelector('#audience-section input[name="audience_scope"]:checked');
-            return r ? r.value : 'event';
+            return r ? r.value : (isEventMode ? 'event' : 'filter');
         }
         function syncScope() {
             if (!scopeRadios.length) return;
             var scope = selectedScope();
-            if (tagsGroup) tagsGroup.hidden = scope !== 'tag';
+            var isPaste = scope === 'paste';
+            if (pasteGroup) pasteGroup.hidden = !isPaste;
+            // Hide every filter picker in paste mode; otherwise restore normal behavior.
+            document.querySelectorAll('#audience-section [data-aud-group]').forEach(function (g) {
+                var name = g.getAttribute('data-aud-group');
+                if (name === 'scope' || name === 'paste') return;
+                if (name === 'tags') {
+                    // Event mode shows tags only for the tag scope; non-event shows them
+                    // as part of the filter audience. Always hidden in paste mode.
+                    g.hidden = isPaste || (isEventMode && scope !== 'tag');
+                } else {
+                    g.hidden = isPaste;  // markets, segments
+                }
+            });
             if (scopeHint) {
-                if (scope === 'all') scopeHint.textContent = 'Texting everyone in your org who has opted in to SMS.';
+                if (isPaste) scopeHint.textContent = 'Paste numbers below — we\'ll match them to your subscribed contacts.';
+                else if (scope === 'all') scopeHint.textContent = 'Texting everyone in your org who has opted in to SMS.';
                 else if (scope === 'tag') scopeHint.textContent = 'Texting opted-in customers who have the selected tag(s).';
                 else scopeHint.innerHTML = eventHintHTML;
             }
@@ -1187,6 +1263,13 @@
         scopeRadios.forEach(function (r) {
             r.addEventListener('change', function () { syncScope(); refreshAudience(); });
         });
+        var pasteInput = form ? form.querySelector('[name="paste_phones"]') : null;
+        if (pasteInput) {
+            pasteInput.addEventListener('input', function () {
+                invalidateConfirm();
+                queueRefreshAudience();
+            });
+        }
 
         syncScope();
         syncAll();

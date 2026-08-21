@@ -131,6 +131,69 @@ def _criteria_from_post(post):
     return criteria, includes, excludes
 
 
+def _resolve_paste_audience(org, post):
+    """Resolve the "paste a list of numbers" audience from POST.
+
+    Classifies every pasted number against the org's contacts and returns
+    ``(matched_customer_ids, summary, cap)`` — only the matched, subscribed
+    contacts become recipients (fed through the normal manual_include_ids path);
+    the summary carries the unsubscribed / unreachable / not-in-contacts counts
+    shown to the organizer before sending."""
+    from .services.sms_recipients import classify_pasted_phones
+    cap = getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000)
+    summary = classify_pasted_phones(org, post.get('paste_phones', ''), cap=cap)
+    return list(summary['matched_customer_ids']), summary, cap
+
+
+def _step_audience(org, step):
+    """Resolve a plan step's audience to ``(criteria, manual_include_ids)``.
+
+    A paste step stores its raw numbers under ``paste_phones`` (with empty
+    ``audience_criteria``); this re-resolves them to the currently-subscribed
+    matched contacts. A filter step returns its ``audience_criteria`` with no
+    manual includes. Single source of truth for the plan's send + preview sites —
+    never let pasted phones reach ``filter_customers`` (unknown keys resolve to
+    "everyone"), so paste steps always pass empty criteria + explicit ids."""
+    raw = (step.get('paste_phones') or '').strip()
+    if raw:
+        matched_ids, _summary, _cap = _resolve_paste_audience(org, {'paste_phones': raw})
+        return {}, matched_ids
+    return step.get('audience_criteria') or {}, []
+
+
+def _resolve_paste_audience_response(org, post):
+    """Validate + summarize a pasted phone list for the plan audience modal.
+
+    Returns a JSON-ready dict: on success ``{ok, paste_phones, criteria: {}, mode,
+    audience_label, paste_summary}``; on a bad list ``{ok: False, error, paste_summary}``.
+    Blocks an over-cap list or one with zero matched contacts so a step can't be saved
+    with an unsendable audience."""
+    raw = (post.get('paste_phones') or '').strip()
+    matched_ids, summary, cap = _resolve_paste_audience(org, post)
+    if summary['over_cap']:
+        return {
+            'ok': False,
+            'error': f'You pasted {summary["total_pasted"]} numbers — the limit is '
+                     f'{cap} per list. Trim the list.',
+            'paste_summary': summary,
+        }
+    matched = summary['counts']['matched']
+    if matched == 0:
+        return {
+            'ok': False,
+            'error': 'None of the pasted numbers resolve to a subscribed contact.',
+            'paste_summary': summary,
+        }
+    return {
+        'ok': True,
+        'mode': 'paste',
+        'paste_phones': raw,
+        'criteria': {},
+        'audience_label': f'Pasted list · {matched} will send',
+        'paste_summary': summary,
+    }
+
+
 def _customer_list_criteria_from_post(post):
     sms_f = post.get('sms_filter', '')
     return {
@@ -175,8 +238,13 @@ def sms_audience_preview(request):
     """JSON: resolved recipient count for the audience being composed (live sizing).
     Builds a transient SMSCampaign from the posted criteria — never saved."""
     org = get_organization(request)
-    criteria, includes, excludes = _criteria_from_post(request.POST)
-    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    paste_summary = None
+    if request.POST.get('audience_scope') == 'paste':
+        includes, paste_summary, cap = _resolve_paste_audience(org, request.POST)
+        criteria, excludes = {}, []
+    else:
+        criteria, includes, excludes = _criteria_from_post(request.POST)
+        cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     if not criteria and not includes:
         return JsonResponse({
             'count': 0, 'exceeds_cap': False, 'cap': cap,
@@ -184,6 +252,7 @@ def sms_audience_preview(request):
             'daily_cap_message': '',
             'daily_cap_allowed': None,
             'daily_cap': None,
+            'paste_summary': paste_summary,
         })
     tmp = SMSCampaign(
         organization=org, filter_criteria=criteria,
@@ -229,6 +298,7 @@ def sms_audience_preview(request):
         'daily_cap_message': daily_cap_message,
         'daily_cap_allowed': daily_cap_allowed,
         'daily_cap': daily_cap,
+        'paste_summary': paste_summary,
     })
 
 
@@ -702,8 +772,19 @@ def sms_campaign_create(request):
     # from the query string so a launched plan step can preselect the right chip
     # (e.g. an "all subscribers" step opens on the All SMS subscribers scope).
     audience_scope = request.POST.get('audience_scope') or request.GET.get('audience_scope') or 'event'
-    if audience_scope not in ('event', 'all', 'tag'):
+    if audience_scope not in ('event', 'all', 'tag', 'paste'):
         audience_scope = 'event'
+
+    # "Paste a list of numbers" audience: classify pasted numbers against the org's
+    # contacts and use only the matched, subscribed ones as recipients (via the
+    # manual_include_ids path). The summary drives the unsubscribed/unreachable/
+    # not-in-contacts breakdown shown before sending, and raises the recipient cap
+    # to SMS_PASTE_MAX_RECIPIENTS for this list.
+    paste_summary = None
+    if audience_scope == 'paste':
+        manual_include_ids, paste_summary, cap = _resolve_paste_audience(org, request.POST)
+        has_manual = True
+        prefill = None
 
     if request.method == 'POST':
         form = SMSCampaignForm(
@@ -715,7 +796,11 @@ def sms_campaign_create(request):
             # exactly one audience — the event's ticket buyers, all subscribers, or
             # customers with the chosen tag; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
-            if event:
+            if audience_scope == 'paste':
+                # Paste mode: the audience is the matched customer ids resolved above;
+                # no filter criteria (candidate_customers uses manual includes only).
+                criteria = {}
+            elif event:
                 if audience_scope == 'all':
                     criteria = {'all_subscribers': True}
                 elif audience_scope == 'tag':
@@ -730,7 +815,13 @@ def sms_campaign_create(request):
             confirm_count = len(recipients)
             exceeds_cap = confirm_count > cap
 
-            if exceeds_cap:
+            if audience_scope == 'paste' and paste_summary and paste_summary['over_cap']:
+                form.add_error(
+                    None,
+                    f'You pasted {paste_summary["total_pasted"]} numbers — the limit '
+                    f'is {cap} per list. Trim the list before sending.',
+                )
+            elif exceeds_cap:
                 form.add_error(
                     None,
                     f'This audience resolves to more than {cap} recipients. '
@@ -738,6 +829,12 @@ def sms_campaign_create(request):
                 )
             elif event and audience_scope == 'tag' and not criteria.get('tag_ids'):
                 form.add_error(None, 'Pick at least one tag to send to.')
+            elif confirm_count == 0 and audience_scope == 'paste':
+                form.add_error(
+                    None,
+                    'None of the pasted numbers resolve to a subscribed contact. '
+                    'Check the breakdown below.',
+                )
             elif confirm_count == 0:
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:
@@ -1056,8 +1153,13 @@ def sms_campaign_create(request):
         'prefill': prefill,
         'prefill_plan_id': prefill_plan_id,
         'prefill_step': prefill_step,
-        'manual_include_ids_csv': ','.join(manual_include_ids),
+        # In paste mode the audience round-trips via the paste_phones textarea (and is
+        # re-resolved each POST), so don't also emit the matched ids as a hidden field —
+        # that could be thousands of UUIDs of dead HTML.
+        'manual_include_ids_csv': '' if audience_scope == 'paste' else ','.join(manual_include_ids),
         'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
+        'paste_summary': paste_summary,
+        'paste_cap': getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000),
         **_sms_sender_summary(),
     })
 
@@ -1840,6 +1942,7 @@ def _audience_option_lists(org):
         'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
         'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
         'market_choices': market_choices,
+        'paste_cap': getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000),
     }
 
 
@@ -2112,12 +2215,24 @@ def sms_plan_save(request):
         aud_raw = request.POST.get(f'step_audience_{i}')
         if aud_raw:
             try:
-                criteria = json.loads(aud_raw)
+                payload = json.loads(aud_raw)
             except (ValueError, TypeError):
-                criteria = None
-            if isinstance(criteria, dict) and criteria:
-                step = {**step, 'audience_criteria': criteria,
-                        'audience_label': _audience_label_for(org, criteria)}
+                payload = None
+            if isinstance(payload, dict):
+                # Structured payload from the audience modal: {criteria, paste_phones, label}.
+                # A bare criteria dict (legacy shape) is also accepted.
+                if 'criteria' in payload or 'paste_phones' in payload:
+                    paste_phones = (payload.get('paste_phones') or '').strip()
+                    criteria = payload.get('criteria') or {}
+                    if paste_phones:
+                        step = {**step, 'audience_criteria': {}, 'paste_phones': paste_phones,
+                                'audience_label': payload.get('label') or 'Pasted list'}
+                    elif criteria:
+                        step = {**step, 'audience_criteria': criteria, 'paste_phones': '',
+                                'audience_label': payload.get('label') or _audience_label_for(org, criteria)}
+                elif payload:
+                    step = {**step, 'audience_criteria': payload,
+                            'audience_label': _audience_label_for(org, payload)}
 
         steps[i] = step
 
@@ -2177,6 +2292,9 @@ def sms_plan_resolve_audience(request):
         raise Http404()
     mode = request.POST.get('audience_mode') or 'custom'
     event_id = (request.POST.get('event_id') or '').strip()
+    if mode == 'paste':
+        resolved = _resolve_paste_audience_response(org, request.POST)
+        return JsonResponse(resolved, status=200 if resolved['ok'] else 400)
     if mode == 'all' and event_id:
         criteria = {'all_subscribers': True}
     elif mode == 'event' and event_id:
@@ -2213,7 +2331,13 @@ def _decorate_plan_steps(steps, tz):
                 send_local = ''
         out.append({**step, 'purpose_label': label, 'purpose_color': color,
                     'send_local': send_local,
-                    'audience_criteria_json': json.dumps(step.get('audience_criteria') or {})})
+                    'paste_phones': step.get('paste_phones') or '',
+                    'audience_criteria_json': json.dumps(step.get('audience_criteria') or {}),
+                    'audience_payload_json': json.dumps({
+                        'criteria': step.get('audience_criteria') or {},
+                        'paste_phones': step.get('paste_phones') or '',
+                        'label': step.get('audience_label') or '',
+                    })})
     return out
 
 
@@ -2817,6 +2941,24 @@ def sms_plan_update_audience(request, pk, step):
         )
 
     mode = request.POST.get('audience_mode') or 'custom'
+    if mode == 'paste':
+        resolved = _resolve_paste_audience_response(org, request.POST)
+        if not resolved['ok']:
+            return JsonResponse(resolved, status=400)
+        steps[step] = {
+            **steps[step],
+            'audience_criteria': {},
+            'paste_phones': resolved['paste_phones'],
+            'audience_label': resolved['audience_label'],
+        }
+        plan.steps = steps
+        plan.save(update_fields=['steps', 'updated_at'])
+        return JsonResponse({
+            'ok': True,
+            'audience_label': resolved['audience_label'],
+            'paste_summary': resolved['paste_summary'],
+        })
+
     if mode == 'all' and plan.event_id:
         criteria = {'all_subscribers': True}
     elif mode == 'event' and plan.event_id:
@@ -2830,7 +2972,9 @@ def sms_plan_update_audience(request, pk, step):
             )
 
     label = _audience_label_for(org, criteria)
-    steps[step] = {**steps[step], 'audience_criteria': criteria, 'audience_label': label}
+    # Clear any pasted list when switching a step back to a filter audience.
+    steps[step] = {**steps[step], 'audience_criteria': criteria,
+                   'audience_label': label, 'paste_phones': ''}
     plan.steps = steps
     plan.save(update_fields=['steps', 'updated_at'])
     return JsonResponse({'ok': True, 'audience_label': label})
@@ -3249,12 +3393,14 @@ def sms_plan_confirm_step(request, pk, step):
             {'ok': False, 'error': 'Add a message before sending.'}, status=400,
         )
 
-    criteria = target.get('audience_criteria') or {}
+    criteria, manual_ids = _step_audience(org, target)
     event = _plan_step_event(org, plan, criteria)
     scheduled, send_at = _resolve_step_send_at(target, org)
     name = f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200]
     idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    if target.get('paste_phones'):
+        cap = getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000)
 
     from .services.sms_campaigns import (
         finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError,
@@ -3264,7 +3410,7 @@ def sms_plan_confirm_step(request, pk, step):
     try:
         result = finalize_campaign_send(
             org, name=name, body=target.get('body', ''), criteria=criteria,
-            manual_include_ids=[], event=event, scheduled=scheduled, send_at=send_at,
+            manual_include_ids=manual_ids, event=event, scheduled=scheduled, send_at=send_at,
             user=request.user, idempotency_key=idem_key, cap=cap,
         )
     except AudienceEmptyError:
@@ -3316,11 +3462,13 @@ def _finalize_plan_step(org, plan, steps, i, user):
     if not (target.get('body') or '').strip():
         return {'status': 'skipped', 'reason': 'no message text'}
 
-    criteria = target.get('audience_criteria') or {}
+    criteria, manual_ids = _step_audience(org, target)
     event = _plan_step_event(org, plan, criteria)
     scheduled, send_at = _resolve_step_send_at(target, org)
     name = f"{plan.name} · {_step_send_label(target)}"[:200]
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    if target.get('paste_phones'):
+        cap = getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000)
 
     from .services.sms_campaigns import (
         finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError, DailyCapExceededError,
@@ -3329,7 +3477,7 @@ def _finalize_plan_step(org, plan, steps, i, user):
     try:
         result = finalize_campaign_send(
             org, name=name, body=target.get('body', ''), criteria=criteria,
-            manual_include_ids=[], event=event, scheduled=scheduled, send_at=send_at,
+            manual_include_ids=manual_ids, event=event, scheduled=scheduled, send_at=send_at,
             user=user, idempotency_key=uuid.uuid4().hex, cap=cap,
         )
     except AudienceEmptyError:
@@ -3384,17 +3532,18 @@ def sms_plan_preview_all(request, pk):
         if not body:
             not_ready.append({'label': label, 'reason': 'no message text'})
             continue
-        criteria = s.get('audience_criteria') or {}
+        criteria, manual_ids = _step_audience(org, s)
+        step_cap = getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000) if s.get('paste_phones') else cap
         _, send_at = _resolve_step_send_at(s, org)
         recipients = SMSCampaign(
-            organization=org, filter_criteria=criteria,
-        ).materialize(org, cap=cap + 1)
+            organization=org, filter_criteria=criteria, manual_include_ids=manual_ids,
+        ).materialize(org, cap=step_cap + 1)
         count = len(recipients)
         if count == 0:
             not_ready.append({'label': label, 'reason': 'audience has no recipients'})
             continue
-        if count > cap:
-            not_ready.append({'label': label, 'reason': f'audience is over the {cap} recipient cap'})
+        if count > step_cap:
+            not_ready.append({'label': label, 'reason': f'audience is over the {step_cap} recipient cap'})
             continue
         cost_cents, footer_plan = plan_campaign_footers(
             org, body, [r['phone'] for r in recipients], as_of=send_at,
@@ -3520,26 +3669,37 @@ def sms_plan_add_step_after(request, pk, step):
 
     from .services.sms_strategist import _build_step_criteria, plan_audience_label
 
-    # Audience — mirror sms_plan_update_audience (all/event/custom), never dead-ending on an
-    # empty custom pick: fall back to the plan's default audience.
+    # Audience — mirror sms_plan_update_audience (all/event/custom/paste), never dead-ending
+    # on an empty custom pick: fall back to the plan's default audience.
     mode = request.POST.get('audience_mode') or 'custom'
-    if mode == 'all' and plan.event_id:
-        criteria = {'all_subscribers': True}
-    elif mode == 'event' and plan.event_id:
-        criteria = {'event_id': str(plan.event_id)}
+    paste_phones_val = ''
+    if mode == 'paste':
+        resolved = _resolve_paste_audience_response(org, request.POST)
+        if not resolved['ok']:
+            messages.error(request, resolved['error'])
+            return redirect('tickets:sms_plan_detail', pk=plan.id)
+        criteria = {}
+        paste_phones_val = resolved['paste_phones']
+        label = resolved['audience_label']
     else:
-        criteria = _plan_criteria_from_post(request.POST)
-    if not criteria:
-        criteria = _build_step_criteria(
-            org, plan.filter_criteria, plan.event if plan.event_id else None,
-        )
-    label = plan_audience_label(org, criteria)
+        if mode == 'all' and plan.event_id:
+            criteria = {'all_subscribers': True}
+        elif mode == 'event' and plan.event_id:
+            criteria = {'event_id': str(plan.event_id)}
+        else:
+            criteria = _plan_criteria_from_post(request.POST)
+        if not criteria:
+            criteria = _build_step_criteria(
+                org, plan.filter_criteria, plan.event if plan.event_id else None,
+            )
+        label = plan_audience_label(org, criteria)
 
     new_step = {
         'order': step + 1,           # re-indexed below anyway
         'purpose': 'follow_up',
         'audience_label': label,
         'audience_criteria': criteria,
+        'paste_phones': paste_phones_val,
         'offset_days': 0,
         'send_time': '',
         'send_at': None,             # blank schedule — organizer picks a send time
