@@ -1470,7 +1470,50 @@ class SMSCampaignAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'status', 'created_at']
     search_fields = ['name', 'body']
     readonly_fields = ['id', 'started_at', 'sent_at', 'audience_size', 'created_at', 'updated_at']
-    actions = ['refund_failed_sends']
+    actions = ['refund_failed_sends', 'rerun_failed_sends']
+
+    @admin.action(description='Re-run failed sends (resend now as a new campaign)')
+    def rerun_failed_sends(self, request, queryset):
+        from .services.sms_campaigns import (
+            rerun_failed_recipients, AudienceEmptyError, AudienceTooLargeError,
+            DailyCapExceededError,
+        )
+        from .services.sms_credits import InsufficientCreditsError
+
+        created = 0
+        recipients = 0
+        errors = []
+        for campaign in queryset:
+            try:
+                result = rerun_failed_recipients(campaign, user=request.user)
+            except AudienceEmptyError:
+                errors.append(f'{campaign.name}: no reachable failed recipients')
+                continue
+            except DailyCapExceededError as exc:
+                errors.append(f'{campaign.name}: {exc.user_message()}')
+                continue
+            except (AudienceTooLargeError, InsufficientCreditsError) as exc:
+                errors.append(f'{campaign.name}: {exc}')
+                continue
+            if result is None:
+                continue
+            created += 1
+            recipients += result.recipient_count
+        if created:
+            self.message_user(
+                request,
+                f'Re-ran {created} campaign{"s" if created != 1 else ""} — resending to '
+                f'{recipients} failed recipient{"s" if recipients != 1 else ""} '
+                f'(no-sender 21704 / carrier-filtered 30007).',
+                level=messages.SUCCESS,
+            )
+        if errors:
+            self.message_user(request, 'Skipped: ' + '; '.join(errors), level=messages.WARNING)
+        if not created and not errors:
+            self.message_user(
+                request, 'No failed sends to resend in the selected campaigns.',
+                level=messages.INFO,
+            )
 
     @admin.action(description='Refund tokens for limit-related failed sends')
     def refund_failed_sends(self, request, queryset):

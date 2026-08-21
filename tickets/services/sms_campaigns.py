@@ -205,6 +205,57 @@ def finalize_campaign_send(org, *, name, body, criteria, manual_include_ids, eve
     )
 
 
+def failed_recipient_customer_ids(source_campaign, *, error_codes=None):
+    """Distinct, non-null customer ids of a campaign's failed/undelivered recipients.
+
+    Defaults to the limit-related failure set (21704 no-sender / 30007 carrier-filtered);
+    pass an explicit set (or an empty falsy value + all_failed handling in the caller) to
+    widen. Rows whose customer was deleted (customer_id NULL) can't be re-targeted by id
+    and are skipped."""
+    from tickets.models import SMSMessageRecipient
+    from tickets.services.sms_credits import LIMIT_RELATED_FAIL_ERROR_CODES
+
+    codes = LIMIT_RELATED_FAIL_ERROR_CODES if error_codes is None else frozenset(error_codes)
+    qs = SMSMessageRecipient.objects.filter(
+        campaign=source_campaign,
+        status__in=[SMSMessageRecipient.Status.FAILED, SMSMessageRecipient.Status.UNDELIVERED],
+        customer_id__isnull=False,
+    )
+    if codes:
+        qs = qs.filter(error_code__in=codes)
+    return [str(cid) for cid in qs.values_list('customer_id', flat=True).distinct()]
+
+
+def rerun_failed_recipients(source_campaign, *, error_codes=None, scheduled=False,
+                            send_at=None, user=None, name=None, cap=None):
+    """Resend a source campaign's failed sends as a NEW campaign.
+
+    Collects the source's failed recipients (default: limit-related codes), then routes
+    their still-contactable customers through ``finalize_campaign_send`` — which
+    re-materializes (dropping anyone since opted-out/suppressed), re-charges the wallet
+    for what actually goes out, and dispatches. Deliberately leaves ``plan`` unset so the
+    plan hold-gate can't block the resend. Returns the ``CampaignSendResult``, or ``None``
+    when no eligible recipient remains. Propagates the finalize exceptions
+    (AudienceEmpty/TooLarge/DailyCapExceeded/InsufficientCredits) for the caller."""
+    import uuid
+    from django.conf import settings
+    from django.utils import timezone
+
+    ids = failed_recipient_customer_ids(source_campaign, error_codes=error_codes)
+    if not ids:
+        return None
+    cap = cap or getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    send_at = send_at or timezone.now()
+    name = (name or f'{source_campaign.name} (resend)')[:_CAMPAIGN_NAME_MAX]
+    return finalize_campaign_send(
+        source_campaign.organization,
+        name=name, body=source_campaign.body, criteria={},
+        manual_include_ids=ids, event=source_campaign.event,
+        scheduled=scheduled, send_at=send_at, user=user,
+        idempotency_key=uuid.uuid4().hex, cap=cap,
+    )
+
+
 #: SMSCampaign.name is CharField(max_length=200); the overflow batch appends this suffix.
 _PART2_SUFFIX = ' (part 2)'
 _CAMPAIGN_NAME_MAX = 200

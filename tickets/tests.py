@@ -22511,3 +22511,90 @@ class SMSFailedSendRefundTests(TestCase):
         self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 30 + 12)
         self.assertEqual(
             SMSMessageRecipient.objects.filter(refunded_at__isnull=False).count(), 4)
+
+
+@override_settings(SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'), CELERY_TASK_ALWAYS_EAGER=True,
+                   E2E_TEST_MODE=True)
+class SMSRerunFailedSendsTests(TestCase):
+    """Re-run a specific campaign's failed sends: resend to just the failed recipients
+    as a new campaign, dropping anyone since opted-out/suppressed, re-charging tokens."""
+
+    def setUp(self):
+        from .models import SMSCampaign
+        self.org = Organization.objects.create(
+            name='Rerun Org', slug='rerun-org', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000,
+        )
+        self.source = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            status=SMSCampaign.Status.SENT,
+        )
+
+    def _cust(self, phone, opt_in=True):
+        return Customer.objects.create(
+            organization=self.org, email=f'{phone}@example.com', name=phone,
+            phone=phone, sms_opt_in=opt_in,
+        )
+
+    def _failed(self, customer, error_code='21704'):
+        from .models import SMSMessageRecipient
+        return SMSMessageRecipient.objects.create(
+            campaign=self.source, customer=customer, phone=customer.phone,
+            status=SMSMessageRecipient.Status.FAILED, error_code=error_code, segments=1,
+        )
+
+    def test_rerun_resends_only_reachable_failed(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .services.sms_campaigns import rerun_failed_recipients
+        ok = self._cust('+15550000001', opt_in=True)
+        gone = self._cust('+15550000002', opt_in=False)     # opted out since
+        stopped = self._cust('+15550000003', opt_in=True)   # suppressed since
+        PhoneSuppression.objects.create(
+            phone='+15550000003', organization=None,
+            reason=PhoneSuppression.Reason.TWILIO_STOP)
+        self._failed(ok)
+        self._failed(gone)
+        self._failed(stopped)
+
+        result = rerun_failed_recipients(self.source, user=None)
+        self.assertIsNotNone(result)
+        new = result.campaign
+        self.assertNotEqual(new.id, self.source.id)
+        self.assertEqual(new.body, self.source.body)
+        self.assertIsNone(new.plan_id)  # not held by a disabled plan
+        phones = list(SMSMessageRecipient.objects.filter(campaign=new).values_list('phone', flat=True))
+        self.assertEqual(phones, ['+15550000001'])  # opted-out + suppressed dropped
+        # Wallet was charged for the 1 reachable recipient (1 seg × 3¢).
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100000 - 3)
+
+    def test_rerun_none_when_no_failures(self):
+        from .services.sms_campaigns import rerun_failed_recipients
+        self.assertIsNone(rerun_failed_recipients(self.source, user=None))
+
+    def test_rerun_only_targets_default_codes(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        from .services.sms_campaigns import rerun_failed_recipients
+        c1 = self._cust('+15550000001')
+        c2 = self._cust('+15550000002')
+        self._failed(c1, error_code='21704')
+        self._failed(c2, error_code='30005')  # hard bounce — excluded by default
+        result = rerun_failed_recipients(self.source, user=None)
+        phones = list(SMSMessageRecipient.objects.filter(campaign=result.campaign).values_list('phone', flat=True))
+        self.assertEqual(phones, ['+15550000001'])
+
+    def test_command_dry_run_then_apply(self):
+        from .models import SMSCampaign, SMSMessageRecipient
+        self._failed(self._cust('+15550000001'))
+        # Dry run: no new campaign, no charge.
+        call_command('rerun_failed_sms', '--campaign', str(self.source.id))
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 1)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100000)
+        # Apply: creates a resend campaign and charges.
+        call_command('rerun_failed_sms', '--campaign', str(self.source.id), '--apply')
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 2)
+        resend = SMSCampaign.objects.exclude(id=self.source.id).get(organization=self.org)
+        self.assertTrue(resend.name.endswith('(resend)'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100000 - 3)
