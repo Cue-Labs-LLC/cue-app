@@ -43,13 +43,31 @@
     </button>
     <ul class="dropdown-menu">
       {% for label, key in window_choices %}
-      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}">{{ label }}</a></li>
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}{{ window_query_suffix }}">{{ label }}</a></li>
       {% endfor %}
     </ul>
   </div>
+  {% if market_choices %}
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-geo-alt"></i>
+      {% if selected_market_label %}{{ selected_market_label }}{% else %}All markets{% endif %}
+    </button>
+    <ul class="dropdown-menu">
+      <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?{{ market_query_base }}">All markets</a></li>
+      {% for m in market_choices %}
+      <li><a class="dropdown-item{% if selected_market == m.id|stringformat:'s' %} active{% endif %}" href="?{{ market_query_base }}&market={{ m.id }}">{{ m.name }}</a></li>
+      {% endfor %}
+      {% if has_no_market %}
+      <li><a class="dropdown-item{% if selected_market == no_market_value %} active{% endif %}" href="?{{ market_query_base }}&market={{ no_market_value }}">No market</a></li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endif %}
   {% if active_window == 'custom' %}
   <form class="d-flex flex-wrap align-items-center gap-2" method="get">
     <input type="hidden" name="window" value="custom">
+    <input type="hidden" name="market" value="{{ selected_market }}">
     <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
     <span class="text-muted small">to</span>
     <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
