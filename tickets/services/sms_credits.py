@@ -168,3 +168,61 @@ def refund_campaign(campaign, *, description='Campaign canceled'):
                 balance_after=org.sms_credit_balance_cents, campaign=campaign,
                 description=description)
     return refundable
+
+
+# Twilio failure codes that mean a send was blocked by our own SMS-limit handling, not by
+# list quality: no sending number in the Messaging Service (21704 — "The Messaging Service
+# contains no phone numbers") or carrier-filtered from exceeding the daily volume (30007).
+# These are reimbursable — the org was charged upfront but nothing was delivered.
+LIMIT_RELATED_FAIL_ERROR_CODES = frozenset({'21704', '30007'})
+
+
+def refund_failed_recipients(campaign, *, error_codes=None, created_by=None):
+    """Reimburse a campaign's tokens for limit-related failed sends.
+
+    Credits back ``ceil(sum(segments) × price_per_segment_cents())`` for this campaign's
+    recipients that failed/undelivered with one of ``error_codes`` (default
+    ``LIMIT_RELATED_FAIL_ERROR_CODES``) and haven't been refunded yet — capped at the
+    campaign's outstanding net charge so we never credit back more than was charged.
+    Stamps ``refunded_at`` on those rows in the same transaction, so re-running is a
+    no-op. Returns ``(recipients_refunded, cents_credited)``.
+    """
+    from django.utils import timezone
+    from tickets.models import Organization, SMSCreditTransaction, SMSMessageRecipient
+
+    codes = frozenset(error_codes) if error_codes else LIMIT_RELATED_FAIL_ERROR_CODES
+    with transaction.atomic():
+        org = Organization.objects.select_for_update().get(id=campaign.organization_id)
+        eligible = list(
+            SMSMessageRecipient.objects.select_for_update().filter(
+                campaign=campaign,
+                status__in=[SMSMessageRecipient.Status.FAILED,
+                            SMSMessageRecipient.Status.UNDELIVERED],
+                error_code__in=codes,
+                refunded_at__isnull=True,
+                segments__gt=0,
+            )
+        )
+        if not eligible:
+            return 0, 0
+        eligible_ids = [r.id for r in eligible]
+        total_segments = sum(r.segments for r in eligible)
+        cents = int((price_per_segment_cents() * total_segments).to_integral_value(
+            rounding=ROUND_CEILING))
+        # Never refund more than the campaign's outstanding net debit (charges are
+        # negative, prior refunds positive) — mirrors refund_campaign's cap.
+        net = sum(t.amount_cents for t in
+                  SMSCreditTransaction.objects.filter(campaign=campaign))
+        cents = min(cents, max(0, -net))
+        now = timezone.now()
+        if cents > 0:
+            org.sms_credit_balance_cents += cents
+            org.save(update_fields=['sms_credit_balance_cents'])
+            _record(org, kind=SMSCreditTransaction.Kind.REFUND, amount_cents=cents,
+                    balance_after=org.sms_credit_balance_cents, campaign=campaign,
+                    description=f'Reimbursement: {len(eligible)} limit-related failed sends',
+                    created_by=created_by)
+        # Stamp the rows even when the charge was already fully refunded (cents == 0), so
+        # they aren't re-evaluated on the next run.
+        SMSMessageRecipient.objects.filter(id__in=eligible_ids).update(refunded_at=now)
+    return len(eligible), cents
