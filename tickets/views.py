@@ -8860,6 +8860,38 @@ def profitability_overview(request):
         if end_date:
             events_qs = events_qs.filter(start_date__lte=end_date)
 
+    # Market filter — scope the whole page (summary cards, table, all chart
+    # granularities) to one market or "No market". Reuses the shared helper/sentinel.
+    market_choices, has_no_market = market_filter_options(org)
+    valid_market_ids = {str(m.id) for m in market_choices}
+    raw_market = request.GET.get('market', '').strip()
+    if raw_market == NO_MARKET_VALUE and has_no_market:
+        selected_market = NO_MARKET_VALUE
+        events_qs = events_qs.filter(market__isnull=True)
+    elif raw_market in valid_market_ids:
+        selected_market = raw_market
+        events_qs = events_qs.filter(market_id=raw_market)
+    else:
+        selected_market = ''  # "All markets" (also handles invalid/stale ids)
+
+    selected_market_label = ''
+    if selected_market == NO_MARKET_VALUE:
+        selected_market_label = NO_MARKET_LABEL
+    elif selected_market:
+        selected_market_label = next(
+            (m.name for m in market_choices if str(m.id) == selected_market), ''
+        )
+
+    # Query-string fragments so market/window selectors preserve each other's state.
+    market_base_params = {'window': active_window}
+    if active_window == 'custom':
+        if start_date:
+            market_base_params['start'] = start_date
+        if end_date:
+            market_base_params['end'] = end_date
+    market_query_base = urlencode(market_base_params)
+    window_query_suffix = f'&market={selected_market}' if selected_market else ''
+
     events = (
         events_qs
         .annotate(
@@ -9030,6 +9062,13 @@ def profitability_overview(request):
         'window_start': start_date or '',
         'window_end': end_date or '',
         'window_choices': WINDOW_CHOICES,
+        'market_choices': market_choices,
+        'has_no_market': has_no_market,
+        'no_market_value': NO_MARKET_VALUE,
+        'selected_market': selected_market,
+        'selected_market_label': selected_market_label,
+        'market_query_base': market_query_base,
+        'window_query_suffix': window_query_suffix,
     }
     return render(request, 'tickets/profitability_overview.html', context)
 

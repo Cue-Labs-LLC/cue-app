@@ -1020,6 +1020,45 @@ class MarketEntityReportingTests(TestCase):
         self.assertIn('No market', chart['labels'])
         self.assertNotIn('Austin', chart['labels'])
 
+    def test_profitability_market_filter_scopes_page_to_selected_market(self):
+        # No filter: both events present in the event table.
+        response = self.client.get(reverse('tickets:profitability_overview'), {'window': 'all'})
+        all_events = {row['event'].name for row in response.context['event_rows']}
+        self.assertEqual(all_events, {'Austin Report Show', 'Dallas Report Show'})
+        self.assertEqual(response.context['selected_market'], '')
+
+        # Filter to the assigned market: only its event remains, everywhere.
+        response = self.client.get(
+            reverse('tickets:profitability_overview'),
+            {'window': 'all', 'market': str(self.market.id)},
+        )
+        self.assertEqual(response.context['selected_market'], str(self.market.id))
+        self.assertEqual(response.context['selected_market_label'], 'Central Texas')
+        scoped = {row['event'].name for row in response.context['event_rows']}
+        self.assertEqual(scoped, {'Austin Report Show'})
+        # Market chart reflects the scope: only the selected market, no "No market" bucket.
+        chart = json.loads(response.context['market_chart_data_json'])
+        self.assertEqual(chart['labels'], ['Central Texas'])
+
+    def test_profitability_no_market_filter_scopes_to_unassigned(self):
+        response = self.client.get(
+            reverse('tickets:profitability_overview'),
+            {'window': 'all', 'market': '__none__'},
+        )
+        self.assertEqual(response.context['selected_market'], '__none__')
+        scoped = {row['event'].name for row in response.context['event_rows']}
+        self.assertEqual(scoped, {'Dallas Report Show'})
+
+    def test_profitability_invalid_market_falls_back_to_all(self):
+        response = self.client.get(
+            reverse('tickets:profitability_overview'),
+            {'window': 'all', 'market': 'not-a-real-uuid'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_market'], '')
+        scoped = {row['event'].name for row in response.context['event_rows']}
+        self.assertEqual(scoped, {'Austin Report Show', 'Dallas Report Show'})
+
     def test_survey_analytics_filter_and_breakdown_use_market_id(self):
         upload = ExternalSurveyUpload.objects.create(
             organization=self.org,
