@@ -18676,6 +18676,49 @@ class SubscribePageTests(TestCase):
             rec.save()
 
 
+class SMSInboundOptOutKeywordTests(TestCase):
+    """The inbound webhook suppresses on Twilio's OptOutType when present, and falls back
+    to matching STOP/START keywords in the message body when it isn't — so opt-outs are
+    captured even if Advanced Opt-Out isn't forwarding OptOutType."""
+
+    def test_classifier_prefers_opt_out_type(self):
+        from .sms_views import _inbound_opt_action
+        self.assertEqual(_inbound_opt_action('STOP', 'hello'), 'STOP')
+        self.assertEqual(_inbound_opt_action('START', 'stop'), 'START')
+
+    def test_classifier_body_fallback(self):
+        from .sms_views import _inbound_opt_action
+        for body in ('STOP', 'stop', 'Stop.', ' stop ', 'unsubscribe', 'Cancel', 'QUIT', 'stop all'):
+            self.assertEqual(_inbound_opt_action('', body), 'STOP', body)
+        for body in ('START', 'yes', 'Unstop'):
+            self.assertEqual(_inbound_opt_action(None, body), 'START', body)
+        # Not opt-out keywords → no action (avoids false positives).
+        for body in ('stop by the show', 'please stop', 'starting soon', '', 'thanks'):
+            self.assertIsNone(_inbound_opt_action('', body), body)
+
+    def _post(self, data):
+        with patch('tickets.sms_views.validate_twilio_request', return_value=True):
+            return self.client.post(reverse('tickets:twilio_sms_inbound_webhook'), data)
+
+    def test_body_stop_without_opt_out_type_suppresses(self):
+        resp = self._post({'From': '+14155559001', 'Body': 'STOP'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(PhoneSuppression.objects.filter(
+            phone='+14155559001', organization__isnull=True,
+            reason=PhoneSuppression.Reason.TWILIO_STOP).exists())
+
+    def test_non_keyword_body_does_not_suppress(self):
+        self._post({'From': '+14155559002', 'Body': 'stop by the show tonight'})
+        self.assertFalse(PhoneSuppression.objects.filter(phone='+14155559002').exists())
+
+    def test_body_start_clears_global_suppression(self):
+        PhoneSuppression.objects.create(
+            phone='+14155559003', organization=None,
+            reason=PhoneSuppression.Reason.TWILIO_STOP)
+        self._post({'From': '+14155559003', 'Body': 'START'})
+        self.assertFalse(PhoneSuppression.objects.filter(phone='+14155559003').exists())
+
+
 class PhoneSubscriberReconciliationTests(TestCase):
     """A phone-only subscriber (email='') unifies with a later CSV import or checkout
     purchase by phone, instead of forking a second Customer row."""
