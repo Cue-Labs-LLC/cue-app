@@ -2435,6 +2435,30 @@ def _plan_has_sent_step(org, steps):
     )
 
 
+def _cancel_scheduled_plan_campaigns(org, plan):
+    """Cancel + refund every still-SCHEDULED campaign launched from this plan, returning the
+    total refunded cents. Called before deleting a plan so its queued sends don't survive as
+    orphaned 'Scheduled' rows (they'd still be dispatched — due()/send_sms_campaign_task key on
+    status alone, not the deleted plan). Mirrors sms_campaign_cancel / the overdue 'skip' path:
+    the flip to CANCELED is atomic and guarded on SCHEDULED so it can't race the send task."""
+    from .services.sms_credits import refund_campaign
+    refunded_cents = 0
+    cids = list(
+        SMSCampaign.objects.filter(
+            organization=org, plan=plan, status=SMSCampaign.Status.SCHEDULED,
+        ).values_list('id', flat=True)
+    )
+    for cid in cids:
+        updated = SMSCampaign.objects.filter(
+            id=cid, status=SMSCampaign.Status.SCHEDULED,
+        ).update(status=SMSCampaign.Status.CANCELED)
+        if updated:
+            refunded_cents += refund_campaign(
+                SMSCampaign.objects.get(id=cid), description='Sequence deleted',
+            )
+    return refunded_cents
+
+
 def _step_is_sent(org, step_dict):
     """True if this single step's launched campaign is sending or already sent — the point
     past which the message (text, schedule, audience) can no longer be edited or removed."""
@@ -2583,8 +2607,10 @@ def sms_plan_list(request):
 @require_sms_feature
 @require_POST
 def sms_plan_delete(request, pk):
-    """Discard a whole plan. The plan is advisory, so this is a hard delete; any campaigns
-    already launched from its steps are separate SMSCampaign rows and are left untouched."""
+    """Discard a whole plan. The plan is advisory, so this is a hard delete. Any campaigns
+    launched from its steps are separate SMSCampaign rows: sent/sending ones are history and
+    block deletion, but still-SCHEDULED ones are canceled + refunded here — otherwise the plan
+    FK's SET_NULL would leave them orphaned in 'Scheduled' (and still dispatched)."""
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
@@ -2592,8 +2618,15 @@ def sms_plan_delete(request, pk):
     if _plan_has_sent_step(org, plan.steps):
         messages.error(request, "You can't delete a plan once one of its messages has been sent.")
         return redirect('tickets:sms_plan_detail', pk=plan.id)
+    refunded_cents = _cancel_scheduled_plan_campaigns(org, plan)
     plan.delete()
-    messages.success(request, 'Plan deleted.')
+    if refunded_cents:
+        messages.success(
+            request,
+            f'Plan deleted. Scheduled sends canceled, ${refunded_cents / 100:.2f} in credits refunded.',
+        )
+    else:
+        messages.success(request, 'Plan deleted.')
     return redirect('tickets:sms_plan_list')
 
 
