@@ -1419,16 +1419,45 @@ def twilio_sms_status_webhook(request):
     return HttpResponse(status=200)
 
 
+# Standard SMS opt-out / opt-in keywords (Twilio's default set). Matched keyword-exact
+# against the trimmed body as a fallback when Advanced Opt-Out isn't forwarding OptOutType.
+_INBOUND_STOP_WORDS = frozenset({'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'})
+_INBOUND_START_WORDS = frozenset({'start', 'yes', 'unstop'})
+
+
+def _inbound_opt_action(opt_out_type, body):
+    """Classify an inbound message as 'STOP' / 'START' / None.
+
+    Prefers Twilio's authoritative ``OptOutType`` (only sent when Advanced Opt-Out is
+    enabled on the Messaging Service). Falls back to a keyword-exact match on the body so
+    a plain "STOP"/"START" text still suppresses/resubscribes even if Advanced Opt-Out
+    isn't on or isn't forwarding ``OptOutType``. Keyword-exact (letters only, after
+    trimming) mirrors Twilio's own matching and avoids false positives like "stop by")."""
+    opt_out_type = (opt_out_type or '').upper()
+    if opt_out_type in ('STOP', 'START'):
+        return opt_out_type
+    word = re.sub(r'[^a-z]', '', (body or '').strip().lower())
+    if word in _INBOUND_STOP_WORDS:
+        return 'STOP'
+    if word in _INBOUND_START_WORDS:
+        return 'START'
+    return None
+
+
 @csrf_exempt
 @require_POST
 def twilio_sms_inbound_webhook(request):
-    """Inbound message webhook. We only mirror Twilio's opt-out classification
-    (OptOutType) into PhoneSuppression — Twilio itself enforces STOP/HELP."""
+    """Inbound message webhook: mirror opt-out/opt-in into PhoneSuppression.
+
+    Uses Twilio's ``OptOutType`` classification when present (Advanced Opt-Out), and
+    otherwise falls back to matching standard STOP/START keywords in the message body —
+    so opt-outs are captured even when the Messaging Service isn't forwarding OptOutType.
+    Twilio still enforces STOP/HELP itself; this keeps the app's audience in sync."""
     if not validate_twilio_request(request):
         return HttpResponse(status=403)
     from_phone = normalize_phone(request.POST.get('From', ''))
-    opt_out_type = (request.POST.get('OptOutType') or '').upper()
-    if from_phone and opt_out_type == 'STOP':
+    action = _inbound_opt_action(request.POST.get('OptOutType'), request.POST.get('Body'))
+    if from_phone and action == 'STOP':
         PhoneSuppression.objects.get_or_create(
             phone=from_phone, organization=None,
             defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
@@ -1444,7 +1473,7 @@ def twilio_sms_inbound_webhook(request):
         if recent:
             recent.opted_out_at = timezone.now()
             recent.save(update_fields=['opted_out_at', 'updated_at'])
-    elif from_phone and opt_out_type == 'START':
+    elif from_phone and action == 'START':
         PhoneSuppression.objects.filter(phone=from_phone, organization__isnull=True).delete()
         # A subscriber who consented while globally STOP'd is now reachable —
         # clear the pending_start lifecycle flag so the org's audience reflects it.
