@@ -1744,9 +1744,9 @@ class ScannerSession(BaseModel):
 
 class EventExpenseQuerySet(models.QuerySet):
     def visible(self):
-        return self.filter(deleted_at__isnull=True).exclude(
-            source='meta_ads', confirmed_at__isnull=True
-        )
+        # A linked Meta Ads campaign is a deliberate user action, so its spend
+        # counts as an event expense immediately — no separate confirm step.
+        return self.filter(deleted_at__isnull=True)
 
 
 class EventExpense(AuditBaseModel):

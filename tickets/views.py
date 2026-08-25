@@ -4719,8 +4719,8 @@ def _compute_event_stats(event):
     total_revenue = net_ticket_revenue + total_additional_income
 
     # Expenses — evaluate queryset to list so it can be pickled for cache.
-    # Unconfirmed meta_ads (campaign-matched) expenses are excluded from event
-    # expense totals/listings; they only appear in the Marketing tab review UI.
+    # Linked meta_ads (campaign-matched) expenses count toward event totals as
+    # soon as they're linked; `.visible()` only filters out soft-deleted rows.
     expenses_qs = event.expenses.visible()
     total_expenses = expenses_qs.aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
