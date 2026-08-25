@@ -536,9 +536,8 @@ class MetaAdsApplyViewTests(TestCase):
     def test_event_detail_refreshes_multiple_campaigns_and_finance_total(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_insights.side_effect = [_insights('50.00'), _insights('25.50')]
-        # Confirmed expenses participate in the finance total. Unconfirmed
-        # campaign-matched expenses are intentionally excluded from event
-        # expense totals.
+        # Linked campaign-matched expenses participate in the finance total as
+        # soon as they're linked — no separate confirm step is required.
         EventExpense.objects.create(
             event=self.event,
             category='marketing',
@@ -547,7 +546,6 @@ class MetaAdsApplyViewTests(TestCase):
             amount=Decimal('1.00'),
             external_id='cmp_1',
             external_metadata={'campaign_name': 'Event Campaign'},
-            confirmed_at=datetime.now(timezone.utc),
         )
         EventExpense.objects.create(
             event=self.event,
@@ -557,7 +555,6 @@ class MetaAdsApplyViewTests(TestCase):
             amount=Decimal('2.00'),
             external_id='cmp_2',
             external_metadata={'campaign_name': 'Retargeting Campaign'},
-            confirmed_at=datetime.now(timezone.utc),
         )
 
         response = self.client.get(reverse('tickets:event_detail', kwargs={'event_id': self.event.id}))
