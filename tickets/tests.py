@@ -22554,3 +22554,77 @@ class SMSFailedSendRefundTests(TestCase):
         self.assertEqual(self.org.sms_credit_balance_cents, 1000 - 30 + 12)
         self.assertEqual(
             SMSMessageRecipient.objects.filter(refunded_at__isnull=False).count(), 4)
+
+
+class SMSPlanDeleteCancelsScheduledTests(TestCase):
+    """Deleting an SMS sequence (SMSCampaignPlan) must cancel + refund its still-SCHEDULED
+    launched sends, so they don't survive as orphaned 'Scheduled' rows (which would still be
+    dispatched via due()/send_sms_campaign_task and had credits reserved at schedule time)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Seq Org', slug='seq-org', sms_marketing_enabled=True,
+            ai_sms_strategist_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='seq', email='seq@example.com', password='pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+    def _plan_with_scheduled_campaign(self, *, status=None):
+        from .models import SMSCampaign, SMSCampaignPlan
+        status = status or SMSCampaign.Status.SCHEDULED
+        plan = SMSCampaignPlan.objects.create(
+            organization=self.org, created_by=self.user, name='Final Countdown',
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, plan=plan, name='Final Countdown · Announcement',
+            body='Doors soon!', status=status,
+            scheduled_at=timezone.now() + timedelta(days=1),
+        )
+        plan.steps = [{
+            'order': 0, 'purpose': 'announcement', 'body': 'Doors soon!',
+            'audience_criteria': {}, 'audience_label': 'All',
+            'send_at': campaign.scheduled_at.isoformat(),
+            'launched_campaign_id': str(campaign.id),
+        }]
+        plan.save(update_fields=['steps'])
+        return plan, campaign
+
+    def test_delete_cancels_and_refunds_scheduled_send(self):
+        from .models import SMSCampaign, SMSCampaignPlan
+        from .services.sms_credits import charge, credit
+        credit(self.org.id, 100_000)
+        plan, campaign = self._plan_with_scheduled_campaign()
+        charge(self.org.id, 300, campaign=campaign, description='Scheduled')
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100_000 - 300)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_delete', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 302)
+
+        # Plan gone; campaign canceled (so it drops out of the Scheduled band + due()); refunded.
+        self.assertFalse(SMSCampaignPlan.objects.filter(id=plan.id).exists())
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SMSCampaign.Status.CANCELED)
+        self.assertNotIn(campaign, SMSCampaign.objects.due())
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100_000)
+
+    def test_delete_blocked_when_a_step_already_sent(self):
+        from .models import SMSCampaign, SMSCampaignPlan
+        plan, campaign = self._plan_with_scheduled_campaign(status=SMSCampaign.Status.SENT)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_delete', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 302)
+        # Sent step blocks deletion — plan and its history stay put.
+        self.assertTrue(SMSCampaignPlan.objects.filter(id=plan.id).exists())
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SMSCampaign.Status.SENT)
