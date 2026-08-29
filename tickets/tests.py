@@ -22628,3 +22628,90 @@ class SMSPlanDeleteCancelsScheduledTests(TestCase):
         self.assertTrue(SMSCampaignPlan.objects.filter(id=plan.id).exists())
         campaign.refresh_from_db()
         self.assertEqual(campaign.status, SMSCampaign.Status.SENT)
+
+
+class MyTicketsEmailMatchingTests(TestCase):
+    """Attendees must see their direct-ticket orders even when their account
+    email casing differs from the always-lowercased Customer.email, and when
+    the order is linked only by the Customer.user FK.
+
+    Regression: my_tickets/my_ticket_detail matched customer__email against
+    request.user.email case-sensitively. User.email from the checkout signup
+    modal keeps original casing (e.g. 'Bsalomon07@outlook.com') while
+    Customer.save() lowercases the email, so a real online purchase became
+    invisible on 'My Tickets'.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='MT Org', slug='mt-org')
+        self.venue = Venue.objects.create(organization=self.org, name='MT Venue', city='LA')
+        # Future event so it lands on the default 'upcoming' tab.
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='MT Event',
+            venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=7),
+            start_time=time(19, 0, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+
+    def _make_order(self, customer, number='#90001'):
+        return TicketOrder.objects.create(
+            customer=customer,
+            event=self.event,
+            order_number=number,
+            order_date=timezone.now(),
+            total_amount=Decimal('8.34'),
+        )
+
+    def test_mixed_case_account_email_still_sees_direct_order(self):
+        # Account email keeps its original casing (checkout modal never lowercases it).
+        user = User.objects.create_user(
+            username='kazeroforeign', email='Bsalomon07@outlook.com', password='pw')
+        # Customer.save() lowercases the email; linked to the account via FK.
+        customer = Customer.objects.create(
+            organization=self.org, email='Bsalomon07@outlook.com',
+            name='B Salomon', user=user)
+        self.assertEqual(customer.email, 'bsalomon07@outlook.com')  # sanity: lowercased on save
+        order = self._make_order(customer)
+
+        self.client.force_login(user)
+        resp = self.client.get(reverse('tickets:my_tickets'))
+        self.assertEqual(resp.status_code, 200)
+        order_ids = [o.id for o in resp.context['page_obj']]
+        self.assertIn(order.id, order_ids)
+
+        # Detail page is reachable too.
+        detail = self.client.get(
+            reverse('tickets:my_ticket_detail', kwargs={'order_id': order.id}))
+        self.assertEqual(detail.status_code, 200)
+
+    def test_matches_by_user_fk_when_emails_differ(self):
+        # Account email differs entirely from the order's customer email;
+        # the Customer.user FK is the source of truth.
+        user = User.objects.create_user(
+            username='newemail', email='new.address@example.com', password='pw')
+        customer = Customer.objects.create(
+            organization=self.org, email='old.address@example.com',
+            name='Moved Email', user=user)
+        order = self._make_order(customer, number='#90002')
+
+        self.client.force_login(user)
+        resp = self.client.get(reverse('tickets:my_tickets'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(order.id, [o.id for o in resp.context['page_obj']])
+
+    def test_other_users_order_not_visible(self):
+        # Guard against over-matching: an unrelated order must not leak.
+        mine = User.objects.create_user(
+            username='mine', email='mine@example.com', password='pw')
+        Customer.objects.create(organization=self.org, email='mine@example.com', user=mine)
+        other_customer = Customer.objects.create(
+            organization=self.org, email='other@example.com')
+        other_order = self._make_order(other_customer, number='#90003')
+
+        self.client.force_login(mine)
+        resp = self.client.get(reverse('tickets:my_tickets'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(other_order.id, [o.id for o in resp.context['page_obj']])

@@ -13347,7 +13347,10 @@ def my_tickets(request):
     base_qs = (
         TicketOrder.objects
         .filter(
-            customer__email=request.user.email,
+            # Match by linked account first; fall back to case-insensitive email so
+            # mixed-case signup emails (User.email isn't normalized) still match the
+            # always-lowercased Customer.email.
+            Q(customer__user=request.user) | Q(customer__email__iexact=request.user.email),
             event__ticketing_type=TICKETING_TYPE_DIRECT,
         )
         .select_related('event', 'event__venue', 'customer')
@@ -13382,8 +13385,8 @@ def my_ticket_detail(request, order_id):
         TicketOrder.objects
         .select_related('event', 'event__venue', 'customer')
         .prefetch_related('tickets'),
+        Q(customer__user=request.user) | Q(customer__email__iexact=request.user.email),
         id=order_id,
-        customer__email=request.user.email,
     )
     ticket_qrs = []
     if not order.refunded_at:
