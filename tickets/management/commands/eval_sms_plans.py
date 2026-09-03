@@ -38,6 +38,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from tickets.models import Event, Organization
+from tickets.services.sms_strategist import EVENT_PLAN_GOALS
 from tickets.sms import sms_segment_info, strip_emoji, with_stop_footer
 
 # The compliance footer as appended by apply_stop_footer, used to measure a body's
@@ -45,14 +46,9 @@ from tickets.sms import sms_segment_info, strip_emoji, with_stop_footer
 _PLAIN_FOOTER = '\n\nReply STOP to opt out'
 
 
-# The quick-select goals, verbatim from templates/tickets/marketing/sms/plan_form.html.
-EVENT_GOALS = [
-    'Sell out the remaining tickets',
-    'Drive early-bird sales',
-    'Create last-minute urgency',
-    'Upsell to a premium tier',
-    'Bring back past attendees',
-]
+# The quick-select event goals — shared with the plan form via the strategist so the
+# eval corpus and the live goals stay identical (see EVENT_PLAN_GOALS).
+EVENT_GOALS = list(EVENT_PLAN_GOALS)
 # Each segment goal is paired with the RFM segment it most naturally targets, so the
 # audience the strategist sees matches the objective (values from SMS_SEGMENT_CHOICES).
 SEGMENT_GOALS = [

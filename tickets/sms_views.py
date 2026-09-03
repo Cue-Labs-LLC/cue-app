@@ -1975,8 +1975,10 @@ def _audience_option_lists(org):
     }
 
 
-def _plan_form_context(org, event=None, selected_criteria=None):
+def _plan_form_context(org, event=None, selected_criteria=None, selected_goal=''):
     """Shared context for the plan generate form (segments/tags/markets/events)."""
+    from .services.sms_strategist import EVENT_PLAN_GOALS
+
     opts = _audience_option_lists(org)
     market_choices = opts['market_choices']
     # Recent + upcoming events the organizer might plan for.
@@ -1988,6 +1990,9 @@ def _plan_form_context(org, event=None, selected_criteria=None):
     return {
         'event': event,
         'plan_events': events,
+        # Approved goals for the single-select chips; the form no longer accepts free text.
+        'plan_goals': EVENT_PLAN_GOALS,
+        'selected_goal': selected_goal if selected_goal in EVENT_PLAN_GOALS else '',
         'segment_choices': opts['segment_choices'],
         'selected_segments': sel.get('rfm_segment') or [],
         'tags': opts['tags'],
@@ -2088,7 +2093,12 @@ def sms_plan_create(request):
         )
 
     if request.method == 'POST':
-        objective = (request.POST.get('objective') or '').strip()[:300]
+        # The goal is restricted to the approved presets — any other value (incl. a
+        # tampered POST) becomes "no specific goal" so free text never reaches the model.
+        from .services.sms_strategist import EVENT_PLAN_GOALS
+        objective = (request.POST.get('objective') or '').strip()
+        if objective not in EVENT_PLAN_GOALS:
+            objective = ''
         # "Regenerate" on the preview reuses that unsaved preview's own inputs
         # (event / criteria / objective) so the organizer doesn't re-enter the form.
         prev = request.session.get('sms_plan_preview')
@@ -2105,13 +2115,13 @@ def sms_plan_create(request):
         if event is None and not criteria:
             messages.error(request, 'Pick an event, or choose at least one segment, tag, or market.')
             return render(request, 'tickets/marketing/sms/plan_form.html',
-                          _plan_form_context(org, event, criteria))
+                          _plan_form_context(org, event, criteria, objective))
 
         # Rate limit: 20 successful generations per org per hour (ceiling check only).
         if not _check_plan_rate_limit(org):
             messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
             return render(request, 'tickets/marketing/sms/plan_form.html',
-                          _plan_form_context(org, event, criteria))
+                          _plan_form_context(org, event, criteria, objective))
 
         from .services.sms_strategist import generate_campaign_plan, SMSStrategistError
         ticket_url = _event_ticket_url(request, org, event) if event is not None else ''
@@ -2123,7 +2133,7 @@ def sms_plan_create(request):
         except SMSStrategistError as exc:
             messages.error(request, str(exc))
             return render(request, 'tickets/marketing/sms/plan_form.html',
-                          _plan_form_context(org, event, criteria))
+                          _plan_form_context(org, event, criteria, objective))
 
         # Prefer the AI's distinctive title (so plans for the same event are told apart);
         # fall back to the plain "Plan · {event/audience}" label if it comes back blank.
