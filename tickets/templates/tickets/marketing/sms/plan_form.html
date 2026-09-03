@@ -54,17 +54,14 @@
 
             {# ── Objective ────────────────────────────────────────────── #}
             <div class="plan-section">
-                <label class="form-label" for="planObjective">Goal <span class="text-secondary fw-normal">(optional)</span></label>
-                <input type="text" class="form-control" id="planObjective" name="objective" maxlength="300"
-                       placeholder="e.g. Sell out the remaining tickets, or create last-minute urgency"
-                       value="{{ request.POST.objective|default:'' }}">
+                <label class="form-label">Goal <span class="text-secondary fw-normal">(optional)</span></label>
+                <input type="hidden" name="objective" id="planObjective" value="{{ selected_goal }}">
                 <div class="goal-suggest">
-                    <span class="goal-suggest-label">Try:</span>
-                    <button type="button" class="goal-chip">Sell out the remaining tickets</button>
-                    <button type="button" class="goal-chip">Drive early-bird sales</button>
-                    <button type="button" class="goal-chip">Create last-minute urgency</button>
-                    <button type="button" class="goal-chip">Upsell to a premium tier</button>
-                    <button type="button" class="goal-chip">Bring back past attendees</button>
+                    <span class="goal-suggest-label">Pick one:</span>
+                    {% for goal in plan_goals %}
+                    <button type="button" class="goal-chip{% if selected_goal == goal %} is-selected{% endif %}" data-goal="{{ goal }}">{{ goal }}</button>
+                    {% endfor %}
+                    <button type="button" class="goal-chip{% if not selected_goal %} is-selected{% endif %}" data-goal="">No specific goal</button>
                 </div>
             </div>
 
@@ -81,14 +78,14 @@
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    // Quick-select goal chips fill the objective input (still editable).
+    // Single-select goal chips write the chosen preset (or '' for "No specific goal")
+    // into the hidden objective field — free-text entry is no longer allowed.
     const objectiveInput = document.getElementById('planObjective');
     document.querySelectorAll('.goal-chip').forEach(chip => {
         chip.addEventListener('click', function () {
-            objectiveInput.value = chip.textContent.trim();
+            objectiveInput.value = chip.dataset.goal;
             document.querySelectorAll('.goal-chip').forEach(c => c.classList.remove('is-selected'));
             chip.classList.add('is-selected');
-            objectiveInput.focus();
         });
     });
 

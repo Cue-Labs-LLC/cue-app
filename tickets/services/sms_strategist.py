@@ -40,6 +40,18 @@ PURPOSE_CHOICES = (
 )
 
 
+# The approved goals an organizer may pick on the "Plan a sequence with AI" form.
+# Single source of truth: the form (via _plan_form_context) and the eval corpus both
+# import this so the live goals and what we evaluate never drift. An empty objective
+# ("No specific goal") is also valid — handled separately as the "(none stated)" path.
+EVENT_PLAN_GOALS = (
+    'Sell out the remaining tickets',
+    'Drive early-bird sales',
+    'Create last-minute urgency',
+    'Bring back past attendees',
+)
+
+
 SYSTEM_PROMPT = (
     "You are an expert SMS marketing strategist for an event-ticketing platform. "
     "Given an event or a customer segment, design a concise multi-touch SMS campaign "
