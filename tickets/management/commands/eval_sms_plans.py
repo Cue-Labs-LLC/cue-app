@@ -268,8 +268,13 @@ class Command(BaseCommand):
         parser.add_argument('--event', help='Event UUID for the event scenarios (default: nearest upcoming)')
         parser.add_argument('--samples', type=int, default=2, help='Generations per scenario (default 2)')
         parser.add_argument('--goals', choices=['event', 'segment', 'all'], default='all')
+        parser.add_argument('--goal', help='Focus on ONE goal: exact text or a case-insensitive '
+                            'substring of a preset goal (e.g. "bring back"). Runs only that scenario.')
         parser.add_argument('--ticket-url', default=DEFAULT_TICKET_URL, help='Synthetic ticket link for event scenarios')
         parser.add_argument('--judge', action='store_true', help='Add an LLM-as-judge pass (brand voice + persuasion)')
+        parser.add_argument('--agent-judge', dest='agent_judge', action='store_true',
+                            help='Add a tool-using agent judge that verifies plans against the '
+                                 'org\'s real data and scores goal fit (slower; supersedes --judge)')
         parser.add_argument('--json', dest='json_out', help='Dump raw generated plans to this path')
         parser.add_argument('--from-json', dest='json_in', help='Re-grade plans from a prior --json dump (no LLM calls)')
         parser.add_argument('--rate', action='store_true',
@@ -298,7 +303,8 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(f"Event: {event.name} · {event.start_date} · runway "
                                   f"{(event.start_date - now.date()).days}d")
-        self.stdout.write(f"Samples per goal: {opts['samples']}   Judge: {'on' if opts['judge'] else 'off'}\n")
+        judge_mode = 'agent' if opts.get('agent_judge') else ('on' if opts['judge'] else 'off')
+        self.stdout.write(f"Samples per goal: {opts['samples']}   Judge: {judge_mode}\n")
 
         scenarios = []
         if opts['goals'] in ('event', 'all') and event is not None:
@@ -307,6 +313,12 @@ class Command(BaseCommand):
         if opts['goals'] in ('segment', 'all'):
             for goal, seg in SEGMENT_GOALS:
                 scenarios.append(('segment', f'{goal}', None, {'rfm_segment': [seg]}))
+
+        # --goal narrows to a single scenario so you can iterate on one goal at a time.
+        # Exact (case-insensitive) match wins; otherwise a unique substring match.
+        if opts.get('goal'):
+            scenarios = self._focus_goal(scenarios, opts['goal'])
+            self.stdout.write(self.style.HTTP_INFO(f"Focusing on one goal: {scenarios[0][1]}\n"))
 
         from tickets.services.sms_strategist import generate_campaign_plan, SMSStrategistError
 
@@ -340,8 +352,8 @@ class Command(BaseCommand):
             for g in grades:
                 worst.extend((goal, note, msg) for sev, note, msg in g.examples if sev == 'FAIL')
 
-        if opts['judge']:
-            self._run_judge(org, dump)
+        if opts['judge'] or opts.get('agent_judge'):
+            self._run_judge(org, dump, agent=opts.get('agent_judge', False))
 
         if opts['json_out']:
             with open(opts['json_out'], 'w') as fh:
@@ -418,56 +430,182 @@ class Command(BaseCommand):
             self.stderr.write(self.style.WARNING(f"  judge unavailable: {exc}"))
             return None
 
-    AXES = ('brand_voice', 'persuasion', 'coherence')
+    # Tools the agent judge may call — a curated subset of the chat agent's catalog,
+    # scoped to grounding + goal-fit. Excludes knowledge-base / event-search / venue-revenue
+    # tools that add latency and noise without helping judge a plan against its goal, plus
+    # the generic CRM tools (search_customers / get_organization_summary) that aren't
+    # SMS-shaped grounding signals.
+    AGENT_JUDGE_TOOLS = frozenset({
+        'get_event_detail', 'get_segment_distribution', 'get_repeat_customer_stats',
+        'get_top_customers', 'get_customer_detail', 'get_cohort_retention',
+        'get_upcoming_events',
+    })
 
-    def _run_judge(self, org, dump):
+    def _judge_agent(self, org, plan, *, event=None, goal=''):
+        """Tool-using agent judge: a ReAct agent that calls org-scoped data tools to verify
+        the plan against real data, then scores goal fit + grounding alongside the usual
+        brand-voice/persuasion/coherence axes. Best-effort — warns and returns None on any
+        failure so the eval never crashes. Reuses the chat service's agent machinery
+        (``build_tools`` + ``create_react_agent``)."""
+        try:
+            from langchain_openai import ChatOpenAI
+            from langgraph.prebuilt import create_react_agent
+            from pydantic import BaseModel, Field
+            from django.conf import settings
+
+            from tickets.services.chat.tools import build_tools
+            from tickets.services.sms_strategist import _recent_campaign_bodies
+
+            class Verdict(BaseModel):
+                goal_fit: int = Field(ge=1, le=5, description=(
+                    "Does the sequence's angle, audience, cadence, and CTA actually advance "
+                    "the STATED GOAL? 5 = squarely on-goal; 1 = ignores the goal."))
+                grounding: int = Field(ge=1, le=5, description=(
+                    "Are the plan's claims and targeting consistent with the org's REAL data "
+                    "you looked up via tools (event inventory, segment sizes, repeat/lapsed "
+                    "counts)? 5 = fully supported; 1 = contradicts or invents facts."))
+                brand_voice: int = Field(ge=1, le=5, description="Match to the org's own voice samples.")
+                persuasion: int = Field(ge=1, le=5, description="Likelihood to drive the objective.")
+                coherence: int = Field(ge=1, le=5, description="Sequence reads as distinct, escalating touches.")
+                notes: str = Field(description="One sentence: the biggest weakness, citing what the data showed.")
+
+            tools = [t for t in build_tools(org) if t.name in self.AGENT_JUDGE_TOOLS]
+            voice = _recent_campaign_bodies(org) or ['(no prior messages)']
+            bodies = [{'audience': s.get('audience_label'), 'timing': s.get('timing_label'),
+                       'body': s.get('body')} for s in (plan.get('steps') or [])]
+            target = (f"EVENT: {event.name} (date {event.start_date})" if event is not None
+                      else f"SEGMENT campaign: {plan.get('steps', [{}])[0].get('audience_label', 'segment')}")
+
+            system = (
+                "You are a strict, data-driven SMS marketing reviewer for an event-ticketing "
+                "platform. Judge how well a generated campaign SEQUENCE serves its STATED GOAL. "
+                "You have tools that read this organization's REAL data — USE THEM before "
+                "scoring: look up the event's details/inventory, the RFM segment sizes, and "
+                "repeat/lapsed-customer stats to check whether the plan's targeting and claims "
+                "hold up. For example, for a win-back goal verify lapsed/dormant customers "
+                "actually exist; for a sell-out goal check remaining inventory. Be harsh; 5 is "
+                "exceptional. When done, return the structured verdict.")
+            user = (
+                f"STATED GOAL: {goal or '(none stated)'}\n"
+                f"TARGET {target}\n\n"
+                f"THE ORG'S OWN PAST MESSAGES (voice to match):\n{json.dumps(voice, indent=2)}\n\n"
+                f"PLAN STRATEGY: {plan.get('strategy_summary')}\n"
+                f"PLAN STEPS (in order):\n{json.dumps(bodies, indent=2)}")
+
+            # The agent's tool loop makes several calls per judgment and is token-heavy, so on
+            # low tokens-per-minute tiers it trips 429s mid-run. Raise max_retries (the OpenAI
+            # client backs off on the short 'try again in Xms' the 429 reports) so a transient
+            # rate limit doesn't silently drop a judgment and shrink the sample.
+            llm = ChatOpenAI(model=getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
+                             api_key=getattr(settings, 'OPENAI_API_KEY', ''), temperature=0,
+                             max_retries=8)
+            agent = create_react_agent(llm, tools, response_format=Verdict)
+            # recursion_limit caps the tool loop so a confused agent can't run up cost.
+            result = agent.invoke(
+                {'messages': [{'role': 'system', 'content': system},
+                              {'role': 'user', 'content': user}]},
+                config={'recursion_limit': 15},
+            )
+            v = result.get('structured_response')
+            if v is None:
+                raise RuntimeError('agent returned no structured verdict')
+            # Authoritative record of which tools ran, read from the message trace (not the
+            # model's self-report), so the report shows what was actually checked.
+            tools_used = sorted({
+                getattr(m, 'name', '') for m in result.get('messages', [])
+                if getattr(m, 'type', '') == 'tool' and getattr(m, 'name', '')
+            })
+            return {'goal_fit': v.goal_fit, 'grounding': v.grounding,
+                    'brand_voice': v.brand_voice, 'persuasion': v.persuasion,
+                    'coherence': v.coherence, 'notes': v.notes, 'tools_used': tools_used}
+        except Exception as exc:  # best-effort — never crash the eval
+            self.stderr.write(self.style.WARNING(f"  agent judge unavailable: {exc}"))
+            return None
+
+    AXES = ('brand_voice', 'persuasion', 'coherence')
+    # The agent judge adds the two tool-verifiable, goal-focused axes; goal_fit leads.
+    AGENT_AXES = ('goal_fit', 'grounding', 'brand_voice', 'persuasion', 'coherence')
+    # Axes a HUMAN calibrates against the agent judge. Excludes 'grounding' — a blind rater
+    # can't verify a plan against the org's data without the tools, so calibrating it is
+    # meaningless; goal_fit (the priority axis) is the point of agent-mode calibration.
+    AGENT_RATE_AXES = ('goal_fit', 'brand_voice', 'persuasion', 'coherence')
+    AXIS_HELP = {
+        'goal_fit': 'advances the STATED goal',
+        'grounding': "consistent with the org's real data",
+        'brand_voice': 'sounds like THIS org',
+        'persuasion': 'would drive the goal',
+        'coherence': 'distinct, escalating touches',
+    }
+
+    def _run_judge(self, org, dump, agent=False):
         """Judge every plan, printing per-goal averages + the 'weakness' notes, then an
         overall rollup with the weakest goals called out. Used by both a live run and the
-        --from-json re-judge path (so the judge can be re-run without regenerating plans)."""
+        --from-json re-judge path (so the judge can be re-run without regenerating plans).
+
+        ``agent=True`` uses the tool-using agent judge (goal_fit + grounding axes) instead
+        of the cheap single-call judge. The two verdict shapes are cached under separate
+        keys (``judge`` / ``judge_agent``) so a dump judged both ways keeps both."""
+        axes = self.AGENT_AXES if agent else self.AXES
+        cache_key = 'judge_agent' if agent else 'judge'
+        header = ('goal fit / grounding / brand voice / persuasion / coherence'
+                  if agent else 'brand voice / persuasion / coherence')
         self.stdout.write(self.style.HTTP_INFO(
-            "\n── LLM-as-judge (brand voice / persuasion / coherence, 1-5) ──"))
+            f"\n── {'Agent judge' if agent else 'LLM-as-judge'} ({header}, 1-5) ──"))
         per_goal = []          # [(goal, [verdict, ...]), ...]
         all_verdicts = []
         for row in dump:
             # Keep verdicts aligned 1:1 with plans (None on judge failure) and cache them
             # onto the row so a later --json dump / --rate calibration can reuse them.
-            aligned = row.get('judge') or [self._judge(org, p) for p in row.get('plans', [])]
-            row['judge'] = aligned
+            aligned = row.get(cache_key)
+            if aligned is None:
+                if agent:
+                    ev = (Event.objects.filter(id=row['event_id']).first()
+                          if row.get('event_id') else None)
+                    aligned = [self._judge_agent(org, p, event=ev, goal=row['goal'])
+                               for p in row.get('plans', [])]
+                else:
+                    aligned = [self._judge(org, p) for p in row.get('plans', [])]
+            row[cache_key] = aligned
             verdicts = [v for v in aligned if v]
             if not verdicts:
                 continue
             per_goal.append((row['goal'], verdicts))
             all_verdicts.extend(verdicts)
-            self._print_goal_judge(row['goal'], verdicts)
-        self._judge_rollup(all_verdicts, per_goal)
+            self._print_goal_judge(row['goal'], verdicts, axes)
+        self._judge_rollup(all_verdicts, per_goal, axes)
 
     @staticmethod
     def _avg(verdicts, axis):
         return sum(v[axis] for v in verdicts) / len(verdicts)
 
-    def _print_goal_judge(self, goal, verdicts):
-        avgs = '  '.join(f'{axis.split("_")[0]} {self._avg(verdicts, axis):.1f}' for axis in self.AXES)
+    def _print_goal_judge(self, goal, verdicts, axes):
+        avgs = '  '.join(f'{axis.split("_")[0]} {self._avg(verdicts, axis):.1f}' for axis in axes)
         self.stdout.write(f"  {goal[:34]:34s} {avgs}")
-        # The judge's one-line weakness per sample — the 'why' behind the scores.
+        # The judge's one-line weakness per sample — the 'why' behind the scores — plus
+        # which tools the agent consulted (empty for the cheap judge).
         for v in verdicts:
             note = (v.get('notes') or '').strip()
+            tools = v.get('tools_used') or []
             if note:
-                self.stdout.write(f"        - {note}")
+                suffix = f"   [{', '.join(tools)}]" if tools else ''
+                self.stdout.write(f"        - {note}{suffix}")
 
-    def _judge_rollup(self, all_verdicts, per_goal):
+    def _judge_rollup(self, all_verdicts, per_goal, axes):
         if not all_verdicts:
             return
+        # Lead with the priority axis (goal_fit for the agent judge, brand_voice otherwise).
+        priority = axes[0]
         self.stdout.write(self.style.HTTP_INFO("\n  Overall"))
-        for axis in self.AXES:
+        for axis in axes:
             vals = [v[axis] for v in all_verdicts]
             avg = sum(vals) / len(vals)
             self.stdout.write(f"    avg {axis:11s} {avg:.2f}  (min {min(vals)}, n={len(vals)})")
-        # Call out the goals with the lowest brand-voice match — the usual priority axis.
+        # Call out the goals scoring lowest on the priority axis — where to focus next.
         if len(per_goal) > 1:
-            ranked = sorted(per_goal, key=lambda gv: self._avg(gv[1], 'brand_voice'))
-            self.stdout.write("  Weakest brand voice:")
+            ranked = sorted(per_goal, key=lambda gv: self._avg(gv[1], priority))
+            self.stdout.write(f"  Weakest {priority.replace('_', ' ')}:")
             for goal, verdicts in ranked[:3]:
-                self.stdout.write(f"    {self._avg(verdicts, 'brand_voice'):.1f}  {goal}")
+                self.stdout.write(f"    {self._avg(verdicts, priority):.1f}  {goal}")
 
     # ── resolvers ─────────────────────────────────────────────────────────────
     def _resolve_org(self, slug):
@@ -481,6 +619,24 @@ class Command(BaseCommand):
         if not org:
             raise CommandError("No organizations exist.")
         return org
+
+    @staticmethod
+    def _focus_goal(scenarios, query):
+        """Narrow ``scenarios`` to the single one matching ``query`` (exact case-insensitive
+        goal text, else a unique substring). Raises CommandError with the available goals when
+        nothing matches or the substring is ambiguous."""
+        if not scenarios:
+            raise CommandError("No scenarios to focus — is an event available for event goals?")
+        q = query.strip().lower()
+        exact = [s for s in scenarios if s[1].lower() == q]
+        matches = exact or [s for s in scenarios if q in s[1].lower()]
+        available = ', '.join(repr(s[1]) for s in scenarios)
+        if not matches:
+            raise CommandError(f"--goal {query!r} matched none. Available: {available}")
+        if len(matches) > 1:
+            hit = ', '.join(repr(s[1]) for s in matches)
+            raise CommandError(f"--goal {query!r} is ambiguous (matched: {hit}). Be more specific.")
+        return matches
 
     def _resolve_event(self, org, event_id):
         base = Event.objects.filter(organization=org, deleted_at__isnull=True)
@@ -501,7 +657,8 @@ class Command(BaseCommand):
         captured earlier without --judge, without paying to regenerate plans."""
         with open(path) as fh:
             dump = json.load(fh)
-        mode = "re-grade + re-judge" if opts.get('judge') else "re-grade (no LLM calls)"
+        judging = opts.get('judge') or opts.get('agent_judge')
+        mode = "re-grade + re-judge" if judging else "re-grade (no LLM calls)"
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n=== {mode}: {path} ==="))
         worst = []
         for row in dump:
@@ -514,11 +671,11 @@ class Command(BaseCommand):
             for g in grades:
                 worst.extend((row['goal'], note, msg) for sev, note, msg in g.examples if sev == 'FAIL')
         self._print_worst(worst)
-        if opts.get('judge'):
+        if judging:
             # The judge needs the org for its brand-voice reference; prefer --org, else the
             # slug saved in the dump, else the default strategist-enabled org.
             slug = opts.get('org') or (dump[0].get('org_slug') if dump else None)
-            self._run_judge(self._resolve_org(slug), dump)
+            self._run_judge(self._resolve_org(slug), dump, agent=opts.get('agent_judge', False))
 
     # ── judge calibration: blind human rating vs the judge ────────────────────
     def _rate_and_calibrate(self, path, opts):
@@ -532,20 +689,33 @@ class Command(BaseCommand):
         slug = opts.get('org') or (dump[0].get('org_slug') if dump else None)
         org = self._resolve_org(slug)
 
-        # Ensure every plan has a judge verdict (reuse cached ones from the dump; only call
-        # the LLM for any that are missing).
-        missing = sum(1 for r in dump if not r.get('judge'))
+        # Calibrate whichever judge produced the dump: the tool-using agent judge (with
+        # --agent-judge, calibrating goal_fit) or the cheap single-call judge.
+        agent = opts.get('agent_judge', False)
+        axes = self.AGENT_RATE_AXES if agent else self.AXES
+        cache_key = 'judge_agent' if agent else 'judge'
+
+        # Ensure every plan has a judge verdict of the right kind (reuse cached ones from the
+        # dump; only call the LLM for any that are missing).
+        missing = sum(1 for r in dump if not r.get(cache_key))
         if missing:
             self.stdout.write(self.style.WARNING(
-                f"{missing} scenario(s) have no cached judge scores — scoring them now (LLM cost)…"))
+                f"{missing} scenario(s) have no cached {'agent ' if agent else ''}judge scores — "
+                "scoring them now (LLM cost)…"))
         for row in dump:
-            if not row.get('judge'):
-                row['judge'] = [self._judge(org, p) for p in row.get('plans', [])]
+            if not row.get(cache_key):
+                if agent:
+                    ev = (Event.objects.filter(id=row['event_id']).first()
+                          if row.get('event_id') else None)
+                    row[cache_key] = [self._judge_agent(org, p, event=ev, goal=row['goal'])
+                                      for p in row.get('plans', [])]
+                else:
+                    row[cache_key] = [self._judge(org, p) for p in row.get('plans', [])]
 
         # Flatten to (goal, plan, verdict), keep only plans the judge actually scored.
         items = []
         for row in dump:
-            verdicts = row.get('judge') or []
+            verdicts = row.get(cache_key) or []
             for i, plan in enumerate(row.get('plans', [])):
                 v = verdicts[i] if i < len(verdicts) else None
                 if v:
@@ -567,12 +737,13 @@ class Command(BaseCommand):
             pass
 
         self.stdout.write(self.style.MIGRATE_HEADING(
-            f"\n=== Judge calibration · {org.name} · {len(items)} plans to rate ==="))
+            f"\n=== {'Agent judge' if agent else 'Judge'} calibration · {org.name} · "
+            f"{len(items)} plans to rate ==="))
         self.stdout.write(
-            "Score each plan 1-5 on three axes (judge scores are HIDDEN until the end).\n"
-            "  brand_voice = sounds like THIS org   persuasion = would drive the goal   "
-            "coherence = distinct, escalating touches\n"
-            "Enter = skip a plan · q = stop and show results.\n")
+            f"Score each plan 1-5 on {len(axes)} axes (judge scores are HIDDEN until the end).")
+        for a in axes:
+            self.stdout.write(f"  {a:12s} = {self.AXIS_HELP.get(a, '')}")
+        self.stdout.write("Enter = skip a plan · q = stop and show results.\n")
         if voice:
             self.stdout.write(self.style.HTTP_INFO("This org's real messages (the voice to match):"))
             for b in voice[:6]:
@@ -585,23 +756,23 @@ class Command(BaseCommand):
             self.stdout.write(f"  strategy: {plan.get('strategy_summary')}")
             for j, step in enumerate(plan.get('steps') or [], 1):
                 self.stdout.write(f"    {j}. ({step.get('purpose')}) {step.get('body')}")
-            human = self._prompt_scores()
+            human = self._prompt_scores(axes)
             if human == 'quit':
                 break
             if human:
                 rated.append((verdict, human))
 
-        self._print_calibration(rated)
+        self._print_calibration(rated, axes)
         out = path.rsplit('.', 1)[0] + '.ratings.json'
         with open(out, 'w') as fh:
-            json.dump([{'human': h, 'judge': {a: v[a] for a in self.AXES}} for v, h in rated],
+            json.dump([{'human': h, 'judge': {a: v[a] for a in axes}} for v, h in rated],
                       fh, indent=2)
         self.stdout.write(self.style.SUCCESS(f"\nRatings saved to {out}"))
 
-    def _prompt_scores(self):
-        """Prompt for the three axis scores. Returns a dict, {} to skip, or 'quit'."""
+    def _prompt_scores(self, axes):
+        """Prompt for each axis score. Returns a dict, {} to skip, or 'quit'."""
         scores = {}
-        for axis in self.AXES:
+        for axis in axes:
             while True:
                 raw = input(f"    {axis} (1-5, Enter=skip plan, q=quit): ").strip().lower()
                 if raw == 'q':
@@ -614,14 +785,14 @@ class Command(BaseCommand):
                 self.stdout.write("      please enter 1-5, Enter, or q")
         return scores
 
-    def _print_calibration(self, rated):
+    def _print_calibration(self, rated, axes):
         if not rated:
             self.stdout.write(self.style.WARNING("\nNothing rated — no calibration to report."))
             return
         self.stdout.write(self.style.HTTP_INFO(f"\n── Judge vs you (n={len(rated)}) ──"))
         self.stdout.write(f"  {'axis':12s} {'you':>5s} {'judge':>6s} {'MAE':>5s} {'±1':>5s} {'spearman':>9s}")
         verdict_lines = []
-        for axis in self.AXES:
+        for axis in axes:
             h = [r[1][axis] for r in rated]
             j = [r[0][axis] for r in rated]
             mae = sum(abs(a - b) for a, b in zip(h, j)) / len(h)
