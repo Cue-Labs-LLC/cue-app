@@ -279,6 +279,17 @@
     {% endif %}
 </div>
 
+{% if subscriber_reach and subscriber_reach.total %}
+{% with r=subscriber_reach %}
+<div class="text-muted small mb-3 d-flex align-items-center gap-2 flex-wrap">
+    <span><i class="bi bi-broadcast me-1"></i><strong class="text-body">{{ r.contactable|intcomma }}</strong> of {{ r.total|intcomma }} subscriber{{ r.total|pluralize }} contactable via SMS</span>
+    {% if r.unreachable %}
+    <span class="badge bg-warning" title="Subscribers who can't receive an SMS blast:&#10;• {{ r.invalid|intcomma }} invalid number{{ r.invalid|pluralize }} (e.g. wrong/doubled country code)&#10;• {{ r.suppressed|intcomma }} opted out (replied STOP)&#10;• {{ r.country|intcomma }} international (unsupported country)&#10;• {{ r.no_phone|intcomma }} no phone on file&#10;• {{ r.duplicate|intcomma }} duplicate number&#10;Export the list to see and fix them.">{{ r.unreachable|intcomma }} can't be reached</span>
+    {% endif %}
+</div>
+{% endwith %}
+{% endif %}
+
 {% if current_segment_definition %}
 <div class="alert alert-light border mb-3 py-2 px-3 d-flex align-items-start gap-2">
     <span class="badge bg-{{ current_segment_definition.badge_color }} mt-1">{{ current_segment_definition.segment }}</span>
@@ -695,7 +706,15 @@
                                 {% if customer.sms_suppressed %}
                                 <span class="customer-card-sms"><span class="badge bg-danger">Unsubscribed</span></span>
                                 {% elif customer.sms_opt_in %}
-                                <span class="customer-card-sms text-success"><i class="bi bi-check-circle-fill"></i> SMS</span>
+                                    {% if customer.sms_delivery_status == 'invalid' %}
+                                    <span class="customer-card-sms"><span class="badge bg-warning">Invalid number</span></span>
+                                    {% elif customer.sms_delivery_status == 'country' %}
+                                    <span class="customer-card-sms"><span class="badge bg-warning">Intl</span></span>
+                                    {% elif customer.sms_delivery_status == 'no_phone' %}
+                                    <span class="customer-card-sms"><span class="badge bg-secondary">No phone</span></span>
+                                    {% else %}
+                                    <span class="customer-card-sms text-success"><i class="bi bi-check-circle-fill"></i> SMS</span>
+                                    {% endif %}
                                 {% endif %}
                             </div>
                         </td>
@@ -710,7 +729,15 @@
                             {% if customer.sms_suppressed %}
                             <span class="badge bg-danger" title="Opted out via STOP — can only re-subscribe by texting START">Unsubscribed</span>
                             {% elif customer.sms_opt_in %}
-                            <span class="text-success" title="Subscribed{% if customer.sms_opt_in_date %} {{ customer.sms_opt_in_date|date:'M d, Y' }}{% endif %}"><i class="bi bi-check-circle-fill"></i></span>
+                                {% if customer.sms_delivery_status == 'invalid' %}
+                                <span class="badge bg-warning" title="This phone isn't a valid mobile number (e.g. a wrong or doubled country code), so it can't receive SMS. Fix the number to reach them.">Invalid number</span>
+                                {% elif customer.sms_delivery_status == 'country' %}
+                                <span class="badge bg-warning" title="This number is outside the countries enabled for SMS, so it can't be texted.">Intl</span>
+                                {% elif customer.sms_delivery_status == 'no_phone' %}
+                                <span class="badge bg-secondary" title="Subscribed but no phone number on file, so there's nothing to text.">No phone</span>
+                                {% else %}
+                                <span class="text-success" title="Subscribed{% if customer.sms_opt_in_date %} {{ customer.sms_opt_in_date|date:'M d, Y' }}{% endif %}"><i class="bi bi-check-circle-fill"></i></span>
+                                {% endif %}
                             {% else %}
                             <span class="text-muted">&mdash;</span>
                             {% endif %}

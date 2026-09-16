@@ -33,6 +33,90 @@ def _paste_cap():
     return getattr(settings, 'SMS_PASTE_MAX_RECIPIENTS', 10000)
 
 
+# Per-number deliverability outcomes. These mirror, in order, the reasons
+# ``SMSCampaign.materialize()`` drops a candidate from an audience — so a subscriber
+# labeled anything other than DELIVERY_DELIVERABLE genuinely won't receive a send.
+DELIVERY_DELIVERABLE = 'deliverable'
+DELIVERY_SUPPRESSED = 'suppressed'   # replied STOP / manual opt-out / hard bounce
+DELIVERY_INVALID = 'invalid'         # malformed E.164 (e.g. doubled country code)
+DELIVERY_COUNTRY = 'country'         # outside SMS_ALLOWED_COUNTRY_PREFIXES
+DELIVERY_NO_PHONE = 'no_phone'       # opted in but no phone on file
+
+# Human labels for the CSV export column (see customer_export_csv).
+DELIVERABILITY_LABELS = {
+    DELIVERY_DELIVERABLE: 'Deliverable',
+    DELIVERY_SUPPRESSED: 'Opted out',
+    DELIVERY_INVALID: 'Invalid number',
+    DELIVERY_COUNTRY: 'Intl (unsupported)',
+    DELIVERY_NO_PHONE: 'No phone',
+}
+
+
+def deliverability_status(raw_phone, suppressed_phones):
+    """Classify one contact's phone into a DELIVERY_* outcome.
+
+    ``suppressed_phones`` is a set of normalized E.164 numbers the caller fetched once
+    (e.g. via ``PhoneSuppression.suppressed_phones(org)``) so this stays a pure, DB-free
+    check usable per-row. Order matches ``SMSCampaign.materialize()``:
+    suppressed → invalid format → non-allowed country. Dedupe is aggregate-only and is
+    handled by ``subscriber_reachability`` (a single number can't be "the duplicate").
+    """
+    from tickets.sms import normalize_phone, is_plausible_e164, sms_country_allowed
+
+    raw = (raw_phone or '').strip()
+    if not raw:
+        return DELIVERY_NO_PHONE
+    phone = normalize_phone(raw)
+    if not phone:
+        return DELIVERY_NO_PHONE
+    if phone in suppressed_phones:
+        return DELIVERY_SUPPRESSED
+    if not is_plausible_e164(phone):
+        return DELIVERY_INVALID
+    if not sms_country_allowed(phone):
+        return DELIVERY_COUNTRY
+    return DELIVERY_DELIVERABLE
+
+
+def subscriber_reachability(org, subscriber_qs):
+    """Aggregate how many subscribers in ``subscriber_qs`` a send would actually reach.
+
+    Iterates the queryset's (id, phone) pairs once against a single
+    ``PhoneSuppression.suppressed_phones(org)`` set, attributing each non-deliverable
+    subscriber to its reason and deduping deliverable numbers by normalized phone so
+    ``contactable`` matches a real campaign's materialized audience. Returns:
+
+        {total, contactable, unreachable, suppressed, invalid, country, no_phone, duplicate}
+
+    where total == contactable + unreachable and
+    unreachable == duplicate + suppressed + invalid + country + no_phone.
+    Callers scope ``subscriber_qs`` to opted-in customers (the "subscribers" universe).
+    """
+    from tickets.models import PhoneSuppression
+    from tickets.sms import normalize_phone
+
+    suppressed = PhoneSuppression.suppressed_phones(org)
+    result = {
+        'total': 0, 'contactable': 0, 'suppressed': 0,
+        'invalid': 0, 'country': 0, 'no_phone': 0, 'duplicate': 0,
+    }
+    seen = set()
+    for _cid, phone in subscriber_qs.values_list('id', 'phone').iterator():
+        result['total'] += 1
+        status = deliverability_status(phone, suppressed)
+        if status != DELIVERY_DELIVERABLE:
+            result[status] += 1
+            continue
+        norm = normalize_phone((phone or '').strip())
+        if norm in seen:
+            result['duplicate'] += 1
+            continue
+        seen.add(norm)
+        result['contactable'] += 1
+    result['unreachable'] = result['total'] - result['contactable']
+    return result
+
+
 def classify_pasted_phones(org, raw_text, cap=None):
     """Classify a pasted blob of phone numbers against ``org``'s contacts.
 

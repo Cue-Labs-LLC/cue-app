@@ -2716,6 +2716,20 @@ def build_customer_queryset(org, params, *, for_export=False):
     subscribers_count = customers.filter(order_count=0, sms_opt_in=True).count()
     contacts_count = customers.filter(order_count=0, sms_opt_in=False).count()
     total_count = customers_count + subscribers_count + contacts_count
+
+    # SMS reach: of the opted-in subscribers in this filtered set (buyers + non-buyers,
+    # regardless of the active tab), how many a real send would actually reach — the rest
+    # can't be texted (opted out, invalid number, non-US, etc). Computed over the pre-type
+    # set so it lines up with the tab counts. HTML only (skipped for CSV export) and only
+    # when SMS marketing is on, since it iterates all subscribers in Python.
+    subscriber_reach = None
+    if not for_export and org.sms_marketing_enabled:
+        from tickets.services.sms_recipients import subscriber_reachability
+        # .distinct() so tag/market joins can't count one subscriber twice.
+        subscriber_reach = subscriber_reachability(
+            org, customers.filter(sms_opt_in=True).distinct()
+        )
+
     if customer_type == 'customers':
         customers = customers.filter(order_count__gt=0)
     elif customer_type == 'subscribers':
@@ -2851,6 +2865,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'customers_count': customers_count,
         'subscribers_count': subscribers_count,
         'contacts_count': contacts_count,
+        'subscriber_reach': subscriber_reach,
         'filter_params_qs': urlencode(_fp),
         'filter_params_qs_notype': urlencode(_fp_notype),
         'has_active_filters': has_active_filters,
@@ -2891,12 +2906,17 @@ def customer_list(request):
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
-    # Flag rows whose phone replied STOP (on the suppression list). Suppression
-    # overrides sms_opt_in — these can't be texted until they text START — so the
-    # list shows an explicit "Opted out" state instead of a misleading green check.
-    # Scoped to the current page's phones so it's one small query, not per-row.
+    # Classify each row's SMS deliverability so the list can label subscribers who can't
+    # actually be texted — opted out (STOP), invalid number, non-US, or no phone — instead
+    # of showing a misleading green check. Suppression overrides sms_opt_in (can't text
+    # until they text START). One suppression query for the page's phones, then a pure
+    # per-row check via deliverability_status(). Sets c.sms_delivery_status (a DELIVERY_*
+    # value) and keeps c.sms_suppressed for the existing "Unsubscribed" badge.
     if org.sms_marketing_enabled:
         from .sms import normalize_phone
+        from tickets.services.sms_recipients import (
+            deliverability_status, DELIVERY_SUPPRESSED,
+        )
         page_customers = list(page_obj)
         phones = {normalize_phone(c.phone) for c in page_customers if c.phone}
         suppressed = set()
@@ -2908,7 +2928,9 @@ def customer_list(request):
                 ).values_list('phone', flat=True)
             )
         for c in page_customers:
-            c.sms_suppressed = bool(c.phone) and normalize_phone(c.phone) in suppressed
+            status = deliverability_status(c.phone, suppressed)
+            c.sms_delivery_status = status
+            c.sms_suppressed = status == DELIVERY_SUPPRESSED
 
     segment_choices = list(SEGMENT_BADGE_COLORS.keys())
     current_segment_definition = None
@@ -2967,6 +2989,7 @@ def customer_list(request):
         'customers_count': meta['customers_count'],
         'subscribers_count': meta['subscribers_count'],
         'contacts_count': meta['contacts_count'],
+        'subscriber_reach': meta['subscriber_reach'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
@@ -3056,7 +3079,15 @@ def customer_export_csv(request):
     has_market = meta['has_market']
     loyalty = org.loyalty_feature_enabled
 
-    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value']
+    # Deliverability label per row so organizers can filter the export to the subscribers
+    # a send can't reach (invalid number, opted out, etc). One suppression query up front;
+    # the per-row check is pure. Only populated for opted-in rows — deliverability is moot
+    # for non-subscribers, and a "Deliverable" on a non-subscriber would read as misleading.
+    from tickets.services.sms_recipients import deliverability_status, DELIVERABILITY_LABELS
+    suppressed_phones = PhoneSuppression.suppressed_phones(org)
+
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'SMS Deliverability',
+              'Segment', 'Source', 'Lifetime Value']
     if loyalty:
         header.append('Points Balance')
     header += ['Last Order Date', 'Total Orders']
@@ -3075,6 +3106,8 @@ def customer_export_csv(request):
                 c.email or '',
                 c.phone or '',
                 'Yes' if c.sms_opt_in else 'No',
+                DELIVERABILITY_LABELS[deliverability_status(c.phone, suppressed_phones)]
+                if c.sms_opt_in else '',
                 c.rfm_segment or '',
                 c.get_acquisition_source_display() if c.acquisition_source else '',
                 _csv_money(c.lifetime_value),
