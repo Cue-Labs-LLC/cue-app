@@ -1,7 +1,15 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from tickets.models import Customer, Organization, PhoneSuppression
-from tickets.sms import is_plausible_e164, normalize_phone, sms_country_allowed
+from tickets.sms import normalize_phone
+from tickets.services.sms_recipients import (
+    DELIVERY_COUNTRY,
+    DELIVERY_DELIVERABLE,
+    DELIVERY_INVALID,
+    DELIVERY_NO_PHONE,
+    DELIVERY_SUPPRESSED,
+    deliverability_status,
+)
 
 
 class Command(BaseCommand):
@@ -55,25 +63,27 @@ class Command(BaseCommand):
         seen = set()
         deliverable = 0
 
+        # Single source of truth for the drop order — the same classifier the Customers
+        # page and CSV export use.
+        status_to_reason = {
+            DELIVERY_NO_PHONE: 'blank',
+            DELIVERY_SUPPRESSED: 'suppressed',
+            DELIVERY_INVALID: 'invalid',
+            DELIVERY_COUNTRY: 'country',
+        }
         for c in subs.only('id', 'phone').iterator():
             raw = (c.phone or '').strip()
-            reason = None
-            phone = normalize_phone(raw) if raw else ''
-            if not phone:
-                reason = 'blank'
-            elif phone in suppressed:
-                reason = 'suppressed'
-            elif not is_plausible_e164(phone):
-                reason = 'invalid'
-            elif not sms_country_allowed(phone):
-                reason = 'country'
-            elif phone in seen:
-                reason = 'dup'
-
-            if reason is None:
-                seen.add(phone)
-                deliverable += 1
-                continue
+            status = deliverability_status(c.phone, suppressed)
+            if status == DELIVERY_DELIVERABLE:
+                phone = normalize_phone(raw)
+                if phone in seen:
+                    reason = 'dup'
+                else:
+                    seen.add(phone)
+                    deliverable += 1
+                    continue
+            else:
+                reason = status_to_reason[status]
             counts[reason] += 1
             if len(samples[reason]) < n_samples:
                 samples[reason].append(raw or '(empty)')

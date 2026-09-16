@@ -19391,7 +19391,8 @@ class CustomerExportCsvTests(TestCase):
         self._login()
         header = self._rows(self.client.get(self._url(mode='all')))[0]
         self.assertEqual(header, [
-            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value',
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'SMS Deliverability',
+            'Segment', 'Source', 'Lifetime Value',
             'Last Order Date', 'Total Orders', 'Tags',
         ])
 
@@ -22715,3 +22716,85 @@ class MyTicketsEmailMatchingTests(TestCase):
         resp = self.client.get(reverse('tickets:my_tickets'))
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn(other_order.id, [o.id for o in resp.context['page_obj']])
+
+
+@override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',))
+class SMSDeliverabilityTests(TestCase):
+    """Classifier + reach aggregate + Customers-page labeling of unreachable subscribers."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Reach Org', slug='reach-org',
+                                                sms_marketing_enabled=True)
+        self.user = User.objects.create_user(
+            username='reachadmin', email='reachadmin@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+    def _sub(self, email, phone, opt_in=True):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0],
+            phone=phone, sms_opt_in=opt_in,
+        )
+
+    def test_deliverability_status_buckets(self):
+        from tickets.services.sms_recipients import (
+            deliverability_status, DELIVERY_DELIVERABLE, DELIVERY_SUPPRESSED,
+            DELIVERY_INVALID, DELIVERY_COUNTRY, DELIVERY_NO_PHONE,
+        )
+        suppressed = {'+13105550100'}
+        self.assertEqual(deliverability_status('+13105550111', suppressed), DELIVERY_DELIVERABLE)
+        self.assertEqual(deliverability_status('(310) 555-0111', suppressed), DELIVERY_DELIVERABLE)
+        self.assertEqual(deliverability_status('+13105550100', suppressed), DELIVERY_SUPPRESSED)
+        # Doubled country code -> +1 with 12 digits -> not plausible.
+        self.assertEqual(deliverability_status('+119498864194', suppressed), DELIVERY_INVALID)
+        self.assertEqual(deliverability_status('+447700900123', suppressed), DELIVERY_COUNTRY)
+        self.assertEqual(deliverability_status('', suppressed), DELIVERY_NO_PHONE)
+        self.assertEqual(deliverability_status(None, suppressed), DELIVERY_NO_PHONE)
+
+    def test_subscriber_reachability_totals_reconcile(self):
+        from tickets.services.sms_recipients import subscriber_reachability
+        self._sub('a@x.com', '+13105550111')                 # deliverable
+        self._sub('b@x.com', '+13105550112')                 # deliverable
+        self._sub('c@x.com', '+13105550112')                 # duplicate phone
+        self._sub('d@x.com', '+119498864194')                # invalid
+        self._sub('e@x.com', '+447700900123')                # country
+        self._sub('f@x.com', '')                             # no phone
+        g = self._sub('g@x.com', '+13105550199')             # suppressed
+        PhoneSuppression.objects.create(
+            organization=self.org, phone='+13105550199',
+            reason=PhoneSuppression.Reason.TWILIO_STOP,
+        )
+        r = subscriber_reachability(
+            self.org, Customer.objects.filter(organization=self.org, sms_opt_in=True))
+        self.assertEqual(r['total'], 7)
+        self.assertEqual(r['contactable'], 2)
+        self.assertEqual(r['duplicate'], 1)
+        self.assertEqual(r['invalid'], 1)
+        self.assertEqual(r['country'], 1)
+        self.assertEqual(r['no_phone'], 1)
+        self.assertEqual(r['suppressed'], 1)
+        self.assertEqual(r['unreachable'], 5)
+        self.assertEqual(r['total'], r['contactable'] + r['unreachable'])
+
+    def test_customer_list_labels_and_reach_line(self):
+        self._sub('good@x.com', '+13105550111')
+        self._sub('bad@x.com', '+119498864194')
+        self.client.force_login(self.user)
+        resp = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(resp.status_code, 200)
+        reach = resp.context['subscriber_reach']
+        self.assertEqual(reach['total'], 2)
+        self.assertEqual(reach['contactable'], 1)
+        self.assertEqual(reach['invalid'], 1)
+        content = resp.content.decode()
+        self.assertIn('Invalid number', content)
+        self.assertIn('contactable via SMS', content)
+        # Per-row status is attached for template branching.
+        statuses = {c.email: c.sms_delivery_status for c in resp.context['page_obj']}
+        self.assertEqual(statuses['good@x.com'], 'deliverable')
+        self.assertEqual(statuses['bad@x.com'], 'invalid')
