@@ -1179,7 +1179,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
         <div class="d-flex flex-column">
             <h5 class="mb-0">Conversion Rate</h5>
-            <small class="text-muted">Cumulative buy-page conversion (orders &divide; views) vs. a past event, by days before the event</small>
+            <small class="text-muted">7-day rolling buy-page conversion (orders &divide; views) vs. a past event, by days before the event</small>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2">
             <label class="d-flex align-items-center gap-2 mb-0">
@@ -6869,12 +6869,12 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 
 <script>
-// Conversion Rate — cumulative buy-page conversion (orders ÷ views) for this event
-// vs. a comparison event, aligned on a days-before-event axis. It reuses the Page
-// Views card's shape and comparison-event picker; the plotted value is a cumulative
-// ratio (running orders ÷ running views), so there is no absolute/% scale toggle —
-// the series is already a percentage. Changing the comparison event fetches its
-// series from the conversion API.
+// Conversion Rate — buy-page conversion (orders ÷ views) for this event vs. a
+// comparison event, aligned on a days-before-event axis. It reuses the Page Views
+// card's shape and comparison-event picker; the plotted value is a smoothed rolling
+// rate (orders ÷ views over a trailing multi-day window), so there is no absolute/%
+// scale toggle — the series is already a percentage. Changing the comparison event
+// fetches its series from the conversion API.
 document.addEventListener('DOMContentLoaded', function () {
     var canvas = document.getElementById('conversionCompareChart');
     if (!canvas) return;
@@ -6901,22 +6901,27 @@ document.addEventListener('DOMContentLoaded', function () {
     var todayDaysBefore = rawToday === '' || rawToday === null ? null : Number(rawToday);
     var currentAxis = [];   // day values behind the x labels, kept for the marker
 
-    // Cumulative conversion at each axis label: running orders ÷ running views for
-    // all days-before >= the label (axis descending, so it grows toward day 0). A
-    // ratio can't be summed, so we accumulate the two counts and divide. 0 views so
-    // far -> 0% (keeps the line continuous from the left edge).
-    function cumulativeConversionFor(series, axis) {
-        var sorted = series.slice().sort(function (a, b) { return b.d - a.d; });
-        var out = [], runOrders = 0, runViews = 0, idx = 0;
-        axis.forEach(function (label) {
-            while (idx < sorted.length && sorted[idx].d >= label) {
-                runOrders += sorted[idx].orders || 0;
-                runViews += sorted[idx].views || 0;
-                idx++;
-            }
-            out.push(runViews > 0 ? (runOrders / runViews * 100) : 0);
+    var ROLL_WINDOW = 7;   // days per trailing window
+
+    // Rolling conversion at each axis label: orders ÷ views summed over a trailing
+    // window of ROLL_WINDOW calendar days (this day plus the earlier days, i.e. the
+    // larger days-before values). Smooths the day-to-day noise a raw daily ratio
+    // would show while still tracking how the rate moves over time. Windows with no
+    // views yield null so the line spans the gap instead of dropping to a misleading
+    // 0% (spanGaps is enabled on the dataset).
+    function rollingConversionFor(series, axis) {
+        var byDay = {};
+        (series || []).forEach(function (p) {
+            byDay[p.d] = { orders: p.orders || 0, views: p.views || 0 };
         });
-        return out;
+        return axis.map(function (d) {
+            var orders = 0, views = 0;
+            for (var k = 0; k < ROLL_WINDOW; k++) {
+                var rec = byDay[d + k];
+                if (rec) { orders += rec.orders; views += rec.views; }
+            }
+            return views > 0 ? (orders / views * 100) : null;
+        });
     }
 
     function labelFor(d) {
@@ -6925,6 +6930,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function fmt(v) {
+        if (v === null || v === undefined) return '—';   // gap in the window
         var n = Math.round(v * 100) / 100;
         return n.toLocaleString() + '%';
     }
@@ -6949,7 +6955,7 @@ document.addEventListener('DOMContentLoaded', function () {
         function dataset(data, name, color, dashed) {
             return {
                 label: name,
-                data: cumulativeConversionFor(data.series || [], axis),
+                data: rollingConversionFor(data.series || [], axis),
                 borderColor: color,
                 backgroundColor: color,
                 borderWidth: 2,
@@ -6957,7 +6963,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 pointRadius: 0,
                 pointHoverRadius: 4,
                 fill: false,
-                tension: 0.35,
+                spanGaps: true,
+                tension: 0.4,
             };
         }
 
