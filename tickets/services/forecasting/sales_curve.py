@@ -268,6 +268,62 @@ class SalesCurveCalculator:
             'total_views': sum(views_by_day.values()),
         }
 
+    def get_conversion_series(self, event: Event) -> dict:
+        """Daily orders and buy-page views per days-before-event for one event.
+
+        Powers the "Conversion Rate" comparison card on the Analytics tab, letting
+        two direct-ticketing events be compared on the same "days before the event"
+        axis as the Page Views card. Returns absolute (non-cumulative) daily order
+        counts and view counts so the caller builds a *cumulative* conversion rate
+        client-side (cumulative orders ÷ cumulative views): a conversion rate is a
+        ratio, so it can't be summed the way tickets or views can, and a per-day
+        ratio off a handful of views would be far too noisy to read.
+
+        Orders are *counted* (not their tickets) so the curve reconciles with the
+        point-in-time "Conversion Rate" stat tile (``total_orders`` ÷
+        ``public_buy_page_views``). Order timing uses ``order.order_date``; views
+        come from ``EventDailyPageView`` daily rows — the same two sources the
+        Activity chart and Page Views card already draw from.
+
+        Returns:
+            {
+                'series': [{'d': days_before, 'orders': int, 'views': int}, ...]
+                          sorted by 'd' descending,
+                'total_orders': int,
+                'total_views': int,
+            }
+        """
+        if not event.start_date:
+            return {'series': [], 'total_orders': 0, 'total_views': 0}
+
+        orders_by_day = defaultdict(int)
+        for order_date in event.ticket_orders.values_list('order_date', flat=True):
+            days_before = self.calculate_days_before(order_date, event.start_date)
+            orders_by_day[days_before] += 1
+
+        views_by_day = defaultdict(int)
+        for view_date, view_count in event.daily_page_views.values_list(
+            'date', 'view_count'
+        ):
+            days_before = self.calculate_days_before(view_date, event.start_date)
+            views_by_day[days_before] += view_count
+
+        days = sorted(set(orders_by_day) | set(views_by_day), reverse=True)
+        series = [
+            {
+                'd': day,
+                'orders': orders_by_day.get(day, 0),
+                'views': views_by_day.get(day, 0),
+            }
+            for day in days
+        ]
+
+        return {
+            'series': series,
+            'total_orders': sum(orders_by_day.values()),
+            'total_views': sum(views_by_day.values()),
+        }
+
     def get_checkin_series(self, event: Event) -> dict:
         """Check-ins bucketed by minutes relative to the event's scheduled start.
 

@@ -6046,6 +6046,13 @@ def event_detail(request, event_id):
     pageviews_candidate_list = []
     pageviews_default_compare_id = None
     pageviews_today_days_before = None
+    # Conversion Rate — cumulative buy-page conversion (orders ÷ views) for this event
+    # vs. the same comparison event, on the shared days-before-event axis. Shown
+    # alongside the Page Views card since it needs the same two data sources and the
+    # same gating (direct events with recorded buy-page views).
+    show_conversion_comparison_card = show_page_views_comparison_card
+    conversion_current_json = 'null'
+    conversion_compare_json = 'null'
     if show_page_views_comparison_card:
         from tickets.services.forecasting.sales_curve import SalesCurveCalculator
         pv_calc = SalesCurveCalculator()
@@ -6060,6 +6067,10 @@ def event_detail(request, event_id):
             for e in pageviews_candidates
         ]
         pageviews_today_days_before = (event.start_date - django_tz.localdate()).days
+        conversion_current_json = json.dumps(pv_calc.get_conversion_series(event))
+        conversion_compare_json = json.dumps(
+            pv_calc.get_conversion_series(default_pv_compare)
+        )
 
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
@@ -6187,6 +6198,9 @@ def event_detail(request, event_id):
         'pageviews_candidates': pageviews_candidate_list,
         'pageviews_default_compare_id': pageviews_default_compare_id,
         'pageviews_today_days_before': pageviews_today_days_before,
+        'show_conversion_comparison_card': show_conversion_comparison_card,
+        'conversion_current_json': conversion_current_json,
+        'conversion_compare_json': conversion_compare_json,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6400,6 +6414,26 @@ def event_page_views_api(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     from tickets.services.forecasting.sales_curve import SalesCurveCalculator
     data = SalesCurveCalculator().get_page_view_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
+
+
+@login_required
+@require_org
+def event_conversion_api(request, event_id):
+    """Return the conversion-rate series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so the curve can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_conversion_series(event)
     data.update({
         'id': str(event.id),
         'name': event.name,
