@@ -274,9 +274,10 @@ class SalesCurveCalculator:
         Powers the "Conversion Rate" comparison card on the Analytics tab, letting
         two direct-ticketing events be compared on the same "days before the event"
         axis as the Page Views card. Returns per-day order counts and view counts so
-        the caller plots the raw *daily* conversion rate client-side (that day's
-        orders ÷ views): a conversion rate is a ratio, so it can't be summed the way
-        tickets or views can — the division happens per day in the browser.
+        the caller plots the conversion rate client-side (that day's orders ÷ views,
+        or a short trailing average when the chart's smoothing toggle is on): a
+        conversion rate is a ratio, so it can't be summed the way tickets or views
+        can — the division happens per day (or per window) in the browser.
 
         Orders are *counted* (not their tickets) so the curve reconciles with the
         point-in-time "Conversion Rate" stat tile (``total_orders`` ÷
