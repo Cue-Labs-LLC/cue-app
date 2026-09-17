@@ -266,6 +266,10 @@ def event_meta_ads_match(request, event_id):
         })
 
     if wants_json:
+        linked_campaign_ids = set(
+            event.expenses.filter(deleted_at__isnull=True, source='meta_ads')
+            .values_list('external_id', flat=True)
+        )
         return JsonResponse({
             'success': True,
             'account_name': org.meta_ads_account_name,
@@ -281,6 +285,7 @@ def event_meta_ads_match(request, event_id):
                     'confidence_pct': item['confidence_pct'],
                     'confidence_class': item['confidence_class'],
                     'reasoning': item['reasoning'],
+                    'already_linked': str(item['campaign'].get('id')) in linked_campaign_ids,
                 }
                 for item in candidates
             ],
