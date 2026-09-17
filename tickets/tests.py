@@ -7135,6 +7135,131 @@ class PageViewComparisonTest(TestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class ConversionComparisonTest(TestCase):
+    """Conversion Rate comparison card on the Analytics tab + its series/API."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='Conv Org', slug='conv-org')
+        self.user = User.objects.create_user(
+            username='convuser', email='conv@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Conv Venue', city='Los Angeles',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        # Current (upcoming) direct event with its own views + orders.
+        self.event = Event.objects.create(
+            organization=self.org, name='Current Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=10),
+            ticketing_type='direct', status='live',
+        )
+        EventDailyPageView.objects.create(
+            event=self.event, date=date.today(), view_count=10,
+        )
+        # Past direct event: 20 views and 1 order, both 5 days before its start.
+        self.past_event = Event.objects.create(
+            organization=self.org, name='Past Event', venue=self.venue,
+            start_date=date(2024, 3, 10),
+            ticketing_type='direct', status='live',
+        )
+        EventDailyPageView.objects.create(
+            event=self.past_event, date=date(2024, 3, 5), view_count=20,
+        )
+        TicketOrder.objects.create(
+            customer=self.customer, event=self.past_event, order_number='CONV-1',
+            order_date=timezone.make_aware(datetime(2024, 3, 5, 12, 0)),
+            total_amount=Decimal('50.00'),
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _login(self):
+        self.assertTrue(self.client.login(username='conv@example.com', password='testpass123'))
+        self.client.get(reverse('tickets:home'))
+
+    def test_series_shape(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+
+        data = SalesCurveCalculator().get_conversion_series(self.past_event)
+
+        self.assertEqual(data, {
+            'series': [{'d': 5, 'orders': 1, 'views': 20}],
+            'total_orders': 1,
+            'total_views': 20,
+        })
+
+    def test_series_empty_without_start_date(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+
+        self.event.start_date = None
+        data = SalesCurveCalculator().get_conversion_series(self.event)
+
+        self.assertEqual(data, {'series': [], 'total_orders': 0, 'total_views': 0})
+
+    def test_card_shown_with_candidate(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.context['show_conversion_comparison_card'], True)
+        self.assertContains(response, 'id="conversionCompareChart"')
+
+    def test_card_hidden_without_candidate(self):
+        self.past_event.hard_delete()  # no comparison candidate remains
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertIs(response.context['show_conversion_comparison_card'], False)
+        self.assertNotContains(response, 'id="conversionCompareChart"')
+
+    def test_api_returns_series_for_in_org_event(self):
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:event_conversion_api', args=[self.past_event.id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertEqual(payload['series'], [{'d': 5, 'orders': 1, 'views': 20}])
+        self.assertEqual(payload['total_orders'], 1)
+        self.assertEqual(payload['total_views'], 20)
+        self.assertEqual(payload['id'], str(self.past_event.id))
+        self.assertEqual(payload['name'], 'Past Event')
+
+    def test_api_cross_org_event_404(self):
+        other_org = Organization.objects.create(name='Other Conv Org', slug='other-conv-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Seattle',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Org Event', venue=other_venue,
+            start_date=date.today() - timedelta(days=5),
+            ticketing_type='direct', status='live',
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:event_conversion_api', args=[other_event.id])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
 class EventDeleteViewTests(TestCase):
     """Regression coverage for customer reconciliation during event deletion."""
 
