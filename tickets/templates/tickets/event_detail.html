@@ -1179,9 +1179,13 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
         <div class="d-flex flex-column">
             <h5 class="mb-0">Conversion Rate</h5>
-            <small class="text-muted">7-day rolling buy-page conversion (orders &divide; views) vs. a past event, by days before the event</small>
+            <small class="text-muted">Buy-page conversion (orders &divide; views) vs. a past event, by days before the event</small>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Conversion smoothing">
+                <button type="button" class="chart-control-btn active" id="btnConvDaily">Daily</button>
+                <button type="button" class="chart-control-btn" id="btnConvSmooth">2-day avg</button>
+            </div>
             <label class="d-flex align-items-center gap-2 mb-0">
                 <span class="pacing-compare-label">vs</span>
                 <div class="pacing-combo" id="conversionCompare">
@@ -6881,10 +6885,10 @@ document.addEventListener('DOMContentLoaded', function () {
 <script>
 // Conversion Rate — buy-page conversion (orders ÷ views) for this event vs. a
 // comparison event, aligned on a days-before-event axis. It reuses the Page Views
-// card's shape and comparison-event picker; the plotted value is a smoothed rolling
-// rate (orders ÷ views over a trailing multi-day window), so there is no absolute/%
-// scale toggle — the series is already a percentage. Changing the comparison event
-// fetches its series from the conversion API.
+// card's shape and comparison-event picker. The Daily/2-day-avg toggle switches
+// between the raw per-day rate and a 2-day trailing average (client-side smoothing);
+// the value is already a percentage, so there is no absolute/% scale toggle.
+// Changing the comparison event fetches its series from the conversion API.
 document.addEventListener('DOMContentLoaded', function () {
     var canvas = document.getElementById('conversionCompareChart');
     if (!canvas) return;
@@ -6911,22 +6915,23 @@ document.addEventListener('DOMContentLoaded', function () {
     var todayDaysBefore = rawToday === '' || rawToday === null ? null : Number(rawToday);
     var currentAxis = [];   // day values behind the x labels, kept for the marker
 
-    var ROLL_WINDOW = 7;   // days per trailing window
+    var mode = 'daily';        // 'daily' | 'roll'
+    var ROLL_WINDOW = 2;       // days per trailing window when smoothing
 
-    // Rolling conversion at each axis label: orders ÷ views summed over a trailing
-    // window of ROLL_WINDOW calendar days (this day plus the earlier days, i.e. the
-    // larger days-before values). Smooths the day-to-day noise a raw daily ratio
-    // would show while still tracking how the rate moves over time. Windows with no
-    // views yield null so the line spans the gap instead of dropping to a misleading
-    // 0% (spanGaps is enabled on the dataset).
-    function rollingConversionFor(series, axis) {
+    // Conversion at each axis label. 'daily' = that single day's orders ÷ views.
+    // 'roll' = orders ÷ views summed over a trailing ROLL_WINDOW-day window (this day
+    // plus the earlier days, i.e. larger days-before values) to smooth day-to-day
+    // noise. Either way a window with no views yields null so the line spans the gap
+    // instead of dropping to a misleading 0% (spanGaps is enabled on the dataset).
+    function conversionFor(series, axis) {
         var byDay = {};
         (series || []).forEach(function (p) {
             byDay[p.d] = { orders: p.orders || 0, views: p.views || 0 };
         });
+        var span = mode === 'roll' ? ROLL_WINDOW : 1;
         return axis.map(function (d) {
             var orders = 0, views = 0;
-            for (var k = 0; k < ROLL_WINDOW; k++) {
+            for (var k = 0; k < span; k++) {
                 var rec = byDay[d + k];
                 if (rec) { orders += rec.orders; views += rec.views; }
             }
@@ -6965,16 +6970,18 @@ document.addEventListener('DOMContentLoaded', function () {
         function dataset(data, name, color, dashed) {
             return {
                 label: name,
-                data: rollingConversionFor(data.series || [], axis),
+                data: conversionFor(data.series || [], axis),
                 borderColor: color,
                 backgroundColor: color,
                 borderWidth: 2,
                 borderDash: dashed ? [5, 4] : [],
-                pointRadius: 0,
+                // Daily: mark each day's point (a lone value between gaps needs it to
+                // be visible). Smoothed: hide points and curve the line.
+                pointRadius: mode === 'roll' ? 0 : 2,
                 pointHoverRadius: 4,
                 fill: false,
                 spanGaps: true,
-                tension: 0.4,
+                tension: mode === 'roll' ? 0.35 : 0,
             };
         }
 
@@ -7081,6 +7088,20 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+
+    // Smoothing toggle: raw daily rate vs. a 2-day trailing average.
+    function bindToggle(id, group, apply) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            group.forEach(function (o) { document.getElementById(o).classList.remove('active'); });
+            btn.classList.add('active');
+            apply();
+            render();
+        });
+    }
+    bindToggle('btnConvDaily', ['btnConvDaily', 'btnConvSmooth'], function () { mode = 'daily'; });
+    bindToggle('btnConvSmooth', ['btnConvDaily', 'btnConvSmooth'], function () { mode = 'roll'; });
 
     // Comparison-event combobox: type to filter the past-event list.
     (function () {
