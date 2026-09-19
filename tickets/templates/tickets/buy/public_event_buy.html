@@ -754,6 +754,46 @@
             padding: 12px 22px !important;
         }
 
+        .modal-backdrop.show {
+            opacity: 1 !important;
+            background: rgba(8, 7, 6, 0.55) !important;
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
+        }
+
+        .modal-event {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            padding-bottom: 16px;
+            margin-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .modal-event__flyer {
+            width: 56px;
+            height: 56px;
+            border-radius: var(--radius);
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .modal-event__title {
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: var(--fs-base);
+            letter-spacing: -0.01em;
+            color: var(--text);
+            line-height: 1.2;
+            margin-bottom: 5px;
+        }
+        .modal-event__meta {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            font-size: var(--fs-sm);
+            color: var(--text-2);
+        }
+        .modal-event__meta i { opacity: 0.5; margin-right: 5px; }
+
         .btn-close { filter: invert(1) opacity(0.45) !important; }
         .btn-close:hover { filter: invert(1) opacity(0.8) !important; }
 
@@ -770,6 +810,24 @@
         }
 
         #buyModal .btn-primary:hover { opacity: 0.88 !important; }
+
+        /* Desktop / tablet: same constrained centered dialog as before */
+        .buy-dialog {
+            max-width: 520px;
+            max-height: min(720px, 85vh);
+        }
+
+        /* Phones (<576px): full-screen ticket selection */
+        @media (max-width: 575.98px) {
+            .buy-dialog { max-height: none; }
+            #buyModal .modal-content {
+                border: 0 !important;
+                border-radius: 0 !important;
+            }
+            #buyModal .modal-footer {
+                padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+            }
+        }
 
         .btn-outline-secondary {
             color: var(--text-3) !important;
@@ -1254,7 +1312,7 @@
 
 {% if not sales_ended %}
 <div class="modal fade" id="buyModal" tabindex="-1" aria-labelledby="buyModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-scrollable" style="max-width:520px;max-height:min(720px, 85vh);">
+  <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered modal-fullscreen-sm-down buy-dialog">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="buyModalLabel">Select Tickets</h5>
@@ -1262,7 +1320,20 @@
       </div>
       <div class="modal-body">
 
-        <form method="post">
+        <div class="modal-event">
+          {% if event.flyer %}
+          <img src="{{ event.flyer.url }}" alt="{{ event.name }}" class="modal-event__flyer">
+          {% endif %}
+          <div class="modal-event__info">
+            <div class="modal-event__title">{{ event.name }}</div>
+            <div class="modal-event__meta">
+              <span><i class="bi bi-calendar-event"></i>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} &middot; {{ event.start_time|time:"g:i A" }}{% endif %}</span>
+              {% if event.venue.name %}<span><i class="bi bi-geo-alt"></i>{{ event.venue.name }}{% if event.venue.city %}, {{ event.venue.city }}{% endif %}</span>{% endif %}
+            </div>
+          </div>
+        </div>
+
+        <form method="post" id="buyForm">
           {% csrf_token %}
 
           {% if form.non_field_errors and available_pairs or form.non_field_errors and locked_pairs %}
@@ -1393,16 +1464,6 @@
           {% endif %}
           {% endfor %}
 
-          <div id="order-summary" class="ticket-card" style="display:none;">
-              <div class="os-total-row"><span>Total</span><span id="os-total">$0.00</span></div>
-              <div class="os-row" style="font-size:var(--fs-sm); opacity:0.65;"><span>Includes service fee</span><span id="os-fee">$0.00</span></div>
-          </div>
-
-          {% if available_pairs or locked_pairs %}
-          <div class="mt-4">
-              <button type="submit" class="btn btn-primary btn-lg w-100">Continue</button>
-          </div>
-          {% endif %}
         </form>
 
         {% if waitlist_feature_enabled %}
@@ -1454,9 +1515,15 @@
         {% endif %}
 
       </div>
+      {% if available_pairs or locked_pairs %}
       <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <div id="order-summary" class="ticket-card w-100" style="display:none;">
+            <div class="os-total-row"><span>Total</span><span id="os-total">$0.00</span></div>
+            <div class="os-row" style="font-size:var(--fs-sm); opacity:0.65;"><span>Includes service fee</span><span id="os-fee">$0.00</span></div>
+        </div>
+        <button type="submit" form="buyForm" id="buyContinueBtn" class="btn btn-primary btn-lg w-100" disabled>Continue</button>
       </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -1487,12 +1554,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateOrderSummary() {
         var displayTotalCents = 0;
+        var totalQty = 0;
         document.querySelectorAll('.ticket-card[data-price]').forEach(function(card) {
             var price = parseFloat(card.dataset.price) || 0;
             var qtyInput = card.querySelector('input[type=number]');
             var qty = qtyInput ? (parseInt(qtyInput.value, 10) || 0) : 0;
+            totalQty += qty;
             displayTotalCents += Math.round(price * 100) * qty;
         });
+        var continueBtn = document.getElementById('buyContinueBtn');
+        if (continueBtn) continueBtn.disabled = totalQty <= 0;
         var summary = document.getElementById('order-summary');
         if (!summary) return;
         if (displayTotalCents <= 0) { summary.style.display = 'none'; return; }
