@@ -78,8 +78,7 @@
 
 {% if event_rows %}
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Month</h5>
+    <div class="card-header">
         <div class="d-flex flex-wrap align-items-center gap-2">
             <div class="chart-control-group" id="granularityGroup">
                 <button type="button" class="chart-control-btn active" id="btnByMonth">By Month</button>
@@ -87,14 +86,21 @@
                 <button type="button" class="chart-control-btn" id="btnByEvent">By Event</button>
                 <button type="button" class="chart-control-btn" id="btnByMarket">By Market</button>
             </div>
-            <div class="chart-control-group" id="marketSortGroup" style="display:none!important;">
-                <button type="button" class="chart-control-btn active" id="btnSortDesc">High &rarr; Low</button>
-                <button type="button" class="chart-control-btn" id="btnSortAsc">Low &rarr; High</button>
-            </div>
             <div class="chart-control-group">
                 <button type="button" class="chart-control-btn active" id="btnRevExp">Revenue vs Expenses</button>
                 <button type="button" class="chart-control-btn" id="btnPL">Profit / Loss</button>
                 <button type="button" class="chart-control-btn" id="btnMargin">Margin %</button>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
+                <div class="chart-control-group" id="marketAggGroup" style="display:none!important;">
+                    <button type="button" class="chart-control-btn active" id="btnAggTotal">Total</button>
+                    <button type="button" class="chart-control-btn" id="btnAggAvg">Avg / Event</button>
+                    <button type="button" class="chart-control-btn" id="btnAggMedian">Median / Event</button>
+                </div>
+                <div class="chart-control-group" id="marketSortGroup" style="display:none!important;">
+                    <button type="button" class="chart-control-btn active" id="btnSortDesc">High &rarr; Low</button>
+                    <button type="button" class="chart-control-btn" id="btnSortAsc">Low &rarr; High</button>
+                </div>
             </div>
         </div>
     </div>
@@ -187,6 +193,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var currentKey = 'revexp';
     var currentGranularity = 'month';
     var marketSortAsc = false;
+    var marketAgg = 'total';  // 'total' | 'avg' | 'median' — profit/loss per market vs. per event
 
     var canvas = document.getElementById('profitChart');
     var chart = null;
@@ -194,8 +201,11 @@ document.addEventListener('DOMContentLoaded', function() {
     var btnRevExp = document.getElementById('btnRevExp');
     var btnPL = document.getElementById('btnPL');
     var btnMargin = document.getElementById('btnMargin');
-    var chartTitle = document.getElementById('chartTitle');
     var marketSortGroup = document.getElementById('marketSortGroup');
+    var marketAggGroup = document.getElementById('marketAggGroup');
+    var btnAggTotal = document.getElementById('btnAggTotal');
+    var btnAggAvg = document.getElementById('btnAggAvg');
+    var btnAggMedian = document.getElementById('btnAggMedian');
     var btnByMonth = document.getElementById('btnByMonth');
     var btnByQuarter = document.getElementById('btnByQuarter');
     var btnByEvent = document.getElementById('btnByEvent');
@@ -224,13 +234,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function buildConfigs(granularity, key) {
+        // For By Market, Profit / Loss can show the market total or the average / median
+        // profit per event within the market (marketAgg). plField selects which array the
+        // P/L bars use; total for every other granularity.
+        var isMarket = granularity === 'market';
+        var plField = (isMarket && marketAgg === 'avg') ? 'avg_profit'
+            : (isMarket && marketAgg === 'median') ? 'median_profit'
+            : 'profit';
         // For By Market, sort by the metric currently on screen so High → Low / Low → High
         // orders the visible bars: revenue for Revenue vs Expenses, margin for Margin %,
-        // profit for Profit / Loss. Only configs[key] is rendered, so sorting by key is safe.
-        var marketSortField = key === 'revexp' ? 'revenue' : key === 'margin' ? 'margin' : 'profit';
+        // the selected P/L field for Profit / Loss. Only configs[key] is rendered, so
+        // sorting by key is safe.
+        var marketSortField = key === 'revexp' ? 'revenue' : key === 'margin' ? 'margin' : plField;
         var d = granularity === 'event' ? eventData
             : granularity === 'quarter' ? quarterData
-            : granularity === 'market' ? getMarketData(marketSortAsc, marketSortField)
+            : isMarket ? getMarketData(marketSortAsc, marketSortField)
             : data;
         var labels = granularity === 'month' ? d.labels.map(fmtMonth) : d.labels;
         var suffix = granularity === 'event' ? 'by Event'
@@ -253,14 +271,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
             },
             pl: {
-                title: 'Profit / Loss ' + suffix,
+                title: (isMarket && marketAgg === 'avg' ? 'Avg Profit / Loss per Event '
+                    : isMarket && marketAgg === 'median' ? 'Median Profit / Loss per Event '
+                    : 'Profit / Loss ') + suffix,
                 type: 'bar',
                 data: {
                     labels: labels,
                     datasets: [{
                         label: 'Profit / Loss',
-                        data: d.profit,
-                        backgroundColor: d.profit.map(function(v) { return v >= 0 ? greenBg : redBg; }),
+                        data: d[plField],
+                        backgroundColor: d[plField].map(function(v) { return v == null ? redBg : (v >= 0 ? greenBg : redBg); }),
                         borderRadius: 4
                     }]
                 },
@@ -311,6 +331,8 @@ document.addEventListener('DOMContentLoaded', function() {
             revenue: idx.map(function(i) { return mktData.revenue[i]; }),
             expenses: idx.map(function(i) { return mktData.expenses[i]; }),
             profit: idx.map(function(i) { return mktData.profit[i]; }),
+            avg_profit: idx.map(function(i) { return mktData.avg_profit[i]; }),
+            median_profit: idx.map(function(i) { return mktData.median_profit[i]; }),
             margin: idx.map(function(i) { return mktData.margin[i]; })
         };
     }
@@ -320,10 +342,11 @@ document.addEventListener('DOMContentLoaded', function() {
         var cfg = configs[key];
         if (chart) { chart.destroy(); }
         chart = new Chart(canvas.getContext('2d'), { type: cfg.type, data: cfg.data, options: cfg.options });
-        chartTitle.textContent = cfg.title;
         btns.forEach(function(b, i) { b.classList.toggle('active', keys[i] === key); });
         var isMarket = granularity === 'market';
         marketSortGroup.style.setProperty('display', isMarket ? 'flex' : 'none', 'important');
+        // Average / median per event only applies to the Profit / Loss market view.
+        marketAggGroup.style.setProperty('display', (isMarket && key === 'pl') ? 'flex' : 'none', 'important');
     }
 
     function switchChart(key) {
@@ -347,6 +370,15 @@ document.addEventListener('DOMContentLoaded', function() {
         if (currentGranularity === 'market') renderChart(currentKey, 'market');
     }
 
+    function applyMarketAgg(agg) {
+        marketAgg = agg;
+        btnAggTotal.classList.toggle('active', agg === 'total');
+        btnAggAvg.classList.toggle('active', agg === 'avg');
+        btnAggMedian.classList.toggle('active', agg === 'median');
+        // The agg group is only visible in the market Profit / Loss view, so re-render it.
+        if (currentGranularity === 'market') renderChart('pl', 'market');
+    }
+
     // Initial render
     renderChart('revexp', 'month');
 
@@ -359,6 +391,9 @@ document.addEventListener('DOMContentLoaded', function() {
     btnByMarket.addEventListener('click', function() { switchGranularity('market'); });
     btnSortDesc.addEventListener('click', function() { applyMarketSort(false); });
     btnSortAsc.addEventListener('click', function() { applyMarketSort(true); });
+    btnAggTotal.addEventListener('click', function() { applyMarketAgg('total'); });
+    btnAggAvg.addEventListener('click', function() { applyMarketAgg('avg'); });
+    btnAggMedian.addEventListener('click', function() { applyMarketAgg('median'); });
 });
 </script>
 {% endblock %}

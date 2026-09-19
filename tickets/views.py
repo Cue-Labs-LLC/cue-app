@@ -5,6 +5,7 @@ import os
 import json
 import random
 import secrets
+import statistics
 import uuid as _uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -9017,7 +9018,9 @@ def profitability_overview(request):
     summary_profit = summary_net_revenue - summary_expenses
     summary_margin = (summary_profit / summary_net_revenue * 100) if summary_net_revenue > 0 else None
 
-    # Market rollup by assigned market (sorted high → low for chart)
+    # Market rollup by assigned market (sorted high → low for chart). `profits` holds the
+    # per-event profit list per market so the By Market chart can offer average / median
+    # profit-per-event bars alongside the market total.
     markets: dict = {}
     for row in event_rows:
         event_market = row['event'].market
@@ -9031,24 +9034,35 @@ def profitability_overview(request):
             'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
             'net_revenue': Decimal('0.00'),
             'event_count': 0,
+            'profits': [],
         })
         m['revenue'] += row['revenue']
         m['expenses'] += row['expenses']
         m['profit'] += row['profit']
         m['net_revenue'] += row['net_revenue']
         m['event_count'] += 1
+        m['profits'].append(row['profit'])
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
     # Market chart data - same array shape as the other granularities so the chart can
     # render Revenue vs Expenses / Profit / Margin % grouped by market. Includes every
     # assigned market (plus "No market") sorted high → low by profit as the initial order;
-    # the client re-sorts on demand. Cast Decimals to float/None so json.dumps can
-    # serialize them.
+    # the client re-sorts on demand. `avg_profit` / `median_profit` give the mean and
+    # median profit/loss per event within each market. Cast Decimals to float/None so
+    # json.dumps can serialize them.
     market_chart_data = {
         'labels': [m['market_label'] for m in market_rows],
         'revenue': [float(m['revenue']) for m in market_rows],
         'expenses': [float(m['expenses']) for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
+        'avg_profit': [
+            float(m['profit'] / m['event_count']) if m['event_count'] else None
+            for m in market_rows
+        ],
+        'median_profit': [
+            float(statistics.median(m['profits'])) if m['profits'] else None
+            for m in market_rows
+        ],
         'margin': [
             float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
             for m in market_rows
