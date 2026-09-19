@@ -55,7 +55,7 @@
         .checkout-wrap {
             max-width: 520px;
             margin: 0 auto;
-            padding: 40px 20px 80px;
+            padding: 40px 20px 140px;   /* bottom room for the fixed pay bar */
         }
 
         /* Header */
@@ -181,6 +181,30 @@
             gap: 8px;
         }
         .promo-row input { flex: 1; }
+
+        /* Collapsible promo (collapsed by default on all viewports) */
+        .promo-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
+            background: none;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
+            text-align: left;
+        }
+        .promo-toggle .section-label { margin-bottom: 0; }
+        .promo-chevron {
+            display: inline-block;
+            color: var(--text-3);
+            font-size: 0.85rem;
+            transition: transform 0.2s ease;
+        }
+        .promo-card.is-open .promo-chevron { transform: rotate(180deg); }
+        .promo-body { margin-top: 14px; display: none; }
+        .promo-card.is-open .promo-body { display: block; }
         .promo-success { font-family: var(--font-body); color: var(--success); font-size: 0.78rem; margin-top: 8px; letter-spacing: 0.04em; }
         .promo-error   { font-family: var(--font-body); color: var(--danger);  font-size: 0.78rem; margin-top: 8px; letter-spacing: 0.04em; }
 
@@ -534,6 +558,46 @@
             to { transform: rotate(360deg); }
         }
 
+        /* ── Pay button always visible: fixed bar centered under the column ── */
+        .pay-cta {
+            position: fixed;
+            left: 0; right: 0; bottom: 0;
+            z-index: 1040;
+            margin: 0 auto;
+            max-width: 520px;                 /* match .checkout-wrap column */
+            padding: 14px 20px max(14px, env(safe-area-inset-bottom));
+            background: rgba(15, 14, 13, 0.92);
+            -webkit-backdrop-filter: blur(14px);
+            backdrop-filter: blur(14px);
+            border-top: 1px solid var(--border);
+        }
+        .pay-cta .btn-pay { margin-top: 0; }
+        .pay-cta .secure-note { margin: 8px 0 0; }
+        /* fadeUp ends on translateY(0); neutralize it so the fixed pay bar pins to the viewport, not the card */
+        .section-card:has(.pay-cta) { animation: none; }
+
+        /* ── MOBILE: full-bleed sticky bar + compact layout ── */
+        @media (max-width: 575.98px) {
+            /* Minimize chrome to maximize real estate / reduce scrolling */
+            .checkout-wrap { padding: 16px 14px 128px; }
+            .checkout-header { margin-bottom: 14px; }
+            .back-link { margin-bottom: 10px; }
+            .event-title { font-size: 1.15rem; }
+            .event-date { margin-top: 4px; }
+            .section-card {
+                padding: 14px;
+                margin-bottom: 8px;
+                animation: none;              /* drop entry transform so fixed child pins to viewport */
+            }
+            .section-label { margin-bottom: 10px; }
+
+            /* Widen the sticky pay bar to the screen edges on phones */
+            .pay-cta {
+                max-width: none;
+                padding: 12px 14px max(12px, env(safe-area-inset-bottom));
+            }
+        }
+
         {% include 'tickets/partials/_attendee_nav_css.html' %}
     </style>
     {% include 'tickets/buy/_facebook_pixel.html' %}
@@ -609,13 +673,18 @@
     </div>
 
     <!-- Promo Code -->
-    <div class="section-card">
-        <div class="section-label">Promo Code</div>
-        <div class="promo-row">
-            <input type="text" id="promo-code-input" class="form-control" placeholder="Enter code" value="{% if promo_applied %}{{ promo_applied.code }}{% endif %}">
-            <button type="button" id="apply-promo-btn" class="btn-apply">Apply</button>
+    <div class="section-card promo-card{% if promo_applied %} is-open{% endif %}" id="promo-card">
+        <button type="button" class="promo-toggle" id="promo-toggle" aria-expanded="{% if promo_applied %}true{% else %}false{% endif %}" aria-controls="promo-body">
+            <span class="section-label">Promo Code</span>
+            <i class="bi bi-chevron-down promo-chevron"></i>
+        </button>
+        <div class="promo-body" id="promo-body">
+            <div class="promo-row">
+                <input type="text" id="promo-code-input" class="form-control" placeholder="Enter code" value="{% if promo_applied %}{{ promo_applied.code }}{% endif %}">
+                <button type="button" id="apply-promo-btn" class="btn-apply">Apply</button>
+            </div>
+            <div id="promo-message"></div>
         </div>
-        <div id="promo-message"></div>
     </div>
 
     <!-- Buyer info + payment form -->
@@ -641,9 +710,11 @@
                     </span>
                 </label>
             </div>
-            <button type="submit" class="btn-pay">
-                <i class="bi bi-ticket-perforated"></i> Get Tickets
-            </button>
+            <div class="pay-cta">
+                <button type="submit" class="btn-pay">
+                    <i class="bi bi-ticket-perforated"></i> Get Tickets
+                </button>
+            </div>
         </form>
         {% else %}
 
@@ -699,11 +770,13 @@
                 </span>
             </label>
         </div>
-        <button type="button" id="pay-btn" class="btn-pay">
-            <span id="pay-btn-label"><i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}</span>
-            <span id="pay-btn-processing" aria-live="polite"><i class="bi bi-arrow-repeat spin"></i><span class="processing-text">Processing...</span></span>
-        </button>
-        <p class="secure-note"><i class="bi bi-shield-lock"></i>&ensp;Payments secured by Stripe</p>
+        <div class="pay-cta">
+            <button type="button" id="pay-btn" class="btn-pay">
+                <span id="pay-btn-label"><i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}</span>
+                <span id="pay-btn-processing" aria-live="polite"><i class="bi bi-arrow-repeat spin"></i><span class="processing-text">Processing...</span></span>
+            </button>
+            <p class="secure-note"><i class="bi bi-shield-lock"></i>&ensp;Payments secured by Stripe</p>
+        </div>
         {% endif %}
     </div>
 
@@ -723,6 +796,16 @@ document.addEventListener('DOMContentLoaded', function () {
     var applyBtn = document.getElementById('apply-promo-btn');
     var promoInput = document.getElementById('promo-code-input');
     var promoMsg = document.getElementById('promo-message');
+
+    // Collapsible promo section (active on mobile; desktop stays expanded via CSS)
+    var promoCard = document.getElementById('promo-card');
+    var promoToggle = document.getElementById('promo-toggle');
+    if (promoCard && promoToggle) {
+        promoToggle.addEventListener('click', function () {
+            var open = promoCard.classList.toggle('is-open');
+            promoToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+    }
 
     if (applyBtn && promoInput) {
         applyBtn.addEventListener('click', function () {
