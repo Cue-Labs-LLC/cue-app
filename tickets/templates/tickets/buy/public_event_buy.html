@@ -381,7 +381,31 @@
             background: var(--surface-2);
         }
 
-        .ticket-card.sold-out { opacity: 0.4; }
+        /* Sold-out options: clearly greyed / disabled, not just faded */
+        .ticket-card.sold-out { opacity: 0.4; }   /* waitlist cards keep this faded look */
+
+        .ticket-card.sold-out:not(:has(.waitlist-section)) {
+            opacity: 1;
+            background: var(--bg);            /* recessed vs live --surface cards */
+            border-color: transparent;
+            filter: grayscale(1);
+        }
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .ticket-name {
+            color: var(--text-3);
+            text-decoration: line-through;
+            text-decoration-color: rgba(255,255,255,0.35);
+        }
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .ticket-desc,
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .ticket-desc-wrap,
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .ticket-price,
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .btn-view-more {
+            color: var(--text-3);
+            opacity: 0.6;
+        }
+        .ticket-card.sold-out:not(:has(.waitlist-section)) .sold-out-badge {
+            color: var(--text-2);            /* keep SOLD OUT the most legible element */
+            opacity: 0.9;
+        }
 
         .ticket-card--locked {
             flex-direction: column;
