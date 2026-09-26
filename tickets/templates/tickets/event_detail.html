@@ -7,8 +7,11 @@
 {% block extra_head %}
 <style>/* No page fade when switching the tabs — each tab is a full navigation. */
 .content > * { animation: none; }</style>
-{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results %}
+{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results or has_finance_flow %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% if has_finance_flow %}
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.1/dist/chartjs-chart-sankey.min.js" defer></script>
+{% endif %}
 {% endif %}
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
 {% if event.ticketing_type != 'direct' %}
@@ -16,23 +19,23 @@
 <script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
 {% endif %}
 <style>
-/* -- Marketing tab sub-views: SMS vs Linked campaigns -- */
-.marketing-subnav {
+/* -- Marketing / Finance tab sub-views (SMS vs Linked; Ledger vs Flow) -- */
+.marketing-subnav, .finance-subnav {
     display: inline-flex; gap: 2px; margin-bottom: 22px;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 999px; padding: 3px;
 }
-.marketing-subnav-btn {
+.marketing-subnav-btn, .finance-subnav-btn {
     border: none; background: transparent; cursor: pointer; margin: 0;
     font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
     letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
     padding: 7px 18px; border-radius: 999px;
     transition: background 0.12s, color 0.12s;
 }
-.marketing-subnav-btn:hover { color: var(--text-primary); }
-.marketing-subnav-btn.active { background: var(--accent); color: var(--text-inverse); }
+.marketing-subnav-btn:hover, .finance-subnav-btn:hover { color: var(--text-primary); }
+.marketing-subnav-btn.active, .finance-subnav-btn.active { background: var(--accent); color: var(--text-inverse); }
 @media (prefers-reduced-motion: no-preference) {
-    .marketing-section:not([hidden]) { animation: marketingFade 0.25s ease both; }
+    .marketing-section:not([hidden]), .finance-section:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
 }
 
@@ -1302,6 +1305,13 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 3: Finance ===== -->
 <div class="tab-pane fade" id="tab-finance" role="tabpanel">
 
+<div class="finance-subnav" role="tablist">
+    <button type="button" class="finance-subnav-btn active" data-finance-view="ledger">Ledger</button>
+    <button type="button" class="finance-subnav-btn" data-finance-view="flow">Flow</button>
+</div>
+
+<div class="finance-section" data-finance-section="ledger">
+
 {% if event.ticketing_type == 'direct' and max_revenue_potential is not None %}
 <div class="stat-section">
   <div class="stats-grid">
@@ -1471,6 +1481,35 @@ document.addEventListener('DOMContentLoaded', function() {
         </form>
     </div>
 </div>
+
+</div><!-- /finance-section ledger -->
+
+<div class="finance-section" data-finance-section="flow" hidden>
+{% if has_finance_flow %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Money Flow</h5>
+            <p class="text-muted small mb-0">Income sources flow into total revenue, then out to expenses and profit.</p>
+        </div>
+        <div class="card-body">
+            <div class="chart-container" style="height: 460px;">
+                <canvas id="financeFlowChart"></canvas>
+            </div>
+        </div>
+    </div>
+    <script type="application/json" id="finance-flow-data">{{ finance_flow_json|safe }}</script>
+{% else %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="empty-state" style="padding: 48px 0;">
+                <i class="bi bi-diagram-3 fs-2 text-muted"></i>
+                <p class="mt-2 mb-1">Not enough data to chart the money flow yet.</p>
+                <p class="text-muted mb-0">Add both income and expenses in the <strong>Ledger</strong> tab to see how money moves through this event.</p>
+            </div>
+        </div>
+    </div>
+{% endif %}
+</div><!-- /finance-section flow -->
 
 </div><!-- /tab-finance -->
 
@@ -2955,6 +2994,145 @@ if (document.readyState === 'loading') {
             });
         });
     });
+})();
+</script>
+<script>
+// Finance tab sub-view toggle (Ledger vs Flow) + lazy Sankey render. The canvas
+// lives inside two nested hidden containers (the Finance tab-pane and the Flow
+// sub-section); Chart.js draws blank at zero size, so we defer building the chart
+// until the canvas is actually visible, and resize it on every reveal.
+(function() {
+    var nav = document.querySelector('.finance-subnav');
+    if (!nav) return;
+    var sections = document.querySelectorAll('[data-finance-section]');
+    var chart = null;
+
+    function buildChart() {
+        var canvas = document.getElementById('financeFlowChart');
+        var el = document.getElementById('finance-flow-data');
+        if (!canvas || !el || typeof Chart === 'undefined') return;
+        var payload;
+        try { payload = JSON.parse(el.textContent); } catch (e) { return; }
+        var links = payload.links || [];
+        var kinds = payload.node_kinds || {};
+        var priority = payload.node_priority || {};
+        if (!links.length) return;
+
+        // Pull colors from the design-system tokens so it reads correctly in both
+        // themes (the app themes via [data-view], not data-theme).
+        var rootStyle = getComputedStyle(document.documentElement);
+        function token(name, fallback) {
+            var v = (rootStyle.getPropertyValue(name) || '').trim();
+            return v || fallback;
+        }
+        var COLORS = {
+            income:  token('--success', '#6A9E7F'),
+            total:   token('--info', '#7B8FBF'),
+            expense: token('--danger', '#C6604F'),
+            profit:  token('--accent', '#00FF87')
+        };
+        function colorFor(name) { return COLORS[kinds[name]] || COLORS.total; }
+        var money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+
+        // The sankey plugin top-aligns every column at y=0, which gives the whole
+        // diagram a hard, flat top edge. This inline plugin vertically centers each
+        // column after layout so shorter columns float toward the middle — the flows
+        // then fan up and down, giving the top (and bottom) edge a natural curve.
+        var centerColumnsPlugin = {
+            id: 'sankeyCenterColumns',
+            afterDatasetsUpdate: function(c) {
+                var meta = c.getDatasetMeta(0);
+                var ctrl = meta && meta.controller;
+                var yScale = meta && meta.yScale;
+                if (!ctrl || !ctrl._nodes || !yScale) return;
+                var nodes = Array.from(ctrl._nodes.values());
+                var cols = {};
+                nodes.forEach(function(n) {
+                    var h = Math.max(n.in, n.out);
+                    var col = cols[n.x] || (cols[n.x] = { min: Infinity, max: -Infinity });
+                    if (n.y < col.min) col.min = n.y;
+                    if (n.y + h > col.max) col.max = n.y + h;
+                });
+                var H = 0;
+                Object.keys(cols).forEach(function(x) { H = Math.max(H, cols[x].max - cols[x].min); });
+                var offset = {};
+                Object.keys(cols).forEach(function(x) { offset[x] = (H - (cols[x].max - cols[x].min)) / 2 - cols[x].min; });
+                // Shift node rects/labels (data space) and the flow endpoints (pixels).
+                nodes.forEach(function(n) { n.y += offset[n.x]; });
+                function pxDelta(o) { return yScale.getPixelForValue(o) - yScale.getPixelForValue(0); }
+                var data = ctrl.getDataset().data || [];
+                meta.data.forEach(function(el, i) {
+                    var link = data[i];
+                    if (!link) return;
+                    var fn = ctrl._nodes.get(link.from), tn = ctrl._nodes.get(link.to);
+                    if (fn && offset[fn.x]) el.y += pxDelta(offset[fn.x]);
+                    if (tn && offset[tn.x]) el.y2 += pxDelta(offset[tn.x]);
+                });
+            }
+        };
+
+        try {
+            chart = new Chart(canvas.getContext('2d'), {
+                type: 'sankey',
+                data: {
+                    datasets: [{
+                        data: links,
+                        priority: priority,
+                        colorFrom: function(c) { return colorFor(c.dataset.data[c.dataIndex].from); },
+                        colorTo: function(c) { return colorFor(c.dataset.data[c.dataIndex].to); },
+                        colorMode: 'gradient',
+                        borderWidth: 0,
+                        color: token('--text-secondary', '#7A7672')
+                    }]
+                },
+                plugins: [centerColumnsPlugin],
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    // Disable animation so the centering plugin's post-layout shift is
+                    // the final rendered state (animation tweens would override it).
+                    animation: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(ctx) {
+                                    var d = ctx.dataset.data[ctx.dataIndex];
+                                    return d.from + ' → ' + d.to + ': ' + money.format(d.flow);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        } catch (e) { /* sankey plugin unavailable — leave the canvas blank */ }
+    }
+
+    function revealFlow() {
+        var canvas = document.getElementById('financeFlowChart');
+        if (!canvas || canvas.offsetParent === null) return;  // still hidden — zero size
+        if (!chart) { buildChart(); }
+        else { chart.resize(); }
+    }
+
+    nav.querySelectorAll('.finance-subnav-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var view = btn.getAttribute('data-finance-view');
+            nav.querySelectorAll('.finance-subnav-btn').forEach(function(b) {
+                b.classList.toggle('active', b === btn);
+            });
+            sections.forEach(function(sec) {
+                sec.hidden = sec.getAttribute('data-finance-section') !== view;
+            });
+            if (view === 'flow') { revealFlow(); }
+        });
+    });
+
+    // Also render when the Finance top-level tab is opened while Flow is active.
+    var financeTabBtn = document.getElementById('tab-finance-btn');
+    if (financeTabBtn) {
+        financeTabBtn.addEventListener('shown.bs.tab', revealFlow);
+    }
 })();
 </script>
 <script>
