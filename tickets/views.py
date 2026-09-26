@@ -345,6 +345,8 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'expenses_by_category',
     'profit',
     'margin_pct',
+    'has_finance_flow',
+    'finance_flow_json',
     'ticket_type_breakdown',
     'ticket_type_allocation_charts',
     'saleable_ticket_types_list',
@@ -4768,6 +4770,52 @@ def _compute_event_stats(event):
         .order_by('-total')
     )
 
+    # Money-flow (Sankey) data for the Finance tab visualization. Income streams
+    # (net ticket revenue + each additional income source) merge into a central
+    # "Total Revenue" node, which then flows out to each expense category plus a
+    # "Profit" node when the event is in the black. A Sankey needs at least one
+    # inflow AND one outflow to render, so has_finance_flow gates on both.
+    CENTER_NODE = 'Total Revenue'
+    PROFIT_NODE = 'Profit'
+    flow_links = []
+    flow_node_kinds = {CENTER_NODE: 'total'}
+    if net_ticket_revenue > 0:
+        flow_links.append({'from': 'Ticket Revenue', 'to': CENTER_NODE, 'flow': float(net_ticket_revenue)})
+        flow_node_kinds['Ticket Revenue'] = 'income'
+    income_by_source = {}
+    for line in additional_income_lines:
+        name = line.income_source.name
+        income_by_source[name] = income_by_source.get(name, Decimal('0.00')) + line.amount
+    for name, amount in income_by_source.items():
+        # Skip names that would collide with the center/profit nodes and create a cycle.
+        if amount > 0 and name not in (CENTER_NODE, PROFIT_NODE):
+            flow_links.append({'from': name, 'to': CENTER_NODE, 'flow': float(amount)})
+            flow_node_kinds[name] = 'income'
+    has_inflow = any(link['to'] == CENTER_NODE for link in flow_links)
+    _flow_category_labels = dict(EventExpense.CATEGORY_CHOICES)
+    has_outflow = False
+    for cat in expenses_by_category:
+        label = _flow_category_labels.get(cat['category'], cat['category'])
+        if cat['total'] and cat['total'] > 0 and label not in (CENTER_NODE, PROFIT_NODE) and label not in flow_node_kinds:
+            flow_links.append({'from': CENTER_NODE, 'to': label, 'flow': float(cat['total'])})
+            flow_node_kinds[label] = 'expense'
+            has_outflow = True
+    if profit and profit > 0:
+        flow_links.append({'from': CENTER_NODE, 'to': PROFIT_NODE, 'flow': float(profit)})
+        flow_node_kinds[PROFIT_NODE] = 'profit'
+        has_outflow = True
+    has_finance_flow = has_inflow and has_outflow
+    # Vertical order of nodes within each column, top -> bottom (the sankey plugin
+    # sorts ascending by priority). Insertion order already lists expense
+    # categories before the Profit node, so Profit sorts to the bottom of the
+    # right-hand column.
+    flow_node_priority = {key: idx for idx, key in enumerate(flow_node_kinds)}
+    finance_flow_json = json.dumps({
+        'links': flow_links,
+        'node_kinds': flow_node_kinds,
+        'node_priority': flow_node_priority,
+    })
+
     # Ticket type breakdown
     saleable_ticket_types_list = list(event.saleable_ticket_types.all())
     ticket_type_allocation_charts = []
@@ -5104,6 +5152,8 @@ def _compute_event_stats(event):
         'expenses_by_category': expenses_by_category,
         'profit': profit,
         'margin_pct': margin_pct,
+        'has_finance_flow': has_finance_flow,
+        'finance_flow_json': finance_flow_json,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_allocation_charts': ticket_type_allocation_charts,
         'saleable_ticket_types_list': saleable_ticket_types_list,
@@ -5801,6 +5851,8 @@ def event_detail(request, event_id):
     expenses_by_category = stats['expenses_by_category']
     profit = stats['profit']
     margin_pct = stats['margin_pct']
+    has_finance_flow = stats['has_finance_flow']
+    finance_flow_json = stats['finance_flow_json']
     ticket_type_breakdown = stats['ticket_type_breakdown']
     ticket_type_allocation_charts = stats.get('ticket_type_allocation_charts', [])
     allocation_sold_total = sum(
@@ -6128,6 +6180,8 @@ def event_detail(request, event_id):
         'margin_pct': margin_pct,
         'expenses_by_category': expenses_by_category,
         'expenses': expenses,
+        'has_finance_flow': has_finance_flow,
+        'finance_flow_json': finance_flow_json,
         'meta_ads_expenses': meta_ads_expenses,
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
