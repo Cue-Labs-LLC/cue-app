@@ -91,6 +91,9 @@
                 <button type="button" class="chart-control-btn" id="btnPL">Profit / Loss</button>
                 <button type="button" class="chart-control-btn" id="btnMargin">Margin %</button>
             </div>
+            <div class="chart-control-group" id="breakdownGroup">
+                <button type="button" class="chart-control-btn" id="btnBreakdown">Show breakdown</button>
+            </div>
             <div class="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
                 <div class="chart-control-group" id="marketAggGroup" style="display:none!important;">
                     <button type="button" class="chart-control-btn active" id="btnAggTotal">Total</button>
@@ -194,6 +197,18 @@ document.addEventListener('DOMContentLoaded', function() {
     var currentGranularity = 'month';
     var marketSortAsc = false;
     var marketAgg = 'total';  // 'total' | 'avg' | 'median' — profit/loss per market vs. per event
+    var breakdown = false;    // Revenue vs Expenses: stack by income source / expense category
+
+    // Spread a green (revenue) or red (expense) family across `n` stacked series so each
+    // source/category is distinguishable while keeping the revenue=green / expenses=red semantics.
+    function shades(n, family) {
+        var base = family === 'green' ? 150 : 5, spread = family === 'green' ? 45 : 40, out = [];
+        for (var i = 0; i < n; i++) {
+            var t = n <= 1 ? 0.5 : i / (n - 1);
+            out.push('hsl(' + (base + (t - 0.5) * spread) + ',62%,' + (42 + t * 26) + '%)');
+        }
+        return out;
+    }
 
     var canvas = document.getElementById('profitChart');
     var chart = null;
@@ -212,6 +227,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var btnByMarket = document.getElementById('btnByMarket');
     var btnSortDesc = document.getElementById('btnSortDesc');
     var btnSortAsc = document.getElementById('btnSortAsc');
+    var btnBreakdown = document.getElementById('btnBreakdown');
+    var breakdownGroup = document.getElementById('breakdownGroup');
     var btns = [btnRevExp, btnPL, btnMargin];
     var keys = ['revexp', 'pl', 'margin'];
 
@@ -257,8 +274,44 @@ document.addEventListener('DOMContentLoaded', function() {
             : 'by Month';
         var rotateX = granularity === 'event' || granularity === 'market';
         var scaleOpts = makeScaleOpts(rotateX);
-        return {
-            revexp: {
+        // Breakdown mode: decompose the Revenue and Expenses bars into stacked components
+        // (income source / expense category). Two stacks per bucket so the side-by-side
+        // revenue-vs-expenses comparison is preserved.
+        var revSeries = d.revenue_breakdown || [];
+        var expSeries = d.expense_breakdown || [];
+        var canBreakdown = revSeries.length > 0 || expSeries.length > 0;
+        var revexpConfig;
+        if (breakdown && canBreakdown) {
+            var revColors = shades(revSeries.length, 'green');
+            var expColors = shades(expSeries.length, 'red');
+            var stackedDatasets = [];
+            revSeries.forEach(function(s, i) {
+                stackedDatasets.push({ label: s.label, data: s.data, backgroundColor: revColors[i], stack: 'revenue', borderRadius: 2 });
+            });
+            expSeries.forEach(function(s, i) {
+                stackedDatasets.push({ label: s.label, data: s.data, backgroundColor: expColors[i], stack: 'expenses', borderRadius: 2 });
+            });
+            var stackedScales = {
+                x: Object.assign({}, scaleOpts.x, { stacked: true }),
+                y: Object.assign({}, scaleOpts.y, { stacked: true })
+            };
+            revexpConfig = {
+                title: 'Revenue vs Expenses ' + suffix,
+                type: 'bar',
+                data: { labels: labels, datasets: stackedDatasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: textColor } },
+                        tooltip: { callbacks: { label: function(ctx) {
+                            return ctx.dataset.label + ': $' + (ctx.parsed.y || 0).toLocaleString();
+                        } } }
+                    },
+                    scales: stackedScales
+                }
+            };
+        } else {
+            revexpConfig = {
                 title: 'Revenue vs Expenses ' + suffix,
                 type: 'bar',
                 data: {
@@ -269,7 +322,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     ]
                 },
                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
-            },
+            };
+        }
+        return {
+            revexp: revexpConfig,
             pl: {
                 title: (isMarket && marketAgg === 'avg' ? 'Avg Profit / Loss per Event '
                     : isMarket && marketAgg === 'median' ? 'Median Profit / Loss per Event '
@@ -333,7 +389,13 @@ document.addEventListener('DOMContentLoaded', function() {
             profit: idx.map(function(i) { return mktData.profit[i]; }),
             avg_profit: idx.map(function(i) { return mktData.avg_profit[i]; }),
             median_profit: idx.map(function(i) { return mktData.median_profit[i]; }),
-            margin: idx.map(function(i) { return mktData.margin[i]; })
+            margin: idx.map(function(i) { return mktData.margin[i]; }),
+            revenue_breakdown: (mktData.revenue_breakdown || []).map(function(s) {
+                return { label: s.label, data: idx.map(function(i) { return s.data[i]; }) };
+            }),
+            expense_breakdown: (mktData.expense_breakdown || []).map(function(s) {
+                return { label: s.label, data: idx.map(function(i) { return s.data[i]; }) };
+            })
         };
     }
 
@@ -347,6 +409,9 @@ document.addEventListener('DOMContentLoaded', function() {
         marketSortGroup.style.setProperty('display', isMarket ? 'flex' : 'none', 'important');
         // Average / median per event only applies to the Profit / Loss market view.
         marketAggGroup.style.setProperty('display', (isMarket && key === 'pl') ? 'flex' : 'none', 'important');
+        // Breakdown only decomposes the Revenue vs Expenses view.
+        breakdownGroup.style.setProperty('display', key === 'revexp' ? 'flex' : 'none', 'important');
+        btnBreakdown.classList.toggle('active', breakdown);
     }
 
     function switchChart(key) {
@@ -394,6 +459,10 @@ document.addEventListener('DOMContentLoaded', function() {
     btnAggTotal.addEventListener('click', function() { applyMarketAgg('total'); });
     btnAggAvg.addEventListener('click', function() { applyMarketAgg('avg'); });
     btnAggMedian.addEventListener('click', function() { applyMarketAgg('median'); });
+    btnBreakdown.addEventListener('click', function() {
+        breakdown = !breakdown;
+        renderChart(currentKey, currentGranularity);
+    });
 });
 </script>
 {% endblock %}

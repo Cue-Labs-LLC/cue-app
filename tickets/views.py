@@ -8914,6 +8914,29 @@ def _bucket_margin(bucket):
     return (bucket['profit'] / net * 100) if net > 0 else None
 
 
+def _breakdown_series(ordered_buckets, revenue_source_labels, category_choices):
+    """Build stacked-bar breakdown series for the Revenue vs Expenses chart.
+
+    Returns (revenue_breakdown, expense_breakdown) — each a list of
+    {'label', 'data'} dicts aligned to `ordered_buckets`. Revenue is split by
+    income source (Ticket Sales + org-defined sources); expenses by category.
+    Series that are all-zero across the window are dropped so the legend only
+    lists sources/categories with data. Each bucket must carry 'rev_sources' and
+    'exp_cats' accumulator dicts.
+    """
+    rev = [
+        {'label': name, 'data': [round(b['rev_sources'].get(name, 0.0), 2) for b in ordered_buckets]}
+        for name in revenue_source_labels
+        if any(b['rev_sources'].get(name) for b in ordered_buckets)
+    ]
+    exp = [
+        {'label': label, 'data': [round(b['exp_cats'].get(code, 0.0), 2) for b in ordered_buckets]}
+        for code, label in category_choices
+        if any(b['exp_cats'].get(code) for b in ordered_buckets)
+    ]
+    return rev, exp
+
+
 @login_required
 @require_org
 @require_host
@@ -8990,6 +9013,33 @@ def profitability_overview(request):
         for row in stripe_fees_qs
     }
 
+    # Per-event breakdown maps for the "Show breakdown" stacked chart. Revenue splits
+    # into Ticket Sales (gross order totals) + each income source; expenses by category.
+    # These sum to computed_total_revenue and total_expenses respectively.
+    ticket_rev_by_event = {
+        r['event_id']: float(r['t'])
+        for r in TicketOrder.objects.filter(event__in=events_qs)
+        .values('event_id').annotate(t=Coalesce(Sum('total_amount'), Decimal('0.00')))
+    }
+    income_by_event = {}       # event_id -> {source_name: float}
+    income_source_labels = []  # ordered, de-duped list of source names present
+    for r in (EventIncome.objects
+              .filter(event__in=events_qs, deleted_at__isnull=True)
+              .values('event_id', 'income_source__name')
+              .annotate(t=Sum('amount'))
+              .order_by('income_source__order', 'income_source__name')):
+        income_by_event.setdefault(r['event_id'], {})[r['income_source__name']] = float(r['t'])
+        if r['income_source__name'] not in income_source_labels:
+            income_source_labels.append(r['income_source__name'])
+    expense_by_event = {}      # event_id -> {category_code: float}
+    for r in (EventExpense.objects.visible().filter(event__in=events_qs)
+              .values('event_id', 'category').annotate(t=Sum('amount'))):
+        expense_by_event.setdefault(r['event_id'], {})[r['category']] = float(r['t'])
+
+    # Revenue source series order: Ticket Sales first, then each income source.
+    TICKET_SALES_LABEL = 'Ticket Sales'
+    revenue_source_labels = [TICKET_SALES_LABEL] + income_source_labels
+
     # Summary stats (computed_total_revenue = ticket_revenue + additional_income, signal-maintained)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
@@ -9001,6 +9051,8 @@ def profitability_overview(request):
         net_revenue = total_revenue - fees
         profit = net_revenue - e.total_expenses
         margin = (profit / net_revenue * 100) if net_revenue > 0 else None
+        rev_sources = {TICKET_SALES_LABEL: ticket_rev_by_event.get(e.pk, 0.0)}
+        rev_sources.update(income_by_event.get(e.pk, {}))
         event_rows.append({
             'event': e,
             'revenue': total_revenue,
@@ -9009,6 +9061,8 @@ def profitability_overview(request):
             'profit': profit,
             'margin': margin,
             'fees': fees,
+            'rev_sources': rev_sources,
+            'exp_cats': expense_by_event.get(e.pk, {}),
         })
         summary_revenue += total_revenue
         summary_expenses += e.total_expenses
@@ -9035,6 +9089,8 @@ def profitability_overview(request):
             'net_revenue': Decimal('0.00'),
             'event_count': 0,
             'profits': [],
+            'rev_sources': {},
+            'exp_cats': {},
         })
         m['revenue'] += row['revenue']
         m['expenses'] += row['expenses']
@@ -9042,6 +9098,10 @@ def profitability_overview(request):
         m['net_revenue'] += row['net_revenue']
         m['event_count'] += 1
         m['profits'].append(row['profit'])
+        for k, v in row['rev_sources'].items():
+            m['rev_sources'][k] = m['rev_sources'].get(k, 0.0) + v
+        for k, v in row['exp_cats'].items():
+            m['exp_cats'][k] = m['exp_cats'].get(k, 0.0) + v
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
     # Market chart data - same array shape as the other granularities so the chart can
@@ -9050,6 +9110,9 @@ def profitability_overview(request):
     # the client re-sorts on demand. `avg_profit` / `median_profit` give the mean and
     # median profit/loss per event within each market. Cast Decimals to float/None so
     # json.dumps can serialize them.
+    market_rev_breakdown, market_exp_breakdown = _breakdown_series(
+        market_rows, revenue_source_labels, EventExpense.CATEGORY_CHOICES
+    )
     market_chart_data = {
         'labels': [m['market_label'] for m in market_rows],
         'revenue': [float(m['revenue']) for m in market_rows],
@@ -9067,6 +9130,8 @@ def profitability_overview(request):
             float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
             for m in market_rows
         ],
+        'revenue_breakdown': market_rev_breakdown,
+        'expense_breakdown': market_exp_breakdown,
     }
 
     # Monthly aggregation for chart - bucket events by calendar month, ordered earliest → most recent
@@ -9074,18 +9139,27 @@ def profitability_overview(request):
     month_buckets_profit = {}
     for r in chart_events:
         key = r['event'].start_date.strftime('%Y-%m')
-        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0})
+        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0, 'rev_sources': {}, 'exp_cats': {}})
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
         m['net_revenue'] += float(r['net_revenue'])
+        for k, v in r['rev_sources'].items():
+            m['rev_sources'][k] = m['rev_sources'].get(k, 0.0) + v
+        for k, v in r['exp_cats'].items():
+            m['exp_cats'][k] = m['exp_cats'].get(k, 0.0) + v
     monthly_profit_chart = sorted(month_buckets_profit.values(), key=lambda x: x['month'])
+    month_rev_breakdown, month_exp_breakdown = _breakdown_series(
+        monthly_profit_chart, revenue_source_labels, EventExpense.CATEGORY_CHOICES
+    )
     chart_data = {
         'labels': [m['month'] for m in monthly_profit_chart],
         'revenue': [m['revenue'] for m in monthly_profit_chart],
         'expenses': [m['expenses'] for m in monthly_profit_chart],
         'profit': [m['profit'] for m in monthly_profit_chart],
         'margin': [_bucket_margin(m) for m in monthly_profit_chart],
+        'revenue_breakdown': month_rev_breakdown,
+        'expense_breakdown': month_exp_breakdown,
     }
 
     # Quarterly aggregation for chart - bucket events by calendar quarter
@@ -9098,22 +9172,35 @@ def profitability_overview(request):
         m = quarter_buckets_profit.setdefault(sort_key, {
             'label': label, 'sort_key': sort_key,
             'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0,
+            'rev_sources': {}, 'exp_cats': {},
         })
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
         m['net_revenue'] += float(r['net_revenue'])
+        for k, v in r['rev_sources'].items():
+            m['rev_sources'][k] = m['rev_sources'].get(k, 0.0) + v
+        for k, v in r['exp_cats'].items():
+            m['exp_cats'][k] = m['exp_cats'].get(k, 0.0) + v
     quarterly_profit_chart = sorted(quarter_buckets_profit.values(), key=lambda x: x['sort_key'])
+    quarter_rev_breakdown, quarter_exp_breakdown = _breakdown_series(
+        quarterly_profit_chart, revenue_source_labels, EventExpense.CATEGORY_CHOICES
+    )
     quarter_chart_data = {
         'labels': [m['label'] for m in quarterly_profit_chart],
         'revenue': [m['revenue'] for m in quarterly_profit_chart],
         'expenses': [m['expenses'] for m in quarterly_profit_chart],
         'profit': [m['profit'] for m in quarterly_profit_chart],
         'margin': [_bucket_margin(m) for m in quarterly_profit_chart],
+        'revenue_breakdown': quarter_rev_breakdown,
+        'expense_breakdown': quarter_exp_breakdown,
     }
 
     # Per-event chart data - ordered earliest → most recent
     event_chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
+    event_rev_breakdown, event_exp_breakdown = _breakdown_series(
+        event_chart_events, revenue_source_labels, EventExpense.CATEGORY_CHOICES
+    )
     event_chart_data = {
         'labels': [
             '{} ({})'.format(r['event'].name, r['event'].start_date.strftime('%b %d'))
@@ -9126,6 +9213,8 @@ def profitability_overview(request):
             float(r['margin']) if r['margin'] is not None else None
             for r in event_chart_events
         ],
+        'revenue_breakdown': event_rev_breakdown,
+        'expense_breakdown': event_exp_breakdown,
     }
 
     context = {
