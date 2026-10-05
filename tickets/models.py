@@ -252,6 +252,17 @@ class Organization(BaseModel):
     meta_ads_account_id = models.CharField(max_length=64, blank=True, default='')
     meta_ads_account_name = models.CharField(max_length=255, blank=True, default='')
     meta_ads_token_expires_at = models.DateTimeField(null=True, blank=True)
+    # Instagram DM support agent (Meta Instagram Messaging API). Distinct from the
+    # social-link `instagram_url` field below.
+    instagram_page_access_token = models.CharField(max_length=512, blank=True, default='')
+    instagram_business_account_id = models.CharField(max_length=64, blank=True, default='')
+    instagram_page_id = models.CharField(max_length=64, blank=True, default='')
+    instagram_username = models.CharField(max_length=80, blank=True, default='')
+    instagram_token_expires_at = models.DateTimeField(null=True, blank=True)
+    instagram_support_agent_enabled = models.BooleanField(
+        default=False,
+        help_text='When on, the Instagram DM support agent auto-answers routine FAQ DMs and queues the rest for review.',
+    )
     mailchimp_access_token = models.CharField(max_length=512, blank=True, default='')
     mailchimp_dc = models.CharField(max_length=20, blank=True, default='')
     mailchimp_account_id = models.CharField(max_length=100, blank=True, default='')
@@ -370,6 +381,16 @@ class Organization(BaseModel):
 
     class Meta:
         ordering = ['name']
+        constraints = [
+            # Inbound Instagram webhooks route a DM to an org by this id, so it
+            # must map to at most one org. Partial (non-blank) so unconnected
+            # orgs (the default '') don't collide.
+            models.UniqueConstraint(
+                fields=['instagram_business_account_id'],
+                condition=~models.Q(instagram_business_account_id=''),
+                name='org_ig_business_acct_unique',
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -3163,6 +3184,7 @@ class AITokenUsage(BaseModel):
     FEATURE_EVENT_SUMMARY = 'event_summary'
     FEATURE_SMS_PLAN = 'sms_plan'
     FEATURE_BRAND_VOICE_EXAMPLE = 'brand_voice_example'
+    FEATURE_IG_SUPPORT_AGENT = 'ig_support_agent'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -3174,6 +3196,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_EVENT_SUMMARY, 'Event summary'),
         (FEATURE_SMS_PLAN, 'SMS campaign plan'),
         (FEATURE_BRAND_VOICE_EXAMPLE, 'Brand voice example'),
+        (FEATURE_IG_SUPPORT_AGENT, 'Instagram support agent'),
     ]
 
     organization = models.ForeignKey(
@@ -3209,6 +3232,180 @@ class AITokenUsage(BaseModel):
 
     def __str__(self):
         return f"{self.organization} {self.feature}: {self.total_tokens} tokens"
+
+
+class OrgFAQ(AuditBaseModel):
+    """Per-organization, editable FAQ entry the Instagram support agent answers from."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='faqs',
+    )
+    question = models.CharField(max_length=300)
+    answer = models.TextField()
+    topic = models.CharField(max_length=60, blank=True, default='', db_index=True)
+    is_published = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'created_at']
+        indexes = [
+            models.Index(fields=['organization', 'is_published'], name='orgfaq_org_pub_idx'),
+        ]
+
+    def __str__(self):
+        return self.question[:60]
+
+
+class InstagramConversation(BaseModel):
+    """One Instagram DM thread per (organization, external IG user)."""
+
+    STATUS_OPEN = 'open'
+    STATUS_AWAITING_HUMAN = 'awaiting_human'
+    STATUS_RESOLVED = 'resolved'
+    STATUS_CHOICES = [
+        (STATUS_OPEN, 'Open'),
+        (STATUS_AWAITING_HUMAN, 'Awaiting human'),
+        (STATUS_RESOLVED, 'Resolved'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='ig_conversations',
+    )
+    ig_user_id = models.CharField(max_length=64, db_index=True)
+    ig_username = models.CharField(max_length=80, blank=True, default='')
+    customer = models.ForeignKey(
+        'Customer',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ig_conversations',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    last_message_at = models.DateTimeField(default=timezone.now, db_index=True)
+    assigned_to = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_ig_conversations',
+    )
+
+    class Meta:
+        ordering = ['-last_message_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'ig_user_id'],
+                name='ig_conv_org_user_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['organization', 'status', 'last_message_at'],
+                name='ig_conv_org_status_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f"IG {self.ig_username or self.ig_user_id} ({self.status})"
+
+
+class InstagramMessage(BaseModel):
+    """A single inbound or outbound message in an Instagram DM thread.
+
+    The `status` field encodes whether an outbound agent reply was auto-sent,
+    queued for human review, approved, failed, or discarded — no separate
+    escalation model is needed.
+    """
+
+    DIRECTION_INBOUND = 'inbound'
+    DIRECTION_OUTBOUND = 'outbound'
+    DIRECTION_CHOICES = [
+        (DIRECTION_INBOUND, 'Inbound'),
+        (DIRECTION_OUTBOUND, 'Outbound'),
+    ]
+
+    AUTHOR_CUSTOMER = 'customer'
+    AUTHOR_AGENT = 'agent'
+    AUTHOR_HUMAN = 'human'
+    AUTHOR_CHOICES = [
+        (AUTHOR_CUSTOMER, 'Customer'),
+        (AUTHOR_AGENT, 'AI agent'),
+        (AUTHOR_HUMAN, 'Human'),
+    ]
+
+    STATUS_RECEIVED = 'received'
+    STATUS_AUTO_SENT = 'auto_sent'
+    STATUS_PENDING_REVIEW = 'pending_review'
+    STATUS_APPROVED_SENT = 'approved_sent'
+    STATUS_FAILED = 'failed'
+    STATUS_DISCARDED = 'discarded'
+    STATUS_CHOICES = [
+        (STATUS_RECEIVED, 'Received'),
+        (STATUS_AUTO_SENT, 'Auto-sent'),
+        (STATUS_PENDING_REVIEW, 'Pending review'),
+        (STATUS_APPROVED_SENT, 'Approved & sent'),
+        (STATUS_FAILED, 'Failed'),
+        (STATUS_DISCARDED, 'Discarded'),
+    ]
+
+    conversation = models.ForeignKey(
+        InstagramConversation,
+        on_delete=models.CASCADE,
+        related_name='messages',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='ig_messages',
+    )
+    direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES)
+    author = models.CharField(max_length=10, choices=AUTHOR_CHOICES)
+    content = models.TextField(blank=True, default='')
+    provider_message_id = models.CharField(max_length=128, blank=True, default='', db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RECEIVED)
+    confidence = models.FloatField(null=True, blank=True)
+    escalation_category = models.CharField(max_length=40, blank=True, default='')
+    escalation_reason = models.CharField(max_length=300, blank=True, default='')
+    reviewed_by = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_ig_messages',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    token_count = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            # DB-enforced idempotency: Meta retries webhooks and Celery retries
+            # tasks, so a given provider message id must map to one row. Partial
+            # (non-blank only) because outbound drafts have no id until sent.
+            models.UniqueConstraint(
+                fields=['organization', 'provider_message_id'],
+                condition=~models.Q(provider_message_id=''),
+                name='ig_msg_provider_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['conversation', 'created_at'], name='ig_msg_conv_time_idx'),
+            models.Index(fields=['provider_message_id'], name='ig_msg_provider_idx'),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Multi-tenancy invariant: a message's organization always matches its
+        # conversation's. Set it here so a call site can never diverge the two.
+        if self.conversation_id:
+            self.organization_id = self.conversation.organization_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"[{self.direction}/{self.author}] {self.content[:50]}"
 
 
 class SaleableTicketType(BaseModel):
