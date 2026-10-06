@@ -117,12 +117,18 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['ai_event_summary_enabled', 'ai_event_summary_auto_regenerate', 'timezone']
+        fields = [
+            'ai_event_summary_enabled', 'ai_event_summary_auto_regenerate',
+            'show_page_views_for_external_events', 'timezone',
+        ]
         widgets = {
             'ai_event_summary_enabled': forms.CheckboxInput(
                 attrs={'class': 'form-check-input', 'role': 'switch'}
             ),
             'ai_event_summary_auto_regenerate': forms.CheckboxInput(
+                attrs={'class': 'form-check-input', 'role': 'switch'}
+            ),
+            'show_page_views_for_external_events': forms.CheckboxInput(
                 attrs={'class': 'form-check-input', 'role': 'switch'}
             ),
             'timezone': forms.Select(attrs={'class': 'form-select'}),
@@ -1259,10 +1265,13 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
         model = Event
         fields = [
             'name', 'ticketing_type', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
-            'description', 'capacity', 'timezone', 'ticket_link',
+            'description', 'capacity', 'timezone', 'ticket_link', 'public_buy_page_views',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
+            'public_buy_page_views': forms.NumberInput(
+                attrs={'class': 'form-control', 'placeholder': 'e.g., 1200', 'min': '0'}
+            ),
             'venue': forms.Select(attrs={'class': 'form-select'}),
             'start_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
             'start_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
@@ -1274,7 +1283,8 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
             'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
         }
 
-    def __init__(self, *args, ticketing_type_locked=False, hide_ticket_link=False, **kwargs):
+    def __init__(self, *args, ticketing_type_locked=False, hide_ticket_link=False,
+                 allow_page_views=False, **kwargs):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         # Use VenueChoiceField for richer, consistent labels (matches DirectEventForm
@@ -1291,6 +1301,17 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
         self.fields['description'].required = False
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
+        # Manual page-views entry is opt-in (org setting) and only for external
+        # events — direct events track this natively. Drop the field entirely
+        # when not allowed so it can't be submitted.
+        if allow_page_views:
+            self.fields['public_buy_page_views'].required = False
+            self.fields['public_buy_page_views'].label = 'Page views'
+            self.fields['public_buy_page_views'].help_text = (
+                'Manually recorded page views for this CSV event (optional).'
+            )
+        else:
+            del self.fields['public_buy_page_views']
         # Show the capacity/timezone hints as label tooltips rather than subtext
         # below the fields. Bootstrap tooltips are auto-initialised in base.html.
         for name, tip in (
@@ -1333,6 +1354,7 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
             ),
             Field('description'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
+            *([Field('public_buy_page_views')] if allow_page_views else []),
         ]
         for cf in dropdown_fields:
             choices = [('', '---------')] + [

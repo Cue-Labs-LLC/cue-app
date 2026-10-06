@@ -305,6 +305,14 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
     )
+    show_page_views_for_external_events = models.BooleanField(
+        default=False,
+        help_text=(
+            'Show the Page Views column for CSV (external) events and allow '
+            'organizers to enter the value manually. Direct events always show '
+            'their tracked page views.'
+        ),
+    )
     disabled_action_kinds = models.JSONField(
         default=list,
         blank=True,
