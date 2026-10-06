@@ -49,6 +49,7 @@ from tickets.models import (
     OrderCounter,
     Organization,
     OrganizationMembership,
+    OrgFAQ,
     PhoneSuppression,
     PromoCode,
     SaleableTicketType,
@@ -303,6 +304,7 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             org = self._create_org()
+            self._create_faqs(org)
             owner, staff_users = self._create_users(org)
             venues = self._create_venues(org)
             # Collect all cities (venue cities + market-trend cities) so every
@@ -381,6 +383,60 @@ class Command(BaseCommand):
         org.refresh_from_db(fields=["sms_credit_balance_cents"])
         self.stdout.write(self.style.SUCCESS(f"Org: {org.name}"))
         return org
+
+    # General, always-answerable FAQs for the Instagram DM support agent. These are
+    # org-level (no per-event data), so the agent can answer them from the FAQ text
+    # alone. (topic, question, answer)
+    FAQ_SEED = [
+        ("tickets", "How do I buy tickets?",
+         "All our tickets are sold online through the link in our bio and on each event page. "
+         "Just tap through and check out. We never sell tickets over DM, so please avoid anyone "
+         "offering that."),
+        ("tickets", "I bought a ticket but did not get it. Where is it?",
+         "Your ticket and QR code are emailed right after checkout. Please check the inbox (and "
+         "spam folder) of the email you used to order. Still missing? Reply here with the name and "
+         "email on the order and we will resend it."),
+        ("tickets", "Can I transfer my ticket to someone else?",
+         "Yes, tickets are transferable. Just forward your confirmation email with the QR code to "
+         "whoever is using it. Whoever presents the QR code at the door gets in."),
+        ("tickets", "What payment methods do you accept?",
+         "Online checkout accepts all major credit and debit cards. You will get an emailed receipt "
+         "and ticket as soon as the payment goes through."),
+        ("refunds", "Do you offer refunds?",
+         "Refunds depend on the event and timing, so we handle these case by case. Reply here with "
+         "your order details and a member of our team will take a look."),
+        ("entry", "Do I need to print my ticket?",
+         "No need to print. Just show the QR code from your confirmation email on your phone at the "
+         "door. A screenshot works too, as long as the QR code scans."),
+        ("entry", "What is the dress code?",
+         "Come as you are. There is no strict dress code unless an event says otherwise, so just "
+         "dress comfortably for a night out."),
+        ("entry", "Can I re-enter if I leave?",
+         "Re-entry is not guaranteed and depends on the venue policy on the night, so we recommend "
+         "planning to stay in once you are inside."),
+        ("accessibility", "Are your events accessible?",
+         "We want everyone to have a great night. Let us know what you need and we will share the "
+         "accessibility details and make sure our team is ready to help."),
+        ("updates", "How do I hear about upcoming events?",
+         "Follow us here on Instagram and keep an eye on our posts and stories. That is where we "
+         "announce new events and on-sale dates first."),
+        ("contact", "How can I reach a human?",
+         "You can always reply right here and a member of our team will get back to you as soon as "
+         "we can."),
+    ]
+
+    def _create_faqs(self, org):
+        """Seed the Instagram support agent's general FAQ knowledge base."""
+        for i, (topic, question, answer) in enumerate(self.FAQ_SEED):
+            OrgFAQ.objects.create(
+                organization=org,
+                question=question,
+                answer=answer,
+                topic=topic,
+                is_published=True,
+                sort_order=i,
+            )
+        self.stdout.write(self.style.SUCCESS(f"FAQs: {len(self.FAQ_SEED)}"))
 
     def _create_loyalty_program(self, org):
         """Seed "The Circle" — an attendance-based status program.
