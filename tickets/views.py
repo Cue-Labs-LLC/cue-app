@@ -2045,13 +2045,18 @@ def _direct_sellable_capacity(event):
     return total, is_unlimited
 
 
-def _decorate_spotlight(ev, today):
+def _decorate_spotlight(ev, today, org=None):
     """Attach display attributes used by the dashboard spotlight cards.
 
     Reuses the denormalized stats from _annotate_events (total_revenue,
     total_tickets, total_expenses, platform_fees_cents). Net revenue subtracts
     Stripe platform fees for direct events only (external events are gross).
     """
+    # Page views are always shown for direct events (tracked natively); for
+    # external/CSV events only when the org has opted in.
+    ev.show_page_views = ev.ticketing_type == 'direct' or bool(
+        org and org.show_page_views_for_external_events
+    )
     if ev.ticketing_type == 'direct':
         fees = Decimal(ev.platform_fees_cents) / Decimal('100')
     else:
@@ -2115,9 +2120,9 @@ def home(request):
     )[:2]
 
     for ev in upcoming_events:
-        _decorate_spotlight(ev, today)
+        _decorate_spotlight(ev, today, org)
     for ev in ended_events:
-        _decorate_spotlight(ev, today)
+        _decorate_spotlight(ev, today, org)
 
     has_events = bool(upcoming_events or ended_events) or Event.objects.filter(
         organization=org
@@ -7555,6 +7560,7 @@ def event_create(request, ticketing_type):
             request.POST, organization=org,
             ticketing_type_locked=True,
             hide_ticket_link=False,
+            allow_page_views=org.show_page_views_for_external_events,
         )
         # CSV is optional: only validate/ingest it when a file was actually dropped.
         csv_provided = bool(request.FILES.get('csv_file'))
@@ -7604,6 +7610,7 @@ def event_create(request, ticketing_type):
             ticketing_type_locked=True,
             hide_ticket_link=False,
             initial={'ticketing_type': ticketing_type},
+            allow_page_views=org.show_page_views_for_external_events,
         )
         csv_form = EventCSVUploadForm(organization=org)
 
@@ -7682,7 +7689,10 @@ def event_edit(request, event_id):
 
     # External ticketing path
     if request.method == 'POST':
-        form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
+        form = EventForm(
+            request.POST, instance=event, organization=org, ticketing_type_locked=True,
+            allow_page_views=org.show_page_views_for_external_events,
+        )
         if form.is_valid():
             was_future = event.start_date >= date.today()
             event = form.save(commit=False)
@@ -7708,7 +7718,10 @@ def event_edit(request, event_id):
             messages.success(request, f"Event '{event.name}' updated successfully.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
+        form = EventForm(
+            instance=event, organization=org, ticketing_type_locked=True,
+            allow_page_views=org.show_page_views_for_external_events,
+        )
 
     context = {
         'form': form,
@@ -8047,6 +8060,8 @@ def settings_display_preferences(request):
         form = OrgDisplayPreferencesForm(request.POST, instance=org)
         if form.is_valid():
             form.save()
+            # The page-views toggle affects the cached events-list HTML.
+            _invalidate_event_list_cache(org)
             messages.success(request, 'Display preferences updated.')
             return redirect('tickets:settings_display_preferences')
     else:

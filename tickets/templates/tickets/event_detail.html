@@ -613,6 +613,12 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="stat-label">Orders</div>
             <div class="stat-value">{{ total_orders }}</div>
         </div>
+        {% if org.show_page_views_for_external_events %}
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Page Views</div>
+            <div class="stat-value">{{ event.public_buy_page_views|default:0 }}</div>
+        </div>
+        {% endif %}
         {% endif %}
         <div class="stat-card stat-card--warning">
             <div class="stat-label">Customers</div>

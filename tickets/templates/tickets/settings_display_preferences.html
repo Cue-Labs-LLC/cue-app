@@ -43,6 +43,19 @@
                 summaries manually.
             </p>
 
+            <div class="form-check form-switch mb-2 mt-3">
+                {{ form.show_page_views_for_external_events }}
+                <label class="form-check-label" for="{{ form.show_page_views_for_external_events.id_for_label }}">
+                    Show page views for CSV events
+                </label>
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem; margin-left: 2.5em;">
+                When on, the Page Views column appears for CSV-imported (external) events
+                across the events list and dashboard, and you can enter a page-view count
+                manually when editing those events. Direct events always show their tracked
+                page views regardless of this setting.
+            </p>
+
             <hr class="my-4">
 
             <div class="mb-2" style="max-width: 360px;">

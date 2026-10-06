@@ -77,6 +77,12 @@ Dashboard spotlight card. Expects `event` (decorated by _decorate_spotlight),
                 <div class="event-spotlight-metric-value">${{ event.net_revenue|currency }}</div>
                 <div class="event-spotlight-metric-label">Revenue so far</div>
             </div>
+            {% if event.show_page_views %}
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">{{ event.public_buy_page_views|default:0 }}</div>
+                <div class="event-spotlight-metric-label">Page views</div>
+            </div>
+            {% endif %}
         </div>
         {% else %}
         <div class="event-spotlight-metrics">
@@ -92,6 +98,12 @@ Dashboard spotlight card. Expects `event` (decorated by _decorate_spotlight),
             <div class="event-spotlight-metric">
                 <div class="event-spotlight-metric-value">${{ event.net_profit|currency }}</div>
                 <div class="event-spotlight-metric-label">Profit · {{ event.margin_pct }}%</div>
+            </div>
+            {% endif %}
+            {% if event.show_page_views %}
+            <div class="event-spotlight-metric">
+                <div class="event-spotlight-metric-value">{{ event.public_buy_page_views|default:0 }}</div>
+                <div class="event-spotlight-metric-label">Page views</div>
             </div>
             {% endif %}
         </div>

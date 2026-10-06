@@ -55,6 +55,7 @@
                         <th>Revenue</th>
                         <th class="d-none d-md-table-cell">Profit</th>
                         <th>Tickets</th>
+                        <th class="d-none d-md-table-cell">Page views</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -118,6 +119,7 @@
                         <td class="d-none d-md-table-cell"{% if event.id not in event_ids_show_placeholder and profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>{% if event.id in event_ids_show_placeholder %}-{% else %}${{ profit|currency }}{% endif %}</td>
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if event.id in event_ids_show_placeholder %}-{% elif event.ticketing_type == 'direct' or org.show_page_views_for_external_events %}{{ event.public_buy_page_views|default:0 }}{% else %}&mdash;{% endif %}</td>
                         <td class="event-actions-cell">
                             <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
                                 {# View → public ticket page (disabled when a CSV-imported event has none) #}
