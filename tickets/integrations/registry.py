@@ -75,6 +75,18 @@ INTEGRATIONS = [
         'superuser_only': True,
     },
     {
+        'key': 'instagram',
+        'label': 'Instagram DMs',
+        'icon': 'bi-instagram',
+        'category': 'Support',
+        'settings_url': 'tickets:instagram_faq_list',
+        'description': 'Auto-answer routine Instagram DMs from your FAQ and escalate the rest.',
+        'is_connected': lambda org: bool(
+            org.instagram_page_access_token and org.instagram_business_account_id
+        ),
+        'superuser_only': False,
+    },
+    {
         'key': 'webhooks',
         'label': 'Webhooks',
         'icon': 'bi-hdd-network',

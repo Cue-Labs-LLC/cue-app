@@ -1,0 +1,264 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Instagram FAQs{% endblock %}
+
+{% block extra_head %}
+<script defer src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<style>
+  .faq-item { transition: box-shadow .15s, opacity .15s; }
+  .faq-item.sortable-ghost { opacity: .35; }
+  .faq-item.sortable-chosen { box-shadow: 0 6px 20px rgba(0,0,0,.14); }
+  .faq-drag { cursor: grab; color: var(--text-muted, #6c757d); padding: 0 10px 0 2px; user-select: none; }
+  .faq-drag:hover { color: var(--accent, #0d6efd); }
+  .faq-drag:active { cursor: grabbing; }
+  .faq-q { font-weight: 600; }
+  .faq-a { color: var(--text-muted, #6c757d); white-space: pre-wrap; }
+  #faq-status { font-size: 12px; min-width: 90px; text-align: right; transition: opacity .4s; }
+  #faq-status.idle   { opacity: 0; }
+  #faq-status.saving { opacity: 1; color: var(--text-muted, #6c757d); }
+  #faq-status.saved  { opacity: 1; color: #198754; }
+  #faq-status.error  { opacity: 1; color: #dc3545; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width: 900px; margin: 0 auto;"
+     id="faq-editor"
+     data-create-url="{% url 'tickets:instagram_faq_create' %}"
+     data-reorder-url="{% url 'tickets:instagram_faq_reorder' %}"
+     data-edit-url-tpl="{% url 'tickets:instagram_faq_edit' '00000000-0000-0000-0000-000000000000' %}"
+     data-delete-url-tpl="{% url 'tickets:instagram_faq_delete' '00000000-0000-0000-0000-000000000000' %}">
+
+<div class="page-header">
+    <div>
+        <h1>Instagram FAQs</h1>
+        <p class="page-header-subtitle">
+            Answers the Instagram DM support agent uses. Drag to reorder; click Edit to change one in place.
+            {% if not is_connected %}<span class="badge bg-secondary ms-1">Not connected</span>{% endif %}
+        </p>
+    </div>
+    <div class="page-header-actions">
+        <span id="faq-status" class="idle me-2"></span>
+        <button type="button" class="btn btn-primary faq-add">
+            <i class="bi bi-plus-lg"></i> Add FAQ
+        </button>
+    </div>
+</div>
+
+<div class="faq-list">
+    {% for faq in faqs %}{% include 'tickets/_instagram_faq_item.html' %}{% endfor %}
+</div>
+
+<div class="faq-empty empty-state {% if faqs %}d-none{% endif %}">
+    <i class="bi bi-instagram d-block"></i>
+    <p>No FAQs yet. Add your first FAQ so the support agent can auto-answer common Instagram DMs.</p>
+</div>
+
+</div>
+
+{% comment %}
+Template for a brand-new, unsaved FAQ row (cloned by JS on "Add FAQ"). Kept structurally
+identical to the _instagram_faq_item.html partial.
+{% endcomment %}
+<template id="faq-row-template">
+    <div class="faq-item card mb-2" data-id="">
+        <div class="card-body d-flex align-items-start gap-2">
+            <span class="faq-drag" title="Drag to reorder"><i class="bi bi-grip-vertical"></i></span>
+            <div class="flex-grow-1">
+                <div class="faq-display d-none d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <div class="faq-q"></div>
+                        <div class="faq-a"></div>
+                        <div class="mt-2 d-flex gap-2 align-items-center">
+                            <span class="faq-topic badge bg-light text-dark d-none"></span>
+                            <span class="faq-pub badge bg-success">Published</span>
+                        </div>
+                    </div>
+                    <div class="flex-shrink-0">
+                        <button type="button" class="btn btn-sm btn-outline-secondary faq-edit"><i class="bi bi-pencil"></i> Edit</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger faq-delete"><i class="bi bi-trash"></i></button>
+                    </div>
+                </div>
+                <div class="faq-edit-form">
+                    <input type="text" class="form-control mb-2 f-question" placeholder="Question" maxlength="300">
+                    <textarea class="form-control mb-2 f-answer" rows="3" placeholder="Answer"></textarea>
+                    <div class="row g-2 align-items-center mb-2">
+                        <div class="col">
+                            <input type="text" class="form-control f-topic" placeholder="Topic (optional)" maxlength="60">
+                        </div>
+                        <div class="col-auto">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input f-published" type="checkbox" checked>
+                                <label class="form-check-label">Published</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-primary faq-save">Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary faq-cancel">Cancel</button>
+                    </div>
+                    <div class="faq-error text-danger small mt-2 d-none"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var editor = document.getElementById('faq-editor');
+    var list = editor.querySelector('.faq-list');
+    var empty = editor.querySelector('.faq-empty');
+    var tpl = document.getElementById('faq-row-template');
+    var statusEl = document.getElementById('faq-status');
+    var csrf = '{{ csrf_token }}';
+    var createUrl = editor.dataset.createUrl;
+    var reorderUrl = editor.dataset.reorderUrl;
+    var DUMMY = '00000000-0000-0000-0000-000000000000';
+    var statusTimer = null;
+
+    function setStatus(state, text) {
+        statusEl.className = state;
+        statusEl.textContent = text || '';
+        if (state === 'saved') {
+            clearTimeout(statusTimer);
+            statusTimer = setTimeout(function () { statusEl.className = 'idle'; }, 2000);
+        }
+    }
+
+    function editUrl(id) { return editor.dataset.editUrlTpl.replace(DUMMY, id); }
+    function deleteUrl(id) { return editor.dataset.deleteUrlTpl.replace(DUMMY, id); }
+
+    function post(url, body, isJson) {
+        return fetch(url, {
+            method: 'POST',
+            headers: Object.assign(
+                { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                isJson ? { 'Content-Type': 'application/json' }
+                       : { 'Content-Type': 'application/x-www-form-urlencoded' }
+            ),
+            body: body,
+        });
+    }
+
+    function refreshEmpty() {
+        empty.classList.toggle('d-none', list.querySelector('.faq-item') !== null);
+    }
+
+    function showEdit(item, on) {
+        item.querySelector('.faq-display').classList.toggle('d-none', on);
+        item.querySelector('.faq-edit-form').classList.toggle('d-none', !on);
+    }
+
+    function fillDisplay(item, faq) {
+        item.dataset.id = faq.id;
+        item.querySelector('.faq-q').textContent = faq.question;
+        item.querySelector('.faq-a').textContent = faq.answer;
+        var topic = item.querySelector('.faq-topic');
+        topic.textContent = faq.topic;
+        topic.classList.toggle('d-none', !faq.topic);
+        var pub = item.querySelector('.faq-pub');
+        pub.textContent = faq.is_published ? 'Published' : 'Hidden';
+        pub.className = 'faq-pub badge ' + (faq.is_published ? 'bg-success' : 'bg-secondary');
+    }
+
+    function positionOf(item) {
+        return Array.prototype.indexOf.call(list.querySelectorAll('.faq-item'), item);
+    }
+
+    function save(item) {
+        var q = item.querySelector('.f-question').value.trim();
+        var a = item.querySelector('.f-answer').value.trim();
+        var errEl = item.querySelector('.faq-error');
+        errEl.classList.add('d-none');
+        if (!q || !a) {
+            errEl.textContent = 'Question and answer are both required.';
+            errEl.classList.remove('d-none');
+            return;
+        }
+        var params = new URLSearchParams();
+        params.append('question', q);
+        params.append('answer', a);
+        params.append('topic', item.querySelector('.f-topic').value.trim());
+        params.append('sort_order', positionOf(item));
+        if (item.querySelector('.f-published').checked) { params.append('is_published', 'on'); }
+        var id = item.dataset.id;
+        var url = id ? editUrl(id) : createUrl;
+        setStatus('saving', 'Saving…');
+        post(url, params.toString(), false)
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (res) {
+                if (res.ok && res.data.ok) {
+                    fillDisplay(item, res.data.faq);
+                    showEdit(item, false);
+                    setStatus('saved', '✓ Saved');
+                } else {
+                    errEl.textContent = 'Could not save. Check the fields and try again.';
+                    errEl.classList.remove('d-none');
+                    setStatus('error', 'Save failed');
+                }
+            })
+            .catch(function () {
+                errEl.textContent = 'Network error. Try again.';
+                errEl.classList.remove('d-none');
+                setStatus('error', 'Save failed');
+            });
+    }
+
+    function remove(item) {
+        var id = item.dataset.id;
+        if (!id) { item.remove(); refreshEmpty(); return; }  // unsaved new row
+        if (!confirm('Delete this FAQ? The support agent will no longer use it.')) { return; }
+        setStatus('saving', 'Deleting…');
+        post(deleteUrl(id), '', false)
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d.ok) { item.remove(); refreshEmpty(); setStatus('saved', '✓ Deleted'); }
+                else { setStatus('error', 'Delete failed'); }
+            })
+            .catch(function () { setStatus('error', 'Delete failed'); });
+    }
+
+    function saveOrder() {
+        var ids = Array.prototype.map.call(list.querySelectorAll('.faq-item'), function (i) {
+            return i.dataset.id;
+        }).filter(Boolean);
+        setStatus('saving', 'Saving…');
+        post(reorderUrl, JSON.stringify({ order: ids }), true)
+            .then(function (r) { return r.json(); })
+            .then(function (d) { setStatus(d.ok ? 'saved' : 'error', d.ok ? '✓ Saved' : 'Save failed'); })
+            .catch(function () { setStatus('error', 'Save failed'); });
+    }
+
+    editor.addEventListener('click', function (e) {
+        if (e.target.closest('.faq-add')) {
+            var node = tpl.content.firstElementChild.cloneNode(true);
+            list.appendChild(node);
+            refreshEmpty();
+            node.querySelector('.f-question').focus();
+            node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            return;
+        }
+        var item = e.target.closest('.faq-item');
+        if (!item) { return; }
+        if (e.target.closest('.faq-edit')) { showEdit(item, true); item.querySelector('.f-question').focus(); }
+        else if (e.target.closest('.faq-cancel')) {
+            if (!item.dataset.id) { item.remove(); refreshEmpty(); }  // discard unsaved new row
+            else { showEdit(item, false); }
+        }
+        else if (e.target.closest('.faq-save')) { save(item); }
+        else if (e.target.closest('.faq-delete')) { remove(item); }
+    });
+
+    new Sortable(list, {
+        handle: '.faq-drag',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        onEnd: saveOrder,
+    });
+});
+</script>
+{% endblock %}

@@ -9,7 +9,7 @@ from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
 from django.utils.safestring import mark_safe
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint, OrgFAQ
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
@@ -1081,6 +1081,40 @@ class IncomeSourceForm(forms.ModelForm):
         self.helper.layout = Layout(
             Field('name'),
             Field('order'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+
+class OrgFAQForm(forms.ModelForm):
+    """Create/edit a per-org FAQ entry the Instagram support agent answers from."""
+
+    class Meta:
+        model = OrgFAQ
+        fields = ['question', 'answer', 'topic', 'is_published', 'sort_order']
+        widgets = {
+            'question': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'e.g., How do I buy tickets?'}),
+            'answer': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 4,
+                'placeholder': 'The answer the agent sends for this question.'}),
+            'topic': forms.TextInput(attrs={
+                'class': 'form-control', 'placeholder': 'Optional grouping, e.g., tickets'}),
+            'sort_order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        submit_label = 'Update FAQ' if (self.instance and self.instance.pk) else 'Add FAQ'
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('question'),
+            Field('answer'),
+            Row(
+                Column('topic', css_class='form-group col-md-8 mb-0'),
+                Column('sort_order', css_class='form-group col-md-4 mb-0'),
+            ),
+            Field('is_published'),
             Submit('submit', submit_label, css_class='btn btn-primary'),
         )
 

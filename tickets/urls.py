@@ -11,6 +11,7 @@ from .integrations import (
     google_calendar as google_calendar_views,
     hub as integrations_hub,
     webhooks_ui as webhooks_views,
+    instagram as instagram_views,
 )
 
 app_name = 'tickets'
@@ -364,6 +365,14 @@ urlpatterns = [
     path('settings/integrations/webhooks/<uuid:endpoint_id>/delete/', webhooks_views.webhook_endpoint_delete, name='webhook_endpoint_delete'),
     path('settings/integrations/webhooks/<uuid:endpoint_id>/rotate-secret/', webhooks_views.webhook_endpoint_rotate_secret, name='webhook_endpoint_rotate_secret'),
     path('settings/integrations/webhooks/<uuid:endpoint_id>/test/', webhooks_views.webhook_endpoint_test, name='webhook_endpoint_test'),
+
+    # Instagram DM support agent — per-org FAQ editor (Phase 1)
+    path('settings/integrations/instagram/faq/', instagram_views.instagram_faq_list, name='instagram_faq_list'),
+    path('settings/integrations/instagram/faq/create/', instagram_views.instagram_faq_create, name='instagram_faq_create'),
+    path('settings/integrations/instagram/faq/reorder/', instagram_views.instagram_faq_reorder, name='instagram_faq_reorder'),
+    path('settings/integrations/instagram/faq/<uuid:faq_id>/edit/', instagram_views.instagram_faq_edit, name='instagram_faq_edit'),
+    path('settings/integrations/instagram/faq/<uuid:faq_id>/delete/', instagram_views.instagram_faq_delete, name='instagram_faq_delete'),
+
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/ai-token-usage/', views.ai_token_usage_dashboard, name='ai_token_usage'),
