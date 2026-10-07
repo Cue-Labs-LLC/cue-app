@@ -1404,6 +1404,13 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(*layout_fields)
 
+    def clean_public_buy_page_views(self):
+        # The field is optional (required=False) when manual page-views entry is
+        # enabled, so an empty input cleans to None. The model column is
+        # NOT NULL (default 0), so coerce a blank entry back to 0 — otherwise
+        # event.save() raises an IntegrityError.
+        return self.cleaned_data.get('public_buy_page_views') or 0
+
     def clean(self):
         cleaned_data = super().clean()
         return self._resolve_event_datetimes(cleaned_data)
