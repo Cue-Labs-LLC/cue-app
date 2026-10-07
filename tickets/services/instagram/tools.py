@@ -130,7 +130,7 @@ def _find_event(organization, query: str) -> str:
         return "Please tell me the event name you're asking about."
 
     matches = list(
-        _customer_visible_events(organization)
+        _future_events(_customer_visible_events(organization))
         .filter(Q(name__icontains=query) | Q(venue__city__icontains=query))
         .order_by('start_date', 'start_time', 'name')[:5]
     )

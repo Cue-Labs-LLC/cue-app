@@ -432,6 +432,9 @@ urlpatterns = [
     path('events/<uuid:event_id>/tracking-links/create/', views.tracking_link_create, name='tracking_link_create'),
     path('events/<uuid:event_id>/tracking-links/<uuid:link_id>/delete/', views.tracking_link_delete, name='tracking_link_delete'),
 
+    # Instagram DM support agent — inbound Meta webhook (Phase 3)
+    path('webhooks/instagram/', instagram_views.instagram_webhook, name='instagram_webhook'),
+
     # Twilio marketing-SMS webhooks
     path('webhooks/twilio/sms-status/', sms_views.twilio_sms_status_webhook, name='twilio_sms_status_webhook'),
     path('webhooks/twilio/sms-inbound/', sms_views.twilio_sms_inbound_webhook, name='twilio_sms_inbound_webhook'),

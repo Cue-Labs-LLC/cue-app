@@ -124,6 +124,7 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 ### Phase 7 — Meta OAuth + Graph sender (production, gated by App Review)
 - **Tests first:** OAuth `state` CSRF + callback persists `instagram_*` fields (mock Graph); `GraphAPISender.send_text` POST (mock `requests`); send failure → `status='failed'` surfaced in inbox; token-expiry reconnect prompt.
 - **Build:** `instagram_settings/connect/callback/disconnect/toggle_agent` (mirror `meta_ads.py`; scopes `instagram_basic, instagram_manage_messages, pages_messaging, pages_manage_metadata, pages_show_list, business_management`; reuse `exchange_code_for_token`/`exchange_for_long_lived_token`; subscribe Page to `messages` via `POST /{page_id}/subscribed_apps`); `InstagramGraphClient` + `GraphAPISender`; callback URL at `settings/instagram/callback/`.
+- **Org-resolution contract (P3 dependency):** inbound webhooks resolve the org by the account id in `entry[].id` (`normalize_meta_payload` → `NormalizedInbound.ig_account_id`). OAuth here MUST persist **that exact id** into `instagram_business_account_id` — it is the IGSID Meta sends in the webhook, which can differ from a Graph business-account id. If they diverge, every inbound message resolves to "unknown account" and 200-no-ops (logged as a warning). Validate against a real webhook payload from a Meta dev-mode/test subscription before trusting the resolver.
 - **Rollout:** submit App Review (external, multi-week); flip `INSTAGRAM_SENDER_BACKEND='graph'` per env once approved; `instagram_support_agent_enabled` stays off by default (orgs opt in after reviewing FAQ quality).
 - **Accept:** real IG DM round-trip in a Meta-approved environment.
 
@@ -147,8 +148,8 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 ## 8. Progress tracker
 - [x] **P0** — Design doc committed + data model + migration
 - [x] **P1** — Per-org FAQ editor (settings) + registry entry
-- [ ] **P2** — Answer pipeline + customer-safe tools + classifier (tool-safety tests) + Langfuse eval harness (eval-first)
-- [ ] **P3** — Transport abstraction + StubSender + inbound + orchestration + webhook
+- [x] **P2** — Answer pipeline + customer-safe tools + classifier (tool-safety tests) + Langfuse eval harness (eval-first)
+- [x] **P3** — Transport abstraction + StubSender + inbound + orchestration + webhook
 - [ ] **P4** — Inbox UI + escalation notifications (email + push)
 - [ ] **P5** — Remove legacy KB
 - [ ] **P6** — Langfuse eval standardization (managed LLM-judge + CI; SMS plans; segments excluded). IG-agent harness itself shipped in P2.
@@ -161,16 +162,16 @@ Decisions from the engineering review, mapped to where they land. P0 items are a
 | # | Decision | Lands in | Status |
 |---|----------|----------|--------|
 | D1 | Split the `eval_sms_plans` Langfuse migration into its own track; IG-agent eval stays (Phase 2) | Scope / P6 | folded |
-| D4 | Per-org daily auto-answer cap (`IG_AGENT_DAILY_ANSWER_CAP`) → queue past cap | P3 | planned |
+| D4 | Per-org daily auto-answer cap (`IG_AGENT_DAILY_ANSWER_CAP`) → queue past cap | P3 | **done** (soft, `timezone.localdate()`) |
 | D5 | Partial-unique `provider_message_id` for retry-safe idempotency | **P0** | **done** |
 | D6 | `InstagramMessage.save()` coerces org from conversation (tenancy invariant) | **P0** | **done** |
 | D7 | Adversarial prompt-injection cases in the IG-agent eval | P2 | planned |
 | D9 | `HUMAN_AGENT` tag + permission for escalated/human replies; inbox window indicator | P4 + P7 | planned |
-| D10 | `get_sender()` selects by `INSTAGRAM_SENDER_BACKEND`, never stub-send in prod; missing token → loud `failed` | P3 | planned |
+| D10 | `get_sender()` selects by `INSTAGRAM_SENDER_BACKEND`, never stub-send in prod; missing token → loud `failed` | P3 | **done** |
 | D11 | Partial-unique `Organization.instagram_business_account_id` + already-claimed connect handling | **P0** (constraint) + P7 (connect) | **constraint done**, connect planned |
-| D12 | Load conversation history into the agent + debounce/coalesce fragmented inbound DMs | P2 (history) + P3 (coalesce) | planned |
+| D12 | Load conversation history into the agent + debounce/coalesce fragmented inbound DMs | P2 (history) + P3 (coalesce) | **history done**; coalesce deferred to a committed fast-follow — P3 ships a cheap latest-inbound-wins staleness guard as a partial mitigation |
 | D13 | Celery beat token-refresh job + expiry alert (inbox/email) | P7 | planned |
-| D14 | Groundedness gate: auto-send only when a FAQ/event tool actually fired (no tool hit → queue) | P2/P3 | planned |
+| D14 | Groundedness gate: auto-send only when a FAQ/event tool actually fired (no tool hit → queue) | P2/P3 | **done** (enforced in `decide_autosend` + P3 task gate) |
 | #6 | Verify current Instagram-Login permission model; add **Business Verification** + IG Professional account + per-org "allow message access" as explicit P7 pre-reqs | P7 | planned |
 
 **Test additions folded into the plan (completeness/regression):**

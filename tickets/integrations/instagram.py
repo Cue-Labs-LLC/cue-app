@@ -11,18 +11,24 @@ form pages keep working without JavaScript.
 """
 
 import json
+import logging
 import uuid
+from dataclasses import asdict
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from ..forms import OrgFAQForm
-from ..models import OrgFAQ
+from ..models import Organization, OrgFAQ
 from ..utils import get_organization, require_admin, require_org
+
+logger = logging.getLogger(__name__)
 
 
 def _org_faqs(org):
@@ -156,3 +162,56 @@ def instagram_faq_reorder(request):
     with transaction.atomic():
         OrgFAQ.objects.bulk_update(to_update, ['sort_order'])
     return JsonResponse({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Inbound webhook (Phase 3)
+#
+# Meta delivers every subscribed event for the app to this one public URL. The
+# view is deliberately thin and ALWAYS returns 200 quickly on a verified POST —
+# a non-200 makes Meta retry and eventually disable the subscription — doing the
+# real work in a Celery task. GET is Meta's one-time verification handshake.
+# ---------------------------------------------------------------------------
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def instagram_webhook(request):
+    """Meta Instagram messaging webhook: GET verify handshake + signed POST events."""
+    from ..services.instagram import normalize_meta_payload, verify_meta_signature
+    from ..tasks import process_instagram_inbound_task
+
+    if request.method == 'GET':
+        mode = request.GET.get('hub.mode')
+        token = request.GET.get('hub.verify_token')
+        challenge = request.GET.get('hub.challenge', '')
+        expected = getattr(settings, 'INSTAGRAM_WEBHOOK_VERIFY_TOKEN', '')
+        if mode == 'subscribe' and expected and token == expected:
+            return HttpResponse(challenge)
+        return HttpResponse(status=403)
+
+    # POST
+    if not verify_meta_signature(request):
+        return HttpResponse(status=403)
+
+    try:
+        body = json.loads(request.body)
+    except (ValueError, UnicodeDecodeError):
+        # Signed by Meta but unparseable — ack so Meta doesn't retry; nothing to do.
+        return HttpResponse(status=200)
+
+    for item in normalize_meta_payload(body):
+        org = Organization.objects.filter(
+            instagram_business_account_id=item.ig_account_id,
+        ).first()
+        if org is None:
+            # Unknown account — likely a misconfiguration (webhook entry[].id not
+            # persisted into instagram_business_account_id). Log so it's debuggable
+            # rather than a silent 100% drop.
+            logger.warning(
+                "IG webhook: no org for instagram_business_account_id=%s",
+                item.ig_account_id,
+            )
+            continue
+        process_instagram_inbound_task.delay(str(org.id), asdict(item))
+
+    return HttpResponse(status=200)
