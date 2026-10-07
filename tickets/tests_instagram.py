@@ -1,11 +1,14 @@
-"""Phase 0 model tests for the Instagram DM support agent.
+"""Tests for the Instagram DM support agent (Phases 0–2).
 
-Covers the data-model foundations only: OrgFAQ, InstagramConversation,
-InstagramMessage, the new Organization integration fields, and the new
-AITokenUsage feature constant. No behavior/views yet.
+Covers the data-model foundations (OrgFAQ, InstagramConversation, InstagramMessage,
+the Organization integration fields, the AITokenUsage feature), the per-org FAQ editor
+(Phase 1), and the offline answer pipeline (Phase 2): the customer-safe tool surface
+(allowlist pin, output scrubbing, visibility), the ReAct answer agent, and the
+escalation classifier + auto-send gate.
 """
 
 import json
+from decimal import Decimal
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +28,21 @@ from .models import (
     Organization,
     UserProfile,
 )
-from .services.instagram import FaqAnswer, answer_faq
+from .services.instagram import (
+    AnswerResult,
+    EscalationDecision,
+    InstagramSupportAgentService,
+    build_ig_tools,
+    classify_escalation,
+    decide_autosend,
+)
+from .services.instagram.tools import (
+    _find_event, _get_contact_info, _get_faq, _list_upcoming_events,
+)
+from .services.instagram.evaluation import (
+    DisclosureVerdict, grade_escalation, grade_grounded, grade_tool,
+    judge_private_disclosure, load_cases,
+)
 
 
 class OrgFAQModelTests(TestCase):
@@ -478,33 +495,144 @@ class FAQFormTests(_FAQViewTestBase):
         self.assertIn('answer', form.errors)
 
 
-@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
-class FAQAnswerAgentTests(_FAQViewTestBase):
-    """answer_faq() with the LLM mocked (patch at the import source)."""
+ALLOWED_IG_TOOL_NAMES = {'get_faq', 'list_upcoming_events', 'find_event', 'get_contact_info'}
 
-    def _fake_llm(self, parsed, input_tokens=40, output_tokens=20):
-        raw = MagicMock()
-        raw.usage_metadata = {
-            'input_tokens': input_tokens,
-            'output_tokens': output_tokens,
-            'total_tokens': input_tokens + output_tokens,
-        }
-        structured = MagicMock()
-        structured.invoke.return_value = {'raw': raw, 'parsed': parsed, 'parsing_error': None}
-        llm = MagicMock()
-        llm.with_structured_output.return_value = structured
-        return llm, structured
 
+class IGToolsSafetyTests(TestCase):
+    """The customer-safe tool surface: allowlist pin, output scrubbing, visibility.
+
+    This is the main attack surface (the agent speaks to the public over an untrusted
+    channel), so these are the priority tests.
+    """
+
+    def setUp(self):
+        from datetime import date, time, timedelta
+
+        from .models import (
+            EVENT_STATUS_CANCELLED, EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE,
+            TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL, Customer, Event, Venue,
+        )
+
+        self.org = Organization.objects.create(name='Tools Org', slug='tools-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-tools-org')
+        self.venue = Venue.objects.create(organization=self.org, name='The Grand', city='Austin')
+        self.today = date.today()
+
+        def make_event(name, *, status, ticketing_type, days=10, **kw):
+            return Event.objects.create(
+                organization=self.org, name=name, venue=self.venue,
+                start_date=self.today + timedelta(days=days),
+                start_time=time(21, 0), status=status, ticketing_type=ticketing_type, **kw,
+            )
+
+        # Shown: a live direct event and an external event (external status is meaningless).
+        self.live_event = make_event(
+            'Rooftop Live', status=EVENT_STATUS_LIVE, ticketing_type=TICKETING_TYPE_DIRECT,
+            ticket_link='https://tix.example.com/rooftop', capacity=12345,
+            summary='A night on the roof.',
+        )
+        self.external_event = make_event(
+            'External Fest', status=EVENT_STATUS_DRAFT, ticketing_type=TICKETING_TYPE_EXTERNAL,
+            ticket_link='https://ext.example.com/fest',
+        )
+        # Hidden: a direct DRAFT, a cancelled, a soft-deleted, and a past event.
+        self.draft_event = make_event(
+            'Secret Draft Show', status=EVENT_STATUS_DRAFT, ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        make_event('Cancelled Gig', status=EVENT_STATUS_CANCELLED, ticketing_type=TICKETING_TYPE_DIRECT)
+        self.deleted_event = make_event(
+            'Deleted Event', status=EVENT_STATUS_LIVE, ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        self.deleted_event.delete()  # soft delete
+        self.past_event = make_event(
+            'Past External Show', status=EVENT_STATUS_DRAFT,
+            ticketing_type=TICKETING_TYPE_EXTERNAL, days=-10,
+        )
+
+        # Private data that must NEVER surface through the customer tools.
+        Customer.objects.create(
+            organization=self.org, email='secret.customer@example.com',
+            name='Secret Buyer', lifetime_value=Decimal('98765.43'), rfm_segment='Champions',
+        )
+
+    def test_allowlist_is_pinned(self):
+        names = {t.name for t in build_ig_tools(self.org)}
+        self.assertEqual(names, ALLOWED_IG_TOOL_NAMES)
+
+    def test_tool_outputs_never_leak_private_data(self):
+        outputs = [
+            _list_upcoming_events(self.org),
+            _find_event(self.org, query='Rooftop'),
+            _get_faq(self.org),
+            _get_contact_info(self.org),
+        ]
+        blob = "\n".join(outputs)
+        for needle in ['$', 'Revenue', 'Profit', 'secret.customer@example.com',
+                       'Secret Buyer', '98765', 'Champions', '12345']:
+            self.assertNotIn(needle, blob, f"leaked: {needle!r}")
+
+    def test_listing_shows_only_visible_future_events(self):
+        out = _list_upcoming_events(self.org, limit=10)
+        self.assertIn('Rooftop Live', out)
+        self.assertIn('External Fest', out)
+        self.assertNotIn('Secret Draft Show', out)
+        self.assertNotIn('Cancelled Gig', out)
+        self.assertNotIn('Deleted Event', out)
+        self.assertNotIn('Past External Show', out)
+
+    def test_find_event_resolves_visible_but_not_draft_or_deleted(self):
+        # A visible event resolves with its public details.
+        self.assertIn('Rooftop Live', _find_event(self.org, query='Rooftop'))
+        # A direct draft and a soft-deleted event must not resolve.
+        self.assertIn("couldn't find", _find_event(self.org, query='Secret Draft Show'))
+        self.assertIn("couldn't find", _find_event(self.org, query='Deleted Event'))
+
+    def test_get_faq_only_published_and_scoped(self):
+        OrgFAQ.objects.create(organization=self.org, question='Door time?',
+                              answer='PUBLISHED_FAQ_MARKER')
+        OrgFAQ.objects.create(organization=self.org, question='Hidden?',
+                              answer='HIDDEN_FAQ_MARKER', is_published=False)
+        OrgFAQ.objects.create(organization=self.other_org, question='Other?',
+                              answer='OTHER_ORG_FAQ_MARKER')
+        out = _get_faq(self.org)
+        self.assertIn('PUBLISHED_FAQ_MARKER', out)
+        self.assertNotIn('HIDDEN_FAQ_MARKER', out)
+        self.assertNotIn('OTHER_ORG_FAQ_MARKER', out)
+
+
+def _ai_message(content='', tool_calls=None, input_tokens=40, output_tokens=20):
+    """A fake LangChain AI message carrying usage + tool-call metadata."""
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    msg.usage_metadata = {
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'total_tokens': input_tokens + output_tokens,
+    }
+    return msg
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
+                   IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+class IGAnswerAgentTests(_FAQViewTestBase):
+    """InstagramSupportAgentService.answer() with the ReAct agent mocked."""
+
+    @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
-    def test_answers_faq_and_meters(self, mock_openai):
-        faq = self._faq(question='How do I reach a human?', answer='Just reply here.')
-        parsed = FaqAnswer(answered=True, answer='Just reply here!',
-                           matched_faq_id=str(faq.id), confidence=0.9)
-        mock_openai.return_value = self._fake_llm(parsed)[0]
+    def test_answer_returns_text_usage_tools_and_meters(self, mock_openai, mock_create):
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [_ai_message('Doors open at 9pm!', [{'name': 'get_faq'}])],
+        }
+        mock_create.return_value = fake_agent
 
-        result = answer_faq(self.org, question='can I talk to someone?')
-        self.assertTrue(result.answered)
-        self.assertEqual(result.matched_faq_id, str(faq.id))
+        result = InstagramSupportAgentService(self.org).answer(None, 'when do doors open?')
+
+        self.assertIsInstance(result, AnswerResult)
+        self.assertEqual(result.text, 'Doors open at 9pm!')
+        self.assertEqual(result.tool_calls, ['get_faq'])
+        self.assertTrue(result.grounded)
 
         usage = AITokenUsage.objects.get(organization=self.org)
         self.assertEqual(usage.feature, AITokenUsage.FEATURE_IG_SUPPORT_AGENT)
@@ -512,37 +640,154 @@ class FAQAnswerAgentTests(_FAQViewTestBase):
         self.assertIsNone(usage.user)
         self.assertEqual(usage.total_tokens, 60)
 
+    @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
-    def test_only_published_faqs_reach_the_prompt(self, mock_openai):
-        self._faq(question='PUBLISHED_MARKER question', answer='PUBLISHED_ANSWER_MARKER')
-        self._faq(question='HIDDEN_MARKER question', answer='HIDDEN_ANSWER_MARKER',
-                  is_published=False)
-        _, structured = self._fake_llm(FaqAnswer(answered=False, answer='A human will follow up.'))
+    def test_answer_with_no_tool_hit_is_not_grounded(self, mock_openai, mock_create):
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {'messages': [_ai_message('Sure, maybe!', [])]}
+        mock_create.return_value = fake_agent
+
+        result = InstagramSupportAgentService(self.org).answer(None, 'random chit chat')
+        self.assertFalse(result.grounded)
+        self.assertEqual(result.tool_calls, [])
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
+                   IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+class IGClassifierTests(_FAQViewTestBase):
+    """classify_escalation() + decide_autosend() gating."""
+
+    def _mock_llm(self, mock_openai, decision, input_tokens=15, output_tokens=5):
+        raw = MagicMock()
+        raw.usage_metadata = {
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'total_tokens': input_tokens + output_tokens,
+        }
+        structured = MagicMock()
+        structured.invoke.return_value = {'raw': raw, 'parsed': decision, 'parsing_error': None}
         mock_openai.return_value.with_structured_output.return_value = structured
 
-        answer_faq(self.org, question='anything')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_routine_not_escalated_and_meters_classify_stage(self, mock_openai):
+        decision = EscalationDecision(should_escalate=False, confidence=0.95,
+                                      category='routine', reason='clear faq')
+        self._mock_llm(mock_openai, decision)
+        out = classify_escalation(self.org, 'what time do doors open?', 'Doors at 9pm!')
+        self.assertFalse(out.should_escalate)
+        self.assertEqual(out.category, 'routine')
 
-        sent = json.dumps(structured.invoke.call_args[0][0])
-        self.assertIn('PUBLISHED_MARKER', sent)
-        self.assertNotIn('HIDDEN_MARKER', sent)
-        self.assertNotIn('HIDDEN_ANSWER_MARKER', sent)
+        usage = AITokenUsage.objects.get(organization=self.org)
+        self.assertEqual(usage.metadata.get('stage'), 'classify')
+        self.assertIsNone(usage.user)
+        self.assertEqual(usage.total_tokens, 20)
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_declines_when_no_faq_matches(self, mock_openai):
-        self._faq(question='How do I buy tickets?', answer='Use the link.')
-        parsed = FaqAnswer(answered=False, answer='A team member will follow up.',
-                           matched_faq_id=None, confidence=0.0)
-        mock_openai.return_value = self._fake_llm(parsed)[0]
-        result = answer_faq(self.org, question='can I get a refund?')
-        self.assertFalse(result.answered)
-        self.assertIsNone(result.matched_faq_id)
+    def test_refund_escalates(self, mock_openai):
+        decision = EscalationDecision(should_escalate=True, confidence=0.9,
+                                      category='refund_dispute', reason='refund')
+        self._mock_llm(mock_openai, decision)
+        out = classify_escalation(self.org, 'I want a refund', 'A team member will follow up.')
+        self.assertTrue(out.should_escalate)
+        self.assertEqual(out.category, 'refund_dispute')
 
+    def test_decide_autosend_requires_routine_confident_and_grounded(self):
+        grounded = AnswerResult(text='x', tool_calls=['get_faq'])
+        ungrounded = AnswerResult(text='x', tool_calls=[])
+        routine = EscalationDecision(should_escalate=False, confidence=0.95, category='routine')
+
+        # Happy path: routine + confident + grounded -> auto-send.
+        self.assertTrue(decide_autosend(routine, grounded))
+        # D14: fluent answer with no tool hit -> queue, even when confident.
+        self.assertFalse(decide_autosend(routine, ungrounded))
+        # Escalated -> queue.
+        self.assertFalse(decide_autosend(
+            EscalationDecision(should_escalate=True, confidence=0.99, category='refund_dispute'),
+            grounded))
+        # Below the confidence threshold -> queue.
+        self.assertFalse(decide_autosend(
+            EscalationDecision(should_escalate=False, confidence=0.5, category='routine'),
+            grounded))
+
+    @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
-    def test_management_command_prints_answer(self, mock_openai):
-        self._faq(question='How do I reach a human?', answer='Reply here.')
-        parsed = FaqAnswer(answered=True, answer='Reply here!', confidence=0.8)
-        mock_openai.return_value = self._fake_llm(parsed)[0]
+    def test_management_command_prints_decision(self, mock_openai, mock_create):
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [_ai_message('Doors at 9pm!', [{'name': 'get_faq'}])],
+        }
+        mock_create.return_value = fake_agent
+        self._mock_llm(
+            mock_openai,
+            EscalationDecision(should_escalate=False, confidence=0.95,
+                               category='routine', reason='faq'),
+        )
         out = StringIO()
         call_command('answer_ig_faq', '--org', self.org.slug,
-                     '--question', 'can I talk to someone?', stdout=out)
-        self.assertIn('Reply here!', out.getvalue())
+                     '--question', 'when do doors open?', stdout=out)
+        printed = out.getvalue()
+        self.assertIn('Doors at 9pm!', printed)
+        self.assertIn('AUTO-SEND', printed)
+
+
+class IGEvaluationGraderTests(TestCase):
+    """Pure eval scorers (no LLM / no Langfuse) used by the eval_ig_agent experiment."""
+
+    def test_grade_grounded(self):
+        self.assertEqual(grade_grounded({'grounded': True, 'tools': ['get_faq']})[0], True)
+        self.assertEqual(grade_grounded({'grounded': False, 'tools': []})[0], False)
+
+    def test_grade_escalation_routine(self):
+        self.assertTrue(grade_escalation({'escalated': False, 'category': 'routine'}, 'routine')[0])
+        self.assertFalse(grade_escalation({'escalated': True, 'category': 'other'}, 'routine')[0])
+
+    def test_grade_escalation_sensitive_requires_category_match(self):
+        out = {'escalated': True, 'category': 'refund_dispute'}
+        self.assertTrue(grade_escalation(out, 'refund_dispute')[0])
+        self.assertFalse(grade_escalation(out, 'safety')[0])
+        self.assertFalse(grade_escalation({'escalated': False, 'category': 'routine'}, 'refund_dispute')[0])
+
+    def test_grade_escalation_not_applicable_returns_none(self):
+        self.assertIsNone(grade_escalation({'escalated': True, 'category': 'other'}, ''))
+
+    def test_grade_tool(self):
+        self.assertTrue(grade_tool({'tools': ['get_faq', 'find_event']}, 'get_faq')[0])
+        self.assertFalse(grade_tool({'tools': ['get_contact_info']}, 'get_faq')[0])
+        self.assertIsNone(grade_tool({'tools': []}, ''))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_judge_passes_a_refusal_that_echoes_the_term(self, mock_openai):
+        # The failure case we saw live: a refusal that names "lifetime value" is NOT a leak.
+        structured = MagicMock()
+        structured.invoke.return_value = DisclosureVerdict(disclosed=False, reason='refusal only')
+        mock_openai.return_value.with_structured_output.return_value = structured
+
+        passed, _ = judge_private_disclosure(
+            "I can't access or share any internal data like customer emails or lifetime value.",
+            ['lifetime value', '@'],
+        )
+        self.assertTrue(passed)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_judge_flags_a_real_disclosure(self, mock_openai):
+        structured = MagicMock()
+        structured.invoke.return_value = DisclosureVerdict(disclosed=True, reason='revealed email + LTV')
+        mock_openai.return_value.with_structured_output.return_value = structured
+
+        passed, reason = judge_private_disclosure("Top customer: jane@example.com, LTV $980.", ['@'])
+        self.assertFalse(passed)
+        self.assertIn('email', reason)
+
+    def test_bundled_corpus_loads_and_is_well_formed(self):
+        from pathlib import Path
+        from django.conf import settings
+
+        cases = load_cases(Path(settings.BASE_DIR) / 'evals' / 'ig_support_agent' / 'cases.jsonl')
+        self.assertGreater(len(cases), 0)
+        allowed_tools = {'', 'get_faq', 'list_upcoming_events', 'find_event', 'get_contact_info'}
+        allowed_cats = {'', 'routine', 'refund_dispute', 'complaint', 'partnership',
+                        'guest_list', 'safety', 'other'}
+        for case in cases:
+            self.assertIn('input', case)
+            self.assertIn(case.get('expected_tool', ''), allowed_tools)
+            self.assertIn(case.get('expected_category', ''), allowed_cats)

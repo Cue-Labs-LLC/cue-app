@@ -78,6 +78,10 @@ OWNER_EMAIL = "info@cueup.co"
 OWNER_PHONE = "+15555550199"
 OWNER_PASSWORD = "password123"
 
+# Slug of the single org this command seeds. Also written to .env as
+# IG_EVAL_ORG_SLUG so the Instagram-agent promptfoo eval targets this org by default.
+SEED_ORG_SLUG = "familiar-faces"
+
 # A live, upcoming event seeded with no ticket orders yet (freshly announced,
 # nothing sold). Skipped by _create_orders_and_tickets so it stays empty.
 LIVE_EVENT_WITHOUT_ORDERS = "Familiar Faces — Just Announced"
@@ -279,6 +283,11 @@ class Command(BaseCommand):
             action="store_true",
             help="No-op (exit 0) when DB already has customers/events. Safe for setup scripts.",
         )
+        parser.add_argument(
+            "--skip-eval-env",
+            action="store_true",
+            help="Don't write IG_EVAL_ORG_SLUG to .env (the Instagram-agent eval default).",
+        )
 
     def _guard(self):
         if not settings.DEBUG:
@@ -358,6 +367,40 @@ class Command(BaseCommand):
 
         self._print_summary(org)
 
+        if not options["skip_eval_env"]:
+            self._write_eval_org_slug(org.slug)
+
+    def _write_eval_org_slug(self, slug):
+        """Upsert IG_EVAL_ORG_SLUG=<slug> into .env so the Instagram-agent promptfoo
+        eval (evals/ig_support_agent) targets the seeded org by default.
+
+        settings.py calls load_dotenv() on import, so the value is picked up by the
+        eval's Django bootstrap. Only this one key is touched; other lines are kept.
+        """
+        key = "IG_EVAL_ORG_SLUG"
+        env_path = settings.BASE_DIR / ".env"
+        line = f"{key}={slug}\n"
+
+        try:
+            existing = env_path.read_text() if env_path.exists() else ""
+            lines = existing.splitlines(keepends=True)
+            for i, current in enumerate(lines):
+                if current.lstrip().startswith(f"{key}="):
+                    lines[i] = line
+                    break
+            else:
+                if lines and not lines[-1].endswith("\n"):
+                    lines[-1] += "\n"
+                lines.append(line)
+            env_path.write_text("".join(lines))
+        except OSError as exc:
+            self.stdout.write(self.style.WARNING(
+                f"Could not write {key} to {env_path}: {exc}"
+            ))
+            return
+
+        self.stdout.write(self.style.SUCCESS(f"{key}={slug} written to .env (Instagram eval default)"))
+
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
@@ -365,7 +408,7 @@ class Command(BaseCommand):
     def _create_org(self):
         org = Organization.objects.create(
             name="Familiar Faces",
-            slug="familiar-faces",
+            slug=SEED_ORG_SLUG,
             description="Independent music + nightlife collective. Local seed data.",
             website="https://cueup.co",
             waitlist_feature_enabled=True,

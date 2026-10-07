@@ -20,6 +20,7 @@ redis==5.0.1
 langchain>=0.3
 langchain-openai>=0.2
 langgraph>=0.2
+langfuse>=3.0
 stripe>=9.0.0
 Pillow>=10.0.0
 pillow-heif>=0.18.0

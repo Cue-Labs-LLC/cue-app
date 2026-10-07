@@ -220,6 +220,13 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o')
 CHAT_MAX_HISTORY = int(os.environ.get('CHAT_MAX_HISTORY', '50'))
 
+# Langfuse — hosted eval datasets/experiments for the Instagram support agent
+# (`eval_ig_agent` management command). Keys come from a Langfuse Cloud project
+# (or self-hosted). Unset = the eval command errors cleanly; nothing else uses them.
+LANGFUSE_PUBLIC_KEY = os.environ.get('LANGFUSE_PUBLIC_KEY', '')
+LANGFUSE_SECRET_KEY = os.environ.get('LANGFUSE_SECRET_KEY', '')
+LANGFUSE_HOST = os.environ.get('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
@@ -392,6 +399,13 @@ APP_REVIEW_TEST_PHONES = {
 FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
 FACEBOOK_GRAPH_API_VERSION = os.environ.get('FACEBOOK_GRAPH_API_VERSION', 'v21.0')
+
+# Instagram DM support agent — minimum classifier confidence for a routine, grounded
+# answer to auto-send instead of being queued for human review (D14/auto-send gate).
+# The daily auto-answer cap and inbound coalesce window arrive with transport (Phase 3).
+IG_AGENT_AUTOSEND_MIN_CONFIDENCE = float(
+    os.environ.get('IG_AGENT_AUTOSEND_MIN_CONFIDENCE', '0.8')
+)
 
 # Mailchimp integration
 MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')
