@@ -16,7 +16,7 @@ Login after seeding:
 import random
 import string
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -102,6 +102,27 @@ SURVEY_TEST_CUSTOMER_EMAIL = OWNER_EMAIL
 SURVEY_SENT_NO_RESPONSES_EVENT_NAME = "Survey Sent — awaiting responses"
 SURVEY_SENT_NO_RESPONSES_ATTENDEES = 8
 
+# Realistic evening show start times (doors/first set for a live-music night),
+# instead of whatever wall-clock time the seed script happened to run at.
+_SHOW_START_TIMES = [
+    time(19, 0), time(19, 30), time(20, 0), time(20, 30), time(21, 0), time(21, 30),
+]
+# A live-music night runs ~3-4 hours; a late start rolls the end past midnight.
+_SHOW_DURATION_HOURS = [3, 4]
+
+
+def _show_schedule(rng, start_date):
+    """Pick a plausible evening start + end for a seeded event.
+
+    Returns (start_time, end_date, end_time). The end is the start plus a 3-4h
+    run, so a late slot (e.g. 9:30pm) correctly ends after midnight on the next
+    calendar day rather than appearing to end before it began.
+    """
+    start_time = rng.choice(_SHOW_START_TIMES)
+    duration = rng.choice(_SHOW_DURATION_HOURS)
+    end_dt = datetime.combine(start_date, start_time) + timedelta(hours=duration)
+    return start_time, end_dt.date(), end_dt.time()
+
 
 def build_survey_test_event(org, venue, owner, *, when=None, market=None):
     """Idempotently create an ENDED direct-ticketing event with exactly one
@@ -120,7 +141,8 @@ def build_survey_test_event(org, venue, owner, *, when=None, market=None):
             market=market,
             start_date=(now - timedelta(days=3)).date(),
             end_date=(now - timedelta(days=3)).date(),
-            start_time=now.time().replace(microsecond=0),
+            start_time=time(20, 0),
+            end_time=time(23, 0),
             capacity=50,
             max_tickets_per_customer=4,
             ticketing_type=TICKETING_TYPE_DIRECT,
@@ -190,7 +212,8 @@ def build_survey_sent_no_responses_event(org, venue, owner, *, when=None, market
             market=market,
             start_date=(now - timedelta(days=5)).date(),
             end_date=(now - timedelta(days=5)).date(),
-            start_time=now.time().replace(microsecond=0),
+            start_time=time(20, 0),
+            end_time=time(23, 0),
             capacity=50,
             max_tickets_per_customer=4,
             ticketing_type=TICKETING_TYPE_DIRECT,
@@ -728,6 +751,7 @@ class Command(BaseCommand):
         events = []
         for i, (name, offset, status, ticketing, cap, summary) in enumerate(specs):
             start_date = today + timedelta(days=offset)
+            start_time, end_date, end_time = _show_schedule(rng, start_date)
             venue = venues[i % len(venues)]
             event = Event.objects.create(
                 organization=org,
@@ -737,8 +761,9 @@ class Command(BaseCommand):
                 venue=venue,
                 market=markets.get(venue.city),
                 start_date=start_date,
-                end_date=start_date,
-                start_time=timezone.now().time().replace(microsecond=0),
+                end_date=end_date,
+                start_time=start_time,
+                end_time=end_time,
                 capacity=cap,
                 max_tickets_per_customer=8,
                 ticketing_type=ticketing,
@@ -1075,6 +1100,7 @@ class Command(BaseCommand):
                     start_date = anchor + timedelta(days=ei * 35)
                     if start_date >= today:
                         start_date = today - timedelta(days=3)
+                    start_time, end_date, end_time = _show_schedule(rng, start_date)
                     q_events.append(Event.objects.create(
                         organization=org,
                         name=f"{city} Nights — Q{qi + 1} #{ei + 1}",
@@ -1082,8 +1108,9 @@ class Command(BaseCommand):
                         venue=venue,
                         market=markets.get(city),
                         start_date=start_date,
-                        end_date=start_date,
-                        start_time=timezone.now().time().replace(microsecond=0),
+                        end_date=end_date,
+                        start_time=start_time,
+                        end_time=end_time,
                         capacity=venue.capacity,
                         ticketing_type=TICKETING_TYPE_EXTERNAL,
                         status=EVENT_STATUS_ENDED,
