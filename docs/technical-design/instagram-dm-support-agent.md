@@ -16,7 +16,7 @@ The codebase is well-prepared: an existing LangGraph ReAct agent (`tickets/servi
 - Auto-answer high-confidence FAQ DMs; escalate the rest with a human-review inbox.
 - Multi-tenant: per-org editable FAQ + per-org opt-in.
 - Demoable before Meta App Review clears (stub transport).
-- Standardize all AI/LLM evaluation on promptfoo.
+- Standardize all AI/LLM evaluation on Langfuse (hosted datasets + experiment runs).
 
 ### Non-goals
 - Linking IG senders to `Customer` records (no IG handle on `Customer` today — left null, future work).
@@ -28,7 +28,7 @@ The codebase is well-prepared: an existing LangGraph ReAct agent (`tickets/servi
 - **Autonomy:** hybrid by confidence — auto-send high-confidence routine answers; queue the rest.
 - **Escalation:** in-app Cue inbox **and** notification (email via existing SendGrid + APNs push).
 - **Knowledge:** per-org **editable FAQ** model + settings UI; agent reads org FAQ + live `Event` data.
-- **Evaluation:** standardize all **LLM** evals on **promptfoo** (greenfield) — the new IG agent (built eval-first) and the existing `eval_sms_plans`. The deterministic, non-LLM `validate_segments` backtest is **explicitly out of scope** and stays as its own standalone management command (promptfoo adds no value to a pure statistical backtest). See Phase 6.
+- **Evaluation:** standardize all **LLM** evals on **Langfuse** (hosted datasets + experiment runs) — the new IG agent (built eval-first) and the existing `eval_sms_plans`. The deterministic, non-LLM `validate_segments` backtest is **explicitly out of scope** and stays as its own standalone management command (Langfuse adds no value to a pure statistical backtest). See Phase 6. *(Amendment 2026-10-06: this track was originally promptfoo; switched to Langfuse. Deterministic scores are computed in code; subjective answer/tone quality is a Langfuse managed LLM-as-judge evaluator configured in the UI.)*
 
 ## 3. Architecture at a glance
 
@@ -64,7 +64,7 @@ Shared reference the phases point to. (Models use existing `BaseModel`/`AuditBas
 - `classifier.py`: `class EscalationDecision(BaseModel){should_escalate, confidence(0..1), category:Literal['routine','refund_dispute','complaint','partnership','guest_list','safety','other'], reason}`; `classify_escalation(org, question, draft_answer)` via `ChatOpenAI(temperature=0).with_structured_output(EscalationDecision, include_raw=True)` (pattern from `sms_strategist.py`), meters stage=`classify`. Gate: `auto_send = (not should_escalate) and category=='routine' and confidence >= settings.IG_AGENT_AUTOSEND_MIN_CONFIDENCE` **and grounded (D14)** and **under the daily cap (D4)**. **(D14) groundedness:** the answer must be derived from a successful `get_faq`/`find_event`/`list_upcoming_events` tool call (`AnswerResult.tool_calls` non-empty); a "no tool hit" answer is treated as not-auto-sendable → queue for review (a fluent answer with no tool grounding is the hallucination shape). **(D4) daily cap:** if the org is at `settings.IG_AGENT_DAILY_ANSWER_CAP` auto-answers for the day, queue instead of auto-send.
 
 ### 4.3 Config (`ltv_updater/settings.py`)
-Reuse `FACEBOOK_APP_ID/SECRET`, `FACEBOOK_GRAPH_API_VERSION`, `OPENAI_MODEL`, SendGrid. Add `INSTAGRAM_WEBHOOK_VERIFY_TOKEN`, `INSTAGRAM_SENDER_BACKEND` (`'stub'`|`'graph'`, default `'stub'`; D10 selects the sender from this, never from token presence), `IG_AGENT_AUTOSEND_MIN_CONFIDENCE` (float, default `0.8`), `IG_AGENT_DAILY_ANSWER_CAP` (int, default e.g. `200`; D4 — 0 disables the cap), `IG_AGENT_COALESCE_WINDOW_SECONDS` (int, default e.g. `8`; D12 debounce). **No new Python deps.**
+Reuse `FACEBOOK_APP_ID/SECRET`, `FACEBOOK_GRAPH_API_VERSION`, `OPENAI_MODEL`, SendGrid. Add `INSTAGRAM_WEBHOOK_VERIFY_TOKEN`, `INSTAGRAM_SENDER_BACKEND` (`'stub'`|`'graph'`, default `'stub'`; D10 selects the sender from this, never from token presence), `IG_AGENT_AUTOSEND_MIN_CONFIDENCE` (float, default `0.8`), `IG_AGENT_DAILY_ANSWER_CAP` (int, default e.g. `200`; D4 — 0 disables the cap), `IG_AGENT_COALESCE_WINDOW_SECONDS` (int, default e.g. `8`; D12 debounce). For the eval harness add `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/`LANGFUSE_HOST` (default `https://cloud.langfuse.com`) — eval-only. One new Python dep: `langfuse` (eval harness only; the agent/classifier runtime adds none).
 
 ---
 
@@ -87,8 +87,8 @@ Reuse `FACEBOOK_APP_ID/SECRET`, `FACEBOOK_GRAPH_API_VERSION`, `OPENAI_MODEL`, Se
   - **Output scrubbing:** seed an org with a published event that has revenue/expenses/orders + customers with LTV/RFM; assert IG tool outputs contain none of it (no `$`, "Revenue"/"Profit", no customer emails/names, no LTV/segment strings, no capacity numbers).
   - **Visibility:** `list_upcoming_events`/`find_event` never return draft or soft-deleted events, and only future events for the listing; `get_faq` returns only published, org-scoped FAQs.
   - `agent.answer` with mocked `ChatOpenAI` returns text + usage; `classify_escalation` gating (routine high-confidence → auto; refund → escalate) with mocked structured output; two `AITokenUsage` rows (`feature='ig_support_agent'`, `user=None`, stages `answer`/`classify`).
-- **Build:** `tickets/services/instagram/` package: `prompts.py`, `tools.py` (the dedicated customer-safe tools in §4.2 — no imports from chat `tools.py`), `agent.py`, `classifier.py`. Migrate `kb_*.md` behavioral content into prompts here.
-- **Accept / demo:** a test/management shim calls `answer()` + `classify_escalation()` over sample questions and prints decisions. No sending.
+- **Build:** `tickets/services/instagram/` package: `prompts.py`, `tools.py` (the dedicated customer-safe tools in §4.2 — no imports from chat `tools.py`), `agent.py`, `classifier.py`. Migrate `kb_*.md` behavioral content into prompts here. **Eval-first harness lands here too:** `evaluation.py` (harness-agnostic `run_ig_agent` + pure `grade_*` scorers), the `eval_ig_agent` Langfuse experiment command, and the `evals/ig_support_agent/cases.jsonl` corpus (routine / sensitive / **D7 adversarial prompt-injection** cases).
+- **Accept / demo:** `answer_ig_faq` management shim calls `answer()` + `classify_escalation()` + the auto-send gate over a question and prints the decision. `eval_ig_agent --sync-only` pushes the dataset; a full run scores a seeded org. No sending.
 
 ### Phase 3 — Transport + inbound + orchestration + webhook
 - **Tests first:** webhook GET verify (match/mismatch), POST signature valid/invalid (`X-Hub-Signature-256`); `normalize_meta_payload` (echo/reaction skip, dedupe by `provider_message_id`); end-to-end with `INSTAGRAM_SENDER_BACKEND='stub'` → routine → `auto_sent` row + stub send called; refund → `pending_review` + `conv.status='awaiting_human'`; idempotency (no double-send on webhook/Celery retry).
@@ -105,14 +105,21 @@ Reuse `FACEBOOK_APP_ID/SECRET`, `FACEBOOK_GRAPH_API_VERSION`, `OPENAI_MODEL`, Se
 - **Build:** delete `tickets/kb/*` + dir; remove `_get_knowledge_base`, the `get_knowledge_base` `@tool`, its list entry, and unused `import os` in `tickets/services/chat/tools.py`. (Behavioral content already re-homed in Phase 2 prompts.)
 - **Accept:** suite green; analytics chat agent unaffected except loss of the KB tool.
 
-### Phase 6 — promptfoo eval standardization
-- **Build:** top-level `evals/` with `package.json` (dev dep `promptfoo`), `README.md`, and one Django-bootstrapping Python provider `evals/providers/django_provider.py` (`django.setup()`, dispatch on `config.task`, return `{output, metadata}`).
-  - **IG agent** (`evals/ig_support_agent/promptfooconfig.yaml`): **lands with Phase 2, not here (D1 + eval-first fix)** — the agent is genuinely built eval-first. Provider drives `answer()`+`classify_escalation()`; routine cases assert `metadata.escalated===false` + `contains` fact + `llm-rubric` tone; sensitive assert escalate + `category`; **plus the D7 adversarial prompt-injection cases** (assert no financial/PII leak + escalate/decline).
-  - **SMS plans — SEPARATE TRACK (D1):** the `eval_sms_plans` migration (extract `grade_plan`/`_judge`/`_judge_agent` into importable `tickets/services/sms_strategist_eval.py`, promptfoo `python` asserts, retire the runner after parity) is **its own branch/effort**, not part of this feature. Not blocked by and does not block the IG agent.
-  - **Out of scope:** `validate_segments` is **not** migrated — it's a deterministic, non-LLM statistical backtest and stays as its own standalone management command (`SegmentDiagnostics` unchanged). promptfoo covers LLM evals only.
-  - (Optional — event-summary quality via `EventSummaryService.generate_summary`, same LLM-eval pattern, if you want AI debrief quality tracked too.)
-  - CI: `.github/workflows/evals.yml` on `workflow_dispatch` + nightly `schedule` (live metered calls → never per-PR), `OPENAI_API_KEY` secret. LangSmith env tracing stays.
-- **Accept:** `npx promptfoo eval` runs IG + SMS configs and reports; SMS parity vs the old command confirmed before deleting its runner.
+### Phase 6 — Langfuse eval standardization
+The IG-agent eval harness itself **already landed with Phase 2** (eval-first): the
+`eval_ig_agent` command, `evaluation.py` (`run_ig_agent` + pure `grade_*` scorers), and
+the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
+(`ig-support-agent`) and attaching deterministic boolean scores (`grounded`,
+`escalation_correct`, `tool_correct`) plus an in-code LLM-judge score
+(`no_private_disclosure`) for the D7 adversarial cases. Phase 6 is what remains to
+*standardize*:
+- **Build:**
+  - **Managed LLM-judge:** configure Langfuse LLM-as-judge evaluators in the UI against the `ig-support-agent` dataset, and **migrate the in-code `no_private_disclosure` judge** to a managed one (non-engineers tune the rubric without a deploy; the in-code judge stays as the headless/CI path). Add one for `expected_answer` quality + tone too.
+  - **CI:** `.github/workflows/evals.yml` on `workflow_dispatch` + nightly `schedule` (live metered calls → never per-PR), with `LANGFUSE_*` + `OPENAI_API_KEY` secrets, running `python manage.py eval_ig_agent`. LangSmith env tracing stays.
+  - **SMS plans — SEPARATE TRACK (D1):** migrate `eval_sms_plans` (`grade_plan`/`_judge`/`_judge_agent`) onto Langfuse as a second dataset/experiment, retiring the runner after parity. **Its own branch/effort**, not part of this feature. Not blocked by and does not block the IG agent.
+  - **Out of scope:** `validate_segments` is **not** migrated — it's a deterministic, non-LLM statistical backtest and stays its own standalone management command (`SegmentDiagnostics` unchanged). Langfuse covers LLM evals only.
+  - (Optional — event-summary quality via `EventSummaryService.generate_summary`, same pattern, if you want AI debrief quality tracked too.)
+- **Accept:** `eval_ig_agent` run appears in Langfuse with scores + the managed judge; SMS parity vs the old command confirmed before deleting its runner.
 
 ### Phase 7 — Meta OAuth + Graph sender (production, gated by App Review)
 - **Tests first:** OAuth `state` CSRF + callback persists `instagram_*` fields (mock Graph); `GraphAPISender.send_text` POST (mock `requests`); send failure → `status='failed'` surfaced in inbox; token-expiry reconnect prompt.
@@ -130,21 +137,21 @@ Reuse `FACEBOOK_APP_ID/SECRET`, `FACEBOOK_GRAPH_API_VERSION`, `OPENAI_MODEL`, Se
 - **Retries/double-send:** Meta + Celery both retry → dedupe on `provider_message_id`, idempotent auto-send.
 - **Data leakage / prompt injection:** inbound DM is untrusted and the agent speaks to the public, so the tool surface is the main attack surface. Mitigate with the dedicated allowlisted customer-safe tools (§4.2 — never the organizer/MCP chat tools), org bound via closures (LLM never picks the org), the allowlist-pin + output-scrubbing tests, and classifier `temperature=0`. No customer/revenue/financial/PII tool is ever reachable from this agent.
 - **Customer identity:** no IG handle on `Customer` → `conversation.customer` null initially.
-- **Eval cost/flakiness:** promptfoo calls are live/metered and the strategist is non-deterministic → manual/nightly only, pass-rate thresholds with `repeat`.
-- **Grader migration parity:** confirm promptfoo reproduces current SMS pass/fail before deleting the `eval_sms_plans` runner.
+- **Eval cost/flakiness:** Langfuse experiment runs make live/metered LLM calls and the agent is non-deterministic → manual/nightly only; track pass-rate trends across runs rather than gating on a single run.
+- **Grader migration parity:** confirm Langfuse reproduces current SMS pass/fail before deleting the `eval_sms_plans` runner.
 - **App Review timeline** external — Phases 1–6 intentionally don't depend on it.
 
 ## 7. Run commands
-`python manage.py makemigrations tickets && python manage.py migrate && python manage.py test tickets` → `cd evals && npx promptfoo eval -c ig_support_agent/promptfooconfig.yaml` (needs `OPENAI_API_KEY`) → `npx promptfoo view`.
+`python manage.py makemigrations tickets && python manage.py migrate && python manage.py test tickets` → `python manage.py eval_ig_agent --org <slug>` (needs `LANGFUSE_*` + `OPENAI_API_KEY`; `--sync-only` to just push the dataset) → view the run in Langfuse.
 
 ## 8. Progress tracker
 - [x] **P0** — Design doc committed + data model + migration
-- [ ] **P1** — Per-org FAQ editor (settings) + registry entry
-- [ ] **P2** — Answer pipeline + customer-safe tools + classifier (tool-safety tests)
+- [x] **P1** — Per-org FAQ editor (settings) + registry entry
+- [ ] **P2** — Answer pipeline + customer-safe tools + classifier (tool-safety tests) + Langfuse eval harness (eval-first)
 - [ ] **P3** — Transport abstraction + StubSender + inbound + orchestration + webhook
 - [ ] **P4** — Inbox UI + escalation notifications (email + push)
 - [ ] **P5** — Remove legacy KB
-- [ ] **P6** — promptfoo eval harness (IG agent + SMS plans; segments excluded)
+- [ ] **P6** — Langfuse eval standardization (managed LLM-judge + CI; SMS plans; segments excluded). IG-agent harness itself shipped in P2.
 - [ ] **P7** — Meta OAuth + Graph sender (gated by App Review)
 
 ## 9. Review hardening (from /plan-eng-review, 2026-10-05)
@@ -153,7 +160,7 @@ Decisions from the engineering review, mapped to where they land. P0 items are a
 
 | # | Decision | Lands in | Status |
 |---|----------|----------|--------|
-| D1 | Split the `eval_sms_plans` promptfoo migration into its own track; IG-agent eval stays (Phase 2) | Scope / P6 | folded |
+| D1 | Split the `eval_sms_plans` Langfuse migration into its own track; IG-agent eval stays (Phase 2) | Scope / P6 | folded |
 | D4 | Per-org daily auto-answer cap (`IG_AGENT_DAILY_ANSWER_CAP`) → queue past cap | P3 | planned |
 | D5 | Partial-unique `provider_message_id` for retry-safe idempotency | **P0** | **done** |
 | D6 | `InstagramMessage.save()` coerces org from conversation (tenancy invariant) | **P0** | **done** |
@@ -173,8 +180,8 @@ Decisions from the engineering review, mapped to where they land. P0 items are a
 - P2: adversarial injection eval cases (D7).
 
 ## 10. NOT in scope (considered, deferred)
-- **`eval_sms_plans` → promptfoo migration** — its own track (D1); valuable but unrelated to the IG agent.
-- **`validate_segments` under promptfoo** — deterministic non-LLM backtest; stays a standalone command.
+- **`eval_sms_plans` → Langfuse migration** — its own track (D1); valuable but unrelated to the IG agent.
+- **`validate_segments` under Langfuse** — deterministic non-LLM backtest; stays a standalone command.
 - **Linking IG senders to `Customer`** — no IG handle on `Customer`; `conversation.customer` stays null in v1.
 - **Rich media / story replies / comment automation** — text DMs only in v1.
 - **Outbound proactive messaging** — reply-only in v1.

@@ -1,19 +1,24 @@
-"""Demo shim: run the Instagram support agent's FAQ answerer over a question.
+"""Demo shim: run the Instagram support agent's answer pipeline over a question.
 
-No messages are sent — this just calls answer_faq() and prints the decision,
-useful before the inbound transport (webhook/inbox) exists.
+No messages are sent — this drafts a reply, classifies escalation, and prints the
+auto-send-vs-queue decision. Useful before the inbound transport (webhook/inbox) exists.
 
-    python manage.py answer_ig_faq --org familiar-faces --question "how do I reach a human?"
+    python manage.py answer_ig_faq --org familiar-faces --question "when do doors open?"
 """
 
 from django.core.management.base import BaseCommand, CommandError
 
 from tickets.models import Organization
-from tickets.services.instagram import InstagramAgentError, answer_faq
+from tickets.services.instagram import (
+    InstagramAgentError,
+    InstagramSupportAgentService,
+    classify_escalation,
+    decide_autosend,
+)
 
 
 class Command(BaseCommand):
-    help = "Ask the Instagram support agent a question and print its FAQ answer."
+    help = "Run the Instagram support agent over a question and print its decision."
 
     def add_arguments(self, parser):
         parser.add_argument('--org', required=True, help='Organization slug.')
@@ -25,13 +30,22 @@ class Command(BaseCommand):
         except Organization.DoesNotExist:
             raise CommandError(f"No organization with slug '{options['org']}'.")
 
+        question = options['question']
         try:
-            result = answer_faq(org, question=options['question'])
+            service = InstagramSupportAgentService(org)
+            result = service.answer(None, question)
+            decision = classify_escalation(org, question, result.text)
         except InstagramAgentError as exc:
             raise CommandError(str(exc))
 
-        self.stdout.write(self.style.MIGRATE_HEADING(f"Q: {options['question']}"))
-        self.stdout.write(f"answered:       {result.answered}")
-        self.stdout.write(f"confidence:     {result.confidence}")
-        self.stdout.write(f"matched_faq_id: {result.matched_faq_id or '-'}")
-        self.stdout.write(self.style.SUCCESS(f"answer:         {result.answer}"))
+        auto_send = decide_autosend(decision, result)
+
+        self.stdout.write(self.style.MIGRATE_HEADING(f"Q: {question}"))
+        self.stdout.write(f"tools fired:  {', '.join(result.tool_calls) or '(none)'}")
+        self.stdout.write(f"grounded:     {result.grounded}")
+        self.stdout.write(f"escalate:     {decision.should_escalate} "
+                          f"({decision.category}, confidence {decision.confidence})")
+        self.stdout.write(f"reason:       {decision.reason or '-'}")
+        verdict = 'AUTO-SEND' if auto_send else 'QUEUE FOR REVIEW'
+        self.stdout.write(self.style.SUCCESS(f"decision:     {verdict}"))
+        self.stdout.write(f"answer:       {result.text}")
