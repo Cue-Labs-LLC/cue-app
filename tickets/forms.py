@@ -1196,18 +1196,28 @@ class EventDateTimeFormMixin:
 
     _DT_INPUT_FORMATS = ['%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S']
 
+    # These fields validate as required in clean() (so the combined inputs and
+    # the legacy split date/time posts both work), which means Django sees them
+    # as required=False and crispy won't auto-render its asterisk. Append the
+    # same markup crispy uses so required start/end labels get the red asterisk.
+    _REQUIRED_ASTERISK = mark_safe('<span class="asteriskField">*</span>')
+
     def _init_event_datetimes(self, *, end_required):
         self._end_datetime_required = end_required
         self.fields['start_datetime'] = forms.DateTimeField(
-            label='Start date & time', required=False,
+            label=mark_safe(f'Start date &amp; time {self._REQUIRED_ASTERISK}'),
+            required=False,
             input_formats=self._DT_INPUT_FORMATS,
             widget=forms.DateTimeInput(
                 attrs={'type': 'datetime-local', 'class': 'form-control', 'required': True},
                 format='%Y-%m-%dT%H:%M',
             ),
         )
+        end_label = 'End date &amp; time'
+        if end_required:
+            end_label = f'{end_label} {self._REQUIRED_ASTERISK}'
         self.fields['end_datetime'] = forms.DateTimeField(
-            label='End date & time', required=False,
+            label=mark_safe(end_label), required=False,
             input_formats=self._DT_INPUT_FORMATS,
             widget=forms.DateTimeInput(
                 attrs={'type': 'datetime-local', 'class': 'form-control',
