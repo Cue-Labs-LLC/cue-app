@@ -552,3 +552,19 @@
 **Context:** Backend (models, dispatch, signing, delivery log, triggers, admin) already ships. UI would reuse `WebhookEndpointForm` and the `settings/integrations/` conventions. HMAC verification docs for consumers should ship alongside (sign base is `timestamp.event_type.delivery_id.body`, header `X-Cue-Signature: t=…,v1=…`).
 
 **Depends on:** Nothing.
+
+---
+
+## Instagram DM Agent: Coalesce / Debounce Fragmented DMs (D12)
+
+**What:** Debounce rapid consecutive inbound DMs from the same IG user into one agent turn. Wait a short `IG_AGENT_COALESCE_WINDOW_SECONDS` (e.g. 8s) after a message before answering; if more arrive, group them and answer the combined thought once.
+
+**Why:** IG users routinely split one question across 2-3 quick DMs ("hey" / "is Friday sold out?" / "for the late show"). Phase 3 processes each fragment independently, so a single question can get multiple separate auto-replies, each answering a fragment in isolation (worse answers) and each burning answer+classify LLM calls and daily-cap budget.
+
+**Pros:** Fixes answer quality on fragmented threads (the common case) and cuts per-thread LLM cost. This is the real fix that the P3 latest-inbound-wins guard only partially mitigates.
+
+**Cons:** Adds delayed-dispatch Celery timing (schedule-then-check-for-newer) and timing-sensitive tests. Intentionally deferred from P3 to keep the core receive→answer→send loop simple.
+
+**Context:** P3 ships a cheap `is_latest_inbound` staleness guard in `process_instagram_inbound_task` (`tickets/tasks.py`) that suppresses an earlier fragment's auto-send only when a later fragment's row is already committed — it reduces but does not eliminate multi-replies (it loses the race when an earlier fragment fully sends before a later one's row commits). Full coalesce replaces that guard. The agent already loads last-N conversation history (`InstagramSupportAgentService._history_messages`, D12 history half, done), so grouping is mostly an orchestration/timing concern. See `docs/technical-design/instagram-dm-support-agent.md` D12.
+
+**Depends on:** Phase 3 (shipped).

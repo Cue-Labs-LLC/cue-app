@@ -1385,3 +1385,169 @@ def send_push_notification_task(self, device_token_id, payload):
         "Push permanently failed device_token=%s status=%s reason=%s",
         device_token_id, result.status, result.reason,
     )
+
+
+def _ig_daily_autosend_count(organization):
+    """How many answers this org has auto-sent so far today (project TIME_ZONE).
+
+    Soft, best-effort guard (D4). Counts committed ``auto_sent`` outbound rows; the
+    check-then-act race (two concurrent tasks both passing at cap-1) is accepted — not
+    worth a lock for a non-financial cap.
+    """
+    from django.utils import timezone
+
+    from tickets.models import InstagramMessage
+
+    # __date respects the active timezone under USE_TZ, so "today" is project-local.
+    return InstagramMessage.objects.filter(
+        organization=organization,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        status=InstagramMessage.STATUS_AUTO_SENT,
+        created_at__date=timezone.localdate(),
+    ).count()
+
+
+def _ig_under_daily_cap(organization):
+    """True if the org may auto-send another answer today (0 = cap disabled)."""
+    from django.conf import settings
+
+    cap = getattr(settings, 'IG_AGENT_DAILY_ANSWER_CAP', 200)
+    if not cap:
+        return True
+    return _ig_daily_autosend_count(organization) < cap
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def process_instagram_inbound_task(self, organization_id, normalized):
+    """Run the IG support pipeline over one inbound DM: persist, answer, auto-send or queue.
+
+    ``normalized`` is a plain dict (JSON-serializable NormalizedInbound). Idempotent and
+    resumable:
+
+      - The inbound row is deduped on (organization, provider_message_id), so Meta and
+        Celery retries collapse to one inbound message (D5).
+      - Processing is keyed on the OUTBOUND reply, not merely on "inbound exists": if an
+        outbound reply already exists for this inbound we stop; otherwise we run the
+        pipeline and send. So a retry after a transient answer/classify/send failure
+        re-enters and completes instead of silently dropping the reply.
+
+    The narrow window where a send succeeds but the row commit fails can produce a
+    duplicate send on retry; it is closed by the outbound send-ledger that lands with the
+    real Graph sender in Phase 7 (the stub makes it moot until then).
+    """
+    from django.db import IntegrityError, transaction
+    from django.utils import timezone
+
+    from tickets.models import InstagramConversation, InstagramMessage, Organization
+    from tickets.services.instagram import (
+        InstagramAgentError, InstagramSupportAgentService,
+        classify_escalation, decide_autosend, get_sender,
+    )
+
+    try:
+        org = Organization.objects.get(id=organization_id)
+    except Organization.DoesNotExist:
+        logger.warning("IG inbound: org %s not found, skipping", organization_id)
+        return
+    if not org.instagram_support_agent_enabled:
+        return
+
+    ig_user_id = str(normalized.get('sender_id', '') or '')
+    text = normalized.get('text', '') or ''
+    provider_message_id = str(normalized.get('provider_message_id', '') or '')
+    if not ig_user_id or not text:
+        return
+
+    conversation, _ = InstagramConversation.objects.get_or_create(
+        organization=org, ig_user_id=ig_user_id,
+    )
+    InstagramConversation.objects.filter(pk=conversation.pk).update(
+        last_message_at=timezone.now(),
+    )
+
+    # Receipt dedup (D5): one inbound row per provider_message_id. A blank id (should
+    # not happen for real DMs) can't use the partial-unique constraint, so fall back to
+    # always creating — the outbound-exists check below still prevents a double reply.
+    inbound = None
+    if provider_message_id:
+        try:
+            with transaction.atomic():
+                inbound = InstagramMessage.objects.create(
+                    conversation=conversation,
+                    direction=InstagramMessage.DIRECTION_INBOUND,
+                    author=InstagramMessage.AUTHOR_CUSTOMER,
+                    content=text,
+                    provider_message_id=provider_message_id,
+                    status=InstagramMessage.STATUS_RECEIVED,
+                )
+        except IntegrityError:
+            inbound = InstagramMessage.objects.filter(
+                organization=org, provider_message_id=provider_message_id,
+            ).first()
+    else:
+        inbound = InstagramMessage.objects.create(
+            conversation=conversation,
+            direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER,
+            content=text,
+            status=InstagramMessage.STATUS_RECEIVED,
+        )
+
+    # Resumable: if we already produced an outbound reply for this inbound turn, we're
+    # done (duplicate delivery, or a retry after the reply committed).
+    if inbound is not None and InstagramMessage.objects.filter(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        created_at__gte=inbound.created_at,
+    ).exists():
+        return
+
+    try:
+        result = InstagramSupportAgentService(org).answer(conversation, text)
+        decision = classify_escalation(org, text, result.text)
+    except InstagramAgentError as exc:
+        # LLM unavailable/unreadable — transient. Retry; the dedup + outbound-exists
+        # checks keep the retry from double-processing.
+        raise self.retry(exc=exc)
+
+    # Fragment staleness guard: only auto-send if this is still the newest inbound in
+    # the thread. A partial mitigation for fragmented DMs (full coalesce is a follow-up).
+    is_latest = True
+    if inbound is not None:
+        is_latest = not InstagramMessage.objects.filter(
+            conversation=conversation,
+            direction=InstagramMessage.DIRECTION_INBOUND,
+            created_at__gt=inbound.created_at,
+        ).exists()
+
+    auto = (
+        decide_autosend(decision, result)
+        and _ig_under_daily_cap(org)
+        and is_latest
+    )
+
+    outbound = InstagramMessage(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        author=InstagramMessage.AUTHOR_AGENT,
+        content=result.text,
+        confidence=decision.confidence,
+        escalation_category=decision.category,
+        escalation_reason=decision.reason,
+    )
+
+    if auto:
+        send = get_sender(org).send_text(ig_user_id, result.text)
+        if send.ok:
+            outbound.status = InstagramMessage.STATUS_AUTO_SENT
+            outbound.provider_message_id = send.provider_message_id or ''
+        else:
+            outbound.status = InstagramMessage.STATUS_FAILED
+            outbound.escalation_reason = (send.error or outbound.escalation_reason)[:300]
+        outbound.save()
+    else:
+        outbound.status = InstagramMessage.STATUS_PENDING_REVIEW
+        outbound.save()
+        if conversation.status != InstagramConversation.STATUS_AWAITING_HUMAN:
+            conversation.status = InstagramConversation.STATUS_AWAITING_HUMAN
+            conversation.save(update_fields=['status'])

@@ -7,6 +7,8 @@ the Organization integration fields, the AITokenUsage feature), the per-org FAQ 
 escalation classifier + auto-send gate.
 """
 
+import hashlib
+import hmac
 import json
 from decimal import Decimal
 from io import StringIO
@@ -15,8 +17,9 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
-from django.test import Client, TestCase, override_settings
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from .forms import OrgFAQForm
 from .models import (
@@ -587,6 +590,17 @@ class IGToolsSafetyTests(TestCase):
         self.assertIn("couldn't find", _find_event(self.org, query='Secret Draft Show'))
         self.assertIn("couldn't find", _find_event(self.org, query='Deleted Event'))
 
+    def test_find_event_excludes_past_events(self):
+        # Regression: find_event previously skipped the future filter that
+        # list_upcoming_events applies, so a past event matching by name or city
+        # was surfaced as if tickets were available.
+        self.assertIn("couldn't find", _find_event(self.org, query='Past External Show'))
+        # A city search matches both the past and the future events at this venue;
+        # only the future one should come back.
+        out = _find_event(self.org, query='Austin')
+        self.assertNotIn('Past External Show', out)
+        self.assertIn('Rooftop Live', out)
+
     def test_get_faq_only_published_and_scoped(self):
         OrgFAQ.objects.create(organization=self.org, question='Door time?',
                               answer='PUBLISHED_FAQ_MARKER')
@@ -791,3 +805,405 @@ class IGEvaluationGraderTests(TestCase):
             self.assertIn('input', case)
             self.assertIn(case.get('expected_tool', ''), allowed_tools)
             self.assertIn(case.get('expected_category', ''), allowed_cats)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — transport + inbound + orchestration + webhook
+# ---------------------------------------------------------------------------
+
+from .services.instagram import (  # noqa: E402
+    InstagramAgentError, NormalizedInbound, SendResult, StubSender,
+    get_sender, normalize_meta_payload, verify_meta_signature,
+)
+
+
+class IGNormalizeTests(TestCase):
+    """normalize_meta_payload: keep real text DMs, skip the rest."""
+
+    def _payload(self, messaging):
+        return {'object': 'instagram',
+                'entry': [{'id': 'acct-1', 'time': 1, 'messaging': messaging}]}
+
+    def test_extracts_text_message(self):
+        out = normalize_meta_payload(self._payload([
+            {'sender': {'id': 'cust-1'}, 'recipient': {'id': 'acct-1'},
+             'timestamp': 99, 'message': {'mid': 'm1', 'text': 'is it sold out?'}},
+        ]))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].ig_account_id, 'acct-1')
+        self.assertEqual(out[0].sender_id, 'cust-1')
+        self.assertEqual(out[0].text, 'is it sold out?')
+        self.assertEqual(out[0].provider_message_id, 'm1')
+        self.assertEqual(out[0].timestamp, 99)
+
+    def test_keeps_story_reply_with_text(self):
+        # Story replies arrive with text PLUS an attachment / reply_to.story.
+        out = normalize_meta_payload(self._payload([
+            {'sender': {'id': 'cust-1'}, 'recipient': {'id': 'acct-1'},
+             'message': {'mid': 'm2', 'text': 'love this lineup!',
+                         'reply_to': {'story': {'id': 's1'}},
+                         'attachments': [{'type': 'story_mention'}]}},
+        ]))
+        self.assertEqual([n.text for n in out], ['love this lineup!'])
+
+    def test_skips_echo_reaction_receipt_and_attachment_only(self):
+        out = normalize_meta_payload(self._payload([
+            {'sender': {'id': 'acct-1'}, 'message': {'mid': 'e1', 'text': 'hi', 'is_echo': True}},
+            {'sender': {'id': 'cust-1'}, 'reaction': {'emoji': '❤️'}},
+            {'sender': {'id': 'cust-1'}, 'read': {'mid': 'r1'}},
+            {'sender': {'id': 'cust-1'}, 'message': {'mid': 'a1', 'attachments': [{'type': 'image'}]}},
+        ]))
+        self.assertEqual(out, [])
+
+    def test_multiple_messaging_entries(self):
+        out = normalize_meta_payload({'entry': [
+            {'id': 'acct-1', 'messaging': [
+                {'sender': {'id': 'c1'}, 'message': {'mid': 'm1', 'text': 'one'}},
+                {'sender': {'id': 'c2'}, 'message': {'mid': 'm2', 'text': 'two'}},
+            ]},
+        ]})
+        self.assertEqual([n.text for n in out], ['one', 'two'])
+
+    def test_non_dict_body_is_empty(self):
+        self.assertEqual(normalize_meta_payload(None), [])
+        self.assertEqual(normalize_meta_payload('nope'), [])
+
+
+@override_settings(FACEBOOK_APP_SECRET='top-secret', E2E_TEST_MODE=False)
+class IGVerifySignatureTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _req(self, body: bytes, sig_hex=None):
+        headers = {}
+        if sig_hex is not None:
+            headers['HTTP_X_HUB_SIGNATURE_256'] = f'sha256={sig_hex}'
+        return self.factory.post('/webhooks/instagram/', data=body,
+                                 content_type='application/json', **headers)
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_valid_signature(self):
+        body = b'{"hello":"world"}'
+        good = hmac.new(b'top-secret', body, hashlib.sha256).hexdigest()
+        self.assertTrue(verify_meta_signature(self._req(body, good)))
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_invalid_signature(self):
+        self.assertFalse(verify_meta_signature(self._req(b'{"a":1}', 'deadbeef')))
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_missing_header(self):
+        self.assertFalse(verify_meta_signature(self._req(b'{"a":1}', None)))
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=False)
+    def test_bypass_flag(self):
+        self.assertTrue(verify_meta_signature(self._req(b'{"a":1}', 'deadbeef')))
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True, E2E_TEST_MODE=True)
+    def test_e2e_mode_bypass(self):
+        self.assertTrue(verify_meta_signature(self._req(b'{"a":1}', 'deadbeef')))
+
+
+class IGGetSenderTests(TestCase):
+    @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+    def test_stub_backend(self):
+        sender = get_sender(MagicMock())
+        self.assertIsInstance(sender, StubSender)
+        self.assertTrue(sender.send_text('cust-1', 'hi').ok)
+
+    @override_settings(INSTAGRAM_SENDER_BACKEND='graph')
+    def test_graph_backend_fails_loud_no_stub_fallback(self):
+        sender = get_sender(MagicMock())
+        self.assertNotIsInstance(sender, StubSender)
+        result = sender.send_text('cust-1', 'hi')
+        self.assertFalse(result.ok)
+        self.assertTrue(result.error)
+
+
+@override_settings(INSTAGRAM_WEBHOOK_VERIFY_TOKEN='verify-me',
+                   FACEBOOK_APP_SECRET='top-secret', E2E_TEST_MODE=False)
+class IGWebhookViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.url = reverse('tickets:instagram_webhook')
+        self.org = Organization.objects.create(
+            name='IG Org', slug='ig-webhook-org',
+            instagram_business_account_id='acct-1',
+            instagram_support_agent_enabled=True,
+        )
+
+    # --- GET verification handshake ---
+    def test_get_verify_token_match_returns_challenge(self):
+        resp = self.client.get(self.url, {
+            'hub.mode': 'subscribe', 'hub.verify_token': 'verify-me',
+            'hub.challenge': '12345',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'12345')
+
+    def test_get_verify_token_mismatch_403(self):
+        resp = self.client.get(self.url, {
+            'hub.mode': 'subscribe', 'hub.verify_token': 'wrong', 'hub.challenge': '1',
+        })
+        self.assertEqual(resp.status_code, 403)
+
+    # --- POST signature + routing ---
+    def _signed_post(self, body_dict):
+        body = json.dumps(body_dict).encode('utf-8')
+        sig = hmac.new(b'top-secret', body, hashlib.sha256).hexdigest()
+        return self.client.post(
+            self.url, data=body, content_type='application/json',
+            HTTP_X_HUB_SIGNATURE_256=f'sha256={sig}',
+        )
+
+    def _dm_body(self, account_id='acct-1', mid='m1'):
+        return {'entry': [{'id': account_id, 'messaging': [
+            {'sender': {'id': 'cust-1'}, 'recipient': {'id': account_id},
+             'message': {'mid': mid, 'text': 'hi'}},
+        ]}]}
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_bad_signature_403_and_no_enqueue(self):
+        with patch('tickets.tasks.process_instagram_inbound_task') as task:
+            resp = self.client.post(
+                self.url, data=json.dumps(self._dm_body()).encode(),
+                content_type='application/json',
+                HTTP_X_HUB_SIGNATURE_256='sha256=bad',
+            )
+        self.assertEqual(resp.status_code, 403)
+        task.delay.assert_not_called()
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_valid_signature_enqueues(self):
+        with patch('tickets.tasks.process_instagram_inbound_task') as task:
+            resp = self._signed_post(self._dm_body())
+        self.assertEqual(resp.status_code, 200)
+        task.delay.assert_called_once()
+        args = task.delay.call_args.args
+        self.assertEqual(args[0], str(self.org.id))
+        self.assertEqual(args[1]['text'], 'hi')
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_unknown_account_200_no_enqueue(self):
+        with patch('tickets.tasks.process_instagram_inbound_task') as task:
+            resp = self._signed_post(self._dm_body(account_id='nope'))
+        self.assertEqual(resp.status_code, 200)
+        task.delay.assert_not_called()
+
+    @override_settings(INSTAGRAM_VALIDATE_WEBHOOKS=True)
+    def test_malformed_json_200_no_500(self):
+        body = b'{not json'
+        sig = hmac.new(b'top-secret', body, hashlib.sha256).hexdigest()
+        resp = self.client.post(self.url, data=body, content_type='application/json',
+                                HTTP_X_HUB_SIGNATURE_256=f'sha256={sig}')
+        self.assertEqual(resp.status_code, 200)
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
+                   IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8,
+                   INSTAGRAM_SENDER_BACKEND='stub', IG_AGENT_DAILY_ANSWER_CAP=200)
+class IGOrchestrationTaskTests(TestCase):
+    """process_instagram_inbound_task with the LLM pipeline mocked."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Orch Org', slug='orch-org',
+            instagram_business_account_id='acct-1',
+            instagram_support_agent_enabled=True,
+        )
+
+    def _normalized(self, text='when do doors open?', mid='m1', sender='cust-1'):
+        return {'ig_account_id': 'acct-1', 'sender_id': sender, 'text': text,
+                'provider_message_id': mid, 'timestamp': 0}
+
+    def _run(self, **kw):
+        from tickets.tasks import process_instagram_inbound_task
+        process_instagram_inbound_task.apply(args=[str(self.org.id), self._normalized(**kw)])
+
+    def _patch_pipeline(self, *, text='Doors at 9pm!', tools=('get_faq',),
+                        escalate=False, category='routine', confidence=0.95):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start()
+        self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(text=text, tool_calls=list(tools))
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=escalate,
+                                                    confidence=confidence, category=category,
+                                                    reason='r'))
+        clf.start()
+        self.addCleanup(clf.stop)
+        return cls
+
+    def test_routine_grounded_auto_sends(self):
+        self._patch_pipeline()
+        self._run()
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(conv.status, InstagramConversation.STATUS_OPEN)
+        out = InstagramMessage.objects.get(conversation=conv,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
+        self.assertTrue(out.provider_message_id)
+
+    def test_sensitive_queues_and_flags_conversation(self):
+        self._patch_pipeline(escalate=True, category='refund_dispute')
+        self._run(text='I need a refund')
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+        out = InstagramMessage.objects.get(conversation=conv,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
+        self.assertEqual(out.escalation_category, 'refund_dispute')
+
+    def test_ungrounded_answer_queued(self):
+        self._patch_pipeline(tools=())  # no tool hit -> not grounded -> D14 queue
+        self._run()
+        out = InstagramMessage.objects.get(conversation__organization=self.org,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
+
+    def test_agent_disabled_no_op(self):
+        self.org.instagram_support_agent_enabled = False
+        self.org.save(update_fields=['instagram_support_agent_enabled'])
+        self._patch_pipeline()
+        self._run()
+        self.assertFalse(InstagramMessage.objects.filter(organization=self.org).exists())
+
+    def test_unknown_org_no_op(self):
+        from tickets.tasks import process_instagram_inbound_task
+        import uuid
+        # Should not raise.
+        process_instagram_inbound_task.apply(args=[str(uuid.uuid4()), self._normalized()])
+
+    def test_duplicate_delivery_one_inbound_one_send(self):
+        self._patch_pipeline()
+        self._run(mid='dup')
+        self._run(mid='dup')
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND).count(), 1)
+        self.assertEqual(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND).count(), 1)
+
+    def test_resumes_when_inbound_committed_but_no_reply(self):
+        # Simulate a prior run that committed the inbound row then died before replying.
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='cust-1')
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='when do doors open?',
+            provider_message_id='resume-1', status=InstagramMessage.STATUS_RECEIVED,
+        )
+        self._patch_pipeline()
+        self._run(mid='resume-1')
+        # No duplicate inbound; the retry produced exactly one reply.
+        self.assertEqual(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND).count(), 1)
+        out = InstagramMessage.objects.get(conversation=conv,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
+
+    def test_transient_pipeline_error_leaves_no_reply(self):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start()
+        self.addCleanup(svc.stop)
+        cls.return_value.answer.side_effect = InstagramAgentError('LLM down')
+        try:
+            self._run()
+        except Exception:
+            pass  # eager retry eventually raises MaxRetriesExceeded — fine
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND).count(), 0)
+        # Inbound was committed before the pipeline ran (dedup anchor is durable).
+        self.assertTrue(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND).exists())
+
+    @override_settings(IG_AGENT_DAILY_ANSWER_CAP=1)
+    def test_daily_cap_reached_queues(self):
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='cust-1')
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT, content='earlier',
+            status=InstagramMessage.STATUS_AUTO_SENT, provider_message_id='prev',
+        )
+        self._patch_pipeline()
+        self._run(mid='capped')
+        out = InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+        ).exclude(provider_message_id='prev').get()
+        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
+
+    @override_settings(IG_AGENT_DAILY_ANSWER_CAP=2)
+    def test_just_under_daily_cap_auto_sends(self):
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='cust-1')
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT, content='earlier',
+            status=InstagramMessage.STATUS_AUTO_SENT, provider_message_id='prev',
+        )
+        self._patch_pipeline()
+        self._run(mid='under')
+        out = InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+        ).exclude(provider_message_id='prev').get()
+        self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
+
+    def test_latest_inbound_guard_queues_stale_fragment(self):
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='cust-1')
+        newer = InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='later fragment',
+            provider_message_id='newer', status=InstagramMessage.STATUS_RECEIVED,
+        )
+        InstagramMessage.objects.filter(pk=newer.pk).update(
+            created_at=timezone.now() + timezone.timedelta(minutes=5))
+        self._patch_pipeline()
+        self._run(mid='older')  # task's inbound is created "now", older than `newer`
+        out = InstagramMessage.objects.get(conversation=conv,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
+
+    def test_send_failure_marks_failed_not_awaiting(self):
+        self._patch_pipeline()
+        failing = MagicMock()
+        failing.send_text.return_value = SendResult(ok=False, error='boom')
+        with patch('tickets.services.instagram.get_sender', return_value=failing):
+            self._run()
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(conv.status, InstagramConversation.STATUS_OPEN)
+        out = InstagramMessage.objects.get(conversation=conv,
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(out.status, InstagramMessage.STATUS_FAILED)
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
+                   INSTAGRAM_SENDER_BACKEND='stub', IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+class IGSimulateCommandTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Sim Org', slug='sim-org',
+            instagram_business_account_id='acct-sim',
+            instagram_support_agent_enabled=True,
+        )
+
+    def _patch(self, escalate=False, category='routine', tools=('get_faq',)):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(text='Doors at 9pm!', tool_calls=list(tools))
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=escalate, confidence=0.95,
+                                                    category=category, reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+
+    def test_routine_auto_sends(self):
+        self._patch()
+        out = StringIO()
+        call_command('simulate_instagram_dm', '--org', 'sim-org',
+                     '--text', 'when do doors open?', stdout=out)
+        self.assertIn('auto_sent', out.getvalue())
+
+    def test_refund_pending_review(self):
+        self._patch(escalate=True, category='refund_dispute')
+        out = StringIO()
+        call_command('simulate_instagram_dm', '--org', 'sim-org',
+                     '--text', 'I need a refund', stdout=out)
+        self.assertIn('pending_review', out.getvalue())

@@ -402,10 +402,21 @@ FACEBOOK_GRAPH_API_VERSION = os.environ.get('FACEBOOK_GRAPH_API_VERSION', 'v21.0
 
 # Instagram DM support agent — minimum classifier confidence for a routine, grounded
 # answer to auto-send instead of being queued for human review (D14/auto-send gate).
-# The daily auto-answer cap and inbound coalesce window arrive with transport (Phase 3).
 IG_AGENT_AUTOSEND_MIN_CONFIDENCE = float(
     os.environ.get('IG_AGENT_AUTOSEND_MIN_CONFIDENCE', '0.8')
 )
+# Token Meta echoes back during the webhook GET verification handshake (hub.verify_token).
+INSTAGRAM_WEBHOOK_VERIFY_TOKEN = os.environ.get('INSTAGRAM_WEBHOOK_VERIFY_TOKEN', '')
+# Outbound transport backend: 'stub' (demo/pre-App-Review) or 'graph' (real Meta send,
+# Phase 7). get_sender() selects by THIS value, never by token presence — a 'graph'
+# backend with missing creds fails loudly rather than silently stub-sending (D10).
+INSTAGRAM_SENDER_BACKEND = os.environ.get('INSTAGRAM_SENDER_BACKEND', 'stub')
+# Per-org daily cap on auto-sent answers; past it, answers queue for review instead
+# of auto-sending (D4). 0 disables the cap. Soft, best-effort (not a hard lock).
+IG_AGENT_DAILY_ANSWER_CAP = int(os.environ.get('IG_AGENT_DAILY_ANSWER_CAP', '200'))
+# Validate inbound Instagram webhook signatures (X-Hub-Signature-256). Disable in local
+# dev without a tunnel; mirrors TWILIO_VALIDATE_WEBHOOKS.
+INSTAGRAM_VALIDATE_WEBHOOKS = os.environ.get('INSTAGRAM_VALIDATE_WEBHOOKS', 'True') == 'True'
 
 # Mailchimp integration
 MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')

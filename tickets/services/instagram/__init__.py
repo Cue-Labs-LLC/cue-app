@@ -9,6 +9,8 @@ decides whether the draft can be auto-sent or must be queued for a human.
 
 from .agent import AnswerResult, InstagramAgentError, InstagramSupportAgentService
 from .classifier import EscalationDecision, classify_escalation, decide_autosend
+from .inbound import NormalizedInbound, normalize_meta_payload, verify_meta_signature
+from .sender import InstagramSender, SendResult, StubSender, get_sender
 from .tools import build_ig_tools
 
 __all__ = [
@@ -19,4 +21,11 @@ __all__ = [
     'classify_escalation',
     'decide_autosend',
     'build_ig_tools',
+    'NormalizedInbound',
+    'normalize_meta_payload',
+    'verify_meta_signature',
+    'InstagramSender',
+    'SendResult',
+    'StubSender',
+    'get_sender',
 ]
