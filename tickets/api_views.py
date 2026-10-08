@@ -840,14 +840,15 @@ def api_phone_start(request):
     Body: {phone}
     Sends a Twilio Verify SMS code. Returns 200 on success, 400 on any failure.
     """
-    from .sms import start_phone_verification
+    from .sms import start_phone_verification, client_ip
 
     phone = (request.data.get('phone') or '').strip()
     if not phone:
         return Response({'error': 'phone is required'}, status=400)
 
     # App review test phones are handled inside start_phone_verification.
-    if not start_phone_verification(phone):
+    # client_ip adds per-IP rate limiting on this public, unauthenticated endpoint.
+    if not start_phone_verification(phone, ip=client_ip(request)):
         return Response({'error': 'Could not send verification code'}, status=400)
 
     return Response({})

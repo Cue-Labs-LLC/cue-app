@@ -11701,7 +11701,8 @@ class PhoneAuthAPITests(TestCase):
     def test_phone_start_success(self, mock_start):
         res = self._post(self.START_URL, {'phone': self.PHONE})
         self.assertEqual(res.status_code, 200, res.content)
-        mock_start.assert_called_once_with(self.PHONE)
+        # The public endpoint threads the client IP through for per-IP rate limiting.
+        mock_start.assert_called_once_with(self.PHONE, ip='127.0.0.1')
 
     @patch('tickets.sms.start_phone_verification', return_value=False)
     def test_phone_start_failure_returns_400(self, mock_start):
@@ -11840,6 +11841,74 @@ class PhoneAuthAPITests(TestCase):
             res = self._post(self.VERIFY_URL, {'phone': self.PHONE, 'code': '123456'})
         self.assertEqual(res.status_code, 200, res.content)
         mock_check.assert_called_once_with(self.PHONE, '123456')
+
+
+@override_settings(E2E_TEST_MODE=False, APP_REVIEW_TEST_PHONES={})
+class VerifyAntiFraudGuardTests(TestCase):
+    """start_phone_verification is a public, money-spending Twilio Verify call.
+
+    These lock in the anti-toll-fraud guard (SMS pumping / IRSF): disallowed
+    countries and over-limit floods are rejected BEFORE any Twilio call, so a bot
+    hammering +380/+1876/+79 or one number can't burn credits. Mirrors the Sentry
+    flood of 'Verify start failed ... temporarily blocked by Twilio' errors.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # rate-limit counters are process-global
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',))
+    def test_disallowed_country_blocked_before_twilio(self):
+        from tickets.sms import start_phone_verification
+        for intl in ('+380912933917', '+18763553632', '+79617276594'):
+            with patch('twilio.rest.Client') as mock_client:
+                self.assertFalse(start_phone_verification(intl, ip='1.2.3.4'), intl)
+                mock_client.assert_not_called()  # never paid Twilio for it
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',))
+    def test_allowed_country_reaches_twilio_with_normalized_number(self):
+        from tickets.sms import start_phone_verification
+        with patch('twilio.rest.Client') as mock_client:
+            # 10-digit US number, no '+' — normalized to E.164 before sending.
+            self.assertTrue(start_phone_verification('4155550100', ip='1.2.3.4'))
+        svc = mock_client.return_value.verify.v2.services.return_value
+        svc.verifications.create.assert_called_once_with(to='+14155550100', channel='sms')
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',), VERIFY_RATE_LIMIT_PER_PHONE=2)
+    def test_per_phone_rate_limit_blocks_flood(self):
+        from tickets.sms import start_phone_verification
+        with patch('twilio.rest.Client') as mock_client:
+            self.assertTrue(start_phone_verification('+14155550100', ip='1.1.1.1'))
+            self.assertTrue(start_phone_verification('+14155550100', ip='1.1.1.2'))
+            # Third hit on the same number is capped even from a fresh IP.
+            self.assertFalse(start_phone_verification('+14155550100', ip='1.1.1.3'))
+        svc = mock_client.return_value.verify.v2.services.return_value
+        self.assertEqual(svc.verifications.create.call_count, 2)
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',), VERIFY_RATE_LIMIT_PER_IP=2)
+    def test_per_ip_rate_limit_blocks_number_rotation(self):
+        from tickets.sms import start_phone_verification
+        with patch('twilio.rest.Client'):
+            self.assertTrue(start_phone_verification('+14155550101', ip='9.9.9.9'))
+            self.assertTrue(start_phone_verification('+14155550102', ip='9.9.9.9'))
+            # Same IP rotating to a third number is capped.
+            self.assertFalse(start_phone_verification('+14155550103', ip='9.9.9.9'))
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=('+1',))
+    def test_rate_limit_fails_closed_on_cache_error(self):
+        from tickets.sms import start_phone_verification
+        with patch('tickets.sms._verify_rate_ok', return_value=False), \
+             patch('twilio.rest.Client') as mock_client:
+            self.assertFalse(start_phone_verification('+14155550100', ip='1.2.3.4'))
+            mock_client.assert_not_called()
+
+    def test_app_review_phone_still_bypasses_guard(self):
+        from tickets.sms import start_phone_verification
+        with override_settings(APP_REVIEW_TEST_PHONES={'+380999999999': '424242'}), \
+             patch('twilio.rest.Client') as mock_client:
+            # Whitelisted reviewer phone skips country/rate checks AND Twilio.
+            self.assertTrue(start_phone_verification('+380999999999'))
+            mock_client.assert_not_called()
 
 
 class StripeConnectOnboardingURLAPITests(TestCase):

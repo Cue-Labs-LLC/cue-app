@@ -582,7 +582,7 @@ def _sync_event_to_google_calendar(event):
 @never_cache
 def unified_login_view(request):
     """Step 1: enter phone number - handles both login and new signup."""
-    from .sms import start_phone_verification
+    from .sms import start_phone_verification, client_ip
     if request.user.is_authenticated:
         try:
             if request.user.profile.is_organizer:
@@ -595,7 +595,7 @@ def unified_login_view(request):
         if form.is_valid():
             phone = form.cleaned_data['phone_number']
             is_new = not UserProfile.objects.filter(phone_number=phone).exists()
-            if not start_phone_verification(phone):
+            if not start_phone_verification(phone, ip=client_ip(request)):
                 messages.error(request, 'Could not send a verification code. Please check the number and try again.')
             else:
                 request.session['verify_unified'] = {'phone': phone, 'is_new': is_new}
