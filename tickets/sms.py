@@ -409,10 +409,88 @@ def validate_twilio_request(request) -> bool:
         return False
 
 
-def start_phone_verification(phone: str) -> bool:
+def client_ip(request) -> str:
+    """First-hop client IP from X-Forwarded-For (falls back to REMOTE_ADDR), validated.
+
+    Returns '' when nothing valid is present, so a spoofed/garbage header never
+    becomes a rate-limit bucket key.
+    """
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', ''))
+    ip = (xff or '').split(',')[0].strip()
+    try:
+        from django.core.validators import validate_ipv46_address
+        validate_ipv46_address(ip)
+        return ip
+    except Exception:
+        return ''
+
+
+# High-risk North American Numbering Plan (+1) area codes. These Caribbean /
+# Atlantic destinations sit INSIDE '+1' yet are heavily abused for international
+# revenue-share fraud (IRSF) — the same vector as the Sentry flood (e.g. +1876
+# Jamaica). A plain '+1' allowlist can't exclude them because they share the
+# US/CA country code, so block them explicitly. US territories (Puerto Rico
+# 787/939, USVI 340, Guam 671, …) are deliberately absent — they're domestic.
+# Overridable via VERIFY_BLOCKED_NANP_AREA_CODES; an empty set disables the check.
+VERIFY_BLOCKED_NANP_AREA_CODES = frozenset({
+    '242', '246', '264', '268', '284', '345', '441', '473', '649', '658',
+    '664', '721', '758', '767', '784', '809', '829', '849', '868', '869',
+    '876', '900',
+})
+
+
+def _nanp_area_code_blocked(phone: str) -> bool:
+    """True if `phone` is a '+1' number whose area code is on the IRSF blocklist.
+
+    Expects an already-normalized E.164 number. '+1' NANP numbers are '+1' plus
+    10 digits; the area code is the first three digits after '+1'.
+    """
+    codes = getattr(settings, 'VERIFY_BLOCKED_NANP_AREA_CODES',
+                    VERIFY_BLOCKED_NANP_AREA_CODES)
+    if not codes:
+        return False
+    if phone.startswith('+1') and len(phone) == 12:
+        return phone[2:5] in codes
+    return False
+
+
+def _verify_rate_ok(phone: str, ip: str = None) -> bool:
+    """Per-phone AND per-IP cap on Twilio Verify starts. FAIL CLOSED: a public
+    endpoint that spends real money on each send must not fail open, so a
+    cache-backend outage denies rather than allows (mirrors _subscribe_rate_ok).
+
+    Keys are global (not org-scoped) because login/API Verify starts aren't tied
+    to an org. Caps are overridable via settings for ops tuning.
+    """
+    per_phone = getattr(settings, 'VERIFY_RATE_LIMIT_PER_PHONE', 5)
+    per_ip = getattr(settings, 'VERIFY_RATE_LIMIT_PER_IP', 20)
+    try:
+        from django.core.cache import cache as django_cache
+        ph_key = f"verify_rl_ph:{phone}"
+        ph_n = django_cache.get(ph_key, 0) or 0
+        if ph_n >= per_phone:
+            return False
+        ip_key = None
+        ip_n = 0
+        if ip:
+            ip_key = f"verify_rl_ip:{ip}"
+            ip_n = django_cache.get(ip_key, 0) or 0
+            if ip_n >= per_ip:
+                return False
+        django_cache.set(ph_key, ph_n + 1, 3600)
+        if ip_key:
+            django_cache.set(ip_key, ip_n + 1, 3600)
+        return True
+    except Exception:
+        return False  # fail closed
+
+
+def start_phone_verification(phone: str, *, ip: str = None) -> bool:
     """Start a Twilio Verify verification for the given phone number via SMS.
 
-    Returns True on success, False on failure (e.g. invalid number, Twilio error).
+    Returns True on success, False on failure (e.g. invalid number, disallowed
+    country, rate-limited, or Twilio error). `ip`, when supplied by a public
+    entry point, adds per-IP rate limiting on top of the per-phone cap.
     """
     if getattr(settings, 'E2E_TEST_MODE', False):
         logger.info("E2E test mode: accepting phone verification start for %s", phone)
@@ -422,6 +500,21 @@ def start_phone_verification(phone: str) -> bool:
     if phone in getattr(settings, 'APP_REVIEW_TEST_PHONES', {}):
         logger.info("App review test phone: skipping Verify start for %s", phone)
         return True
+    # Anti-toll-fraud guard (SMS pumping / IRSF). These endpoints are public and
+    # spend real money per send, so reject before any Twilio call:
+    #   1. normalize + plausibility — don't pay to have Twilio reject garbage
+    #   2. country allowlist — kills premium-rate international pumping targets
+    #   3. rate limit — caps a bot hammering one number or rotating from one IP
+    phone = normalize_phone(phone)
+    if not is_plausible_e164(phone):
+        logger.warning("Verify start rejected (implausible E.164): %s", phone)
+        return False
+    if not sms_country_allowed(phone) or _nanp_area_code_blocked(phone):
+        logger.warning("Verify start blocked (country/area not allowed): %s", phone)
+        return False
+    if not _verify_rate_ok(phone, ip):
+        logger.warning("Verify start rate-limited for %s (ip=%s)", phone, ip)
+        return False
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -445,6 +538,8 @@ def check_phone_verification(phone: str, code: str) -> bool:
     expected = getattr(settings, 'APP_REVIEW_TEST_PHONES', {}).get(phone)
     if expected is not None:
         return code == expected
+    # Normalize so the lookup matches the number start_phone_verification sent to.
+    phone = normalize_phone(phone)
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -469,7 +564,7 @@ def otp_start(request, phone: str, *, purpose: str) -> bool:
     Returns True if the code was sent. `purpose` namespaces the session key so
     concurrent flows (e.g. signup vs subscribe) don't collide.
     """
-    if start_phone_verification(phone):
+    if start_phone_verification(phone, ip=client_ip(request)):
         request.session[f'otp_pending_phone:{purpose}'] = phone
         return True
     return False
