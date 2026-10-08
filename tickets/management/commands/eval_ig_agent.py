@@ -4,9 +4,10 @@ Syncs the version-controlled corpus (evals/ig_support_agent/cases.jsonl) into a 
 dataset (idempotent, keyed by a stable per-item id), then runs an experiment: for each
 case it executes the real pipeline (answer -> classify -> auto-send gate) inside a
 Langfuse trace and attaches deterministic boolean scores (grounded, escalation_correct,
-tool_correct, no_leak). Subjective answer quality is best added as a Langfuse managed
-LLM-as-judge evaluator configured in the UI against this dataset — that way judges evolve
-without code changes and apply to every future run.
+tool_correct) plus two in-code LLM-judge scores (no_private_disclosure, answer_quality).
+Those two judges are ALSO configured as Langfuse *managed* LLM-as-judge evaluators in the
+UI (the authoritative, non-engineer-tunable rubric); the in-code judges here are the
+retained headless/CI path. Keep both in sync — see evals/ig_support_agent/judges/.
 
 LIVE, metered OpenAI calls (agent + classifier). Needs LANGFUSE_* + OPENAI_API_KEY.
 
@@ -24,8 +25,8 @@ from django.core.management.base import BaseCommand, CommandError
 
 from tickets.models import Organization
 from tickets.services.instagram.evaluation import (
-    grade_escalation, grade_grounded, grade_tool, judge_private_disclosure,
-    load_cases, run_ig_agent,
+    grade_answer_quality, grade_escalation, grade_grounded, grade_tool,
+    judge_private_disclosure, load_cases, run_ig_agent,
 )
 
 DEFAULT_DATASET = 'ig-support-agent'
@@ -135,9 +136,9 @@ class Command(BaseCommand):
         # Semantic leak check via an in-code LLM-judge (a substring blocklist false-positives
         # on refusals that echo the term, e.g. "I can't share lifetime value"). Only runs on
         # rows that carry `forbid` (the adversarial cases); those terms become judge hints.
-        # TODO(Phase 6): migrate to a Langfuse *managed* LLM-as-judge evaluator in the UI
-        # (option B) — non-engineers tune the rubric without a deploy — keeping this in-code
-        # judge as the headless/CI path. See the TDD Phase 6 + evals/README.md.
+        # This mirrors the Langfuse *managed* `no_private_disclosure` judge configured in the
+        # UI (authoritative, non-engineer-tunable); kept as the headless/CI path. Keep the
+        # rubric in sync — see evals/ig_support_agent/judges/ + the TDD Phase 6.
         def ev_no_disclosure(*, output, metadata, **kwargs):
             forbid = (metadata or {}).get('forbid')
             if not forbid:
@@ -148,12 +149,26 @@ class Command(BaseCommand):
             return Evaluation(name='no_private_disclosure', value=passed,
                               data_type='BOOLEAN', comment=comment)
 
+        # Answer-quality + tone judge vs the case's reference answer. Mirrors the managed
+        # `answer_quality` Langfuse judge (UI); in-code copy is the headless/CI path. Only
+        # scores rows that carry an `expected_output` reference (grade_answer_quality -> None
+        # otherwise). Offloaded to a worker thread like the disclosure judge (ORM/LLM off the
+        # async loop).
+        def ev_answer_quality(*, output, expected_output, **kwargs):
+            res = _run_in_thread(grade_answer_quality, output, expected_output)
+            if res is None:
+                return None
+            passed, comment = res
+            return Evaluation(name='answer_quality', value=passed,
+                              data_type='BOOLEAN', comment=comment)
+
         dataset = langfuse.get_dataset(dataset_name)
         result = dataset.run_experiment(
             name=opts['run_name'] or f"ig-support-agent @ {org.slug}",
             description=f"Instagram support agent vs org '{org.slug}'",
             task=task,
-            evaluators=[ev_grounded, ev_escalation, ev_tool, ev_no_disclosure],
+            evaluators=[ev_grounded, ev_escalation, ev_tool, ev_no_disclosure,
+                        ev_answer_quality],
             max_concurrency=max(1, opts['concurrency']),
         )
         langfuse.flush()

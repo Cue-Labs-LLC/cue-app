@@ -1,0 +1,46 @@
+name: LLM evals
+
+# Live, metered OpenAI + Langfuse calls — NEVER run per-PR. Manual only for now
+# (workflow_dispatch); a nightly `schedule` can be added later. See
+# docs/technical-design/instagram-dm-support-agent.md Phase 6 and evals/README.md.
+on:
+  workflow_dispatch:
+
+jobs:
+  ig-support-agent:
+    runs-on: ubuntu-latest
+    # Don't burn the metered secrets from forks — only the canonical repo runs this.
+    if: github.repository == 'Cue-Labs-LLC/cue-app'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the Instagram support-agent eval
+        env:
+          SECRET_KEY: "ci-eval-secret-key-not-used-in-prod"
+          DEBUG: "True"
+          # Omitting DATABASE_URL → SQLite; omitting CELERY_BROKER_URL → eager Celery.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          # Optional: env-level LangChain tracing to LangSmith. Harmless when the key is
+          # unset (tracing stays off).
+          LANGSMITH_TRACING: ${{ secrets.LANGSMITH_TRACING }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          # The eval answers AS a seeded org, so build its data on the fresh SQLite DB first.
+          python manage.py migrate --noinput
+          python manage.py seed_local_data --skip-eval-env
+          # The agent is non-deterministic — this run is a trend signal in Langfuse, not a
+          # hard gate (it never runs on PRs). Surface failures without failing the workflow.
+          python manage.py eval_ig_agent --org familiar-faces || true
