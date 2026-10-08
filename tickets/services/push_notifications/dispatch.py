@@ -38,6 +38,41 @@ def dispatch(organization, payload):
             )
 
 
+def dispatch_to_users(organization, user_ids, payload):
+    """Enqueue sends only to the given users' device tokens within ``organization``.
+
+    Like ``dispatch`` but admin-targeted: an Instagram escalation should reach the
+    organizers who can act on the inbox (OWNER/ADMIN), not every device in the org.
+    Never raises into the caller.
+    """
+    from tickets.models import DeviceToken
+    from tickets.tasks import send_push_notification_task
+
+    user_ids = list(user_ids)
+    if not user_ids:
+        return
+
+    try:
+        token_ids = list(
+            DeviceToken.objects.filter(
+                organization=organization, organizer_id__in=user_ids,
+            ).values_list('id', flat=True)
+        )
+    except Exception:
+        logger.exception("Push dispatch failed to load device tokens for org=%s",
+                         getattr(organization, 'id', None))
+        return
+
+    for token_id in token_ids:
+        try:
+            send_push_notification_task.delay(str(token_id), payload)
+        except Exception:
+            logger.error(
+                "Push enqueue failed (delivery lost) org=%s device_token=%s",
+                getattr(organization, 'id', None), token_id, exc_info=True,
+            )
+
+
 def fire_tap_to_pay_enabled(organization):
     """Notify an org's devices that Tap to Pay just went live."""
     transaction.on_commit(lambda: dispatch(organization, TAP_TO_PAY_ENABLED))

@@ -372,6 +372,13 @@ urlpatterns = [
     path('settings/integrations/instagram/faq/reorder/', instagram_views.instagram_faq_reorder, name='instagram_faq_reorder'),
     path('settings/integrations/instagram/faq/<uuid:faq_id>/edit/', instagram_views.instagram_faq_edit, name='instagram_faq_edit'),
     path('settings/integrations/instagram/faq/<uuid:faq_id>/delete/', instagram_views.instagram_faq_delete, name='instagram_faq_delete'),
+    path('settings/integrations/instagram/agent-settings/', instagram_views.instagram_agent_settings, name='instagram_agent_settings'),
+
+    # Instagram DM support agent — human-review inbox (Phase 4)
+    path('inbox/instagram/', instagram_views.instagram_inbox, name='instagram_inbox'),
+    path('inbox/instagram/<uuid:conversation_id>/', instagram_views.instagram_conversation_detail, name='instagram_conversation_detail'),
+    path('inbox/instagram/<uuid:conversation_id>/reply/', instagram_views.instagram_message_send, name='instagram_message_send'),
+    path('inbox/instagram/<uuid:conversation_id>/drafts/<uuid:message_id>/approve/', instagram_views.instagram_draft_approve, name='instagram_draft_approve'),
 
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),

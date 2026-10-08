@@ -1399,12 +1399,49 @@ def _ig_daily_autosend_count(organization):
     from tickets.models import InstagramMessage
 
     # __date respects the active timezone under USE_TZ, so "today" is project-local.
+    # Only AI answers count — automated escalation acks (author=system) are a separate,
+    # safety-neutral path and must not eat into the auto-answer budget.
     return InstagramMessage.objects.filter(
         organization=organization,
         direction=InstagramMessage.DIRECTION_OUTBOUND,
+        author=InstagramMessage.AUTHOR_AGENT,
         status=InstagramMessage.STATUS_AUTO_SENT,
         created_at__date=timezone.localdate(),
     ).count()
+
+
+def _send_instagram_escalation_ack(organization, conversation, recipient_id):
+    """Immediately send the org's fixed acknowledgement to an escalated customer.
+
+    Best-effort and safety-neutral: fixed, org-editable copy (no LLM, no facts), so it's
+    safe to auto-send even though the real answer waits for a human. A blank ack text
+    disables it. A send failure is logged, not fatal — the queue + notification still fire.
+    Recorded as an ``author=system`` ``auto_sent`` row so it shows in the thread but never
+    counts as an AI answer.
+    """
+    from tickets.models import InstagramMessage
+    from tickets.services.instagram import get_sender
+
+    ack_text = (organization.instagram_escalation_ack_text or '').strip()
+    if not ack_text:
+        return
+    try:
+        send = get_sender(organization).send_text(recipient_id, ack_text)
+    except Exception:
+        logger.exception("IG escalation ack send errored for conversation %s", conversation.id)
+        return
+    if not send.ok:
+        logger.warning("IG escalation ack not sent for conversation %s: %s",
+                       conversation.id, send.error)
+        return
+    InstagramMessage.objects.create(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        author=InstagramMessage.AUTHOR_SYSTEM,
+        content=ack_text,
+        status=InstagramMessage.STATUS_AUTO_SENT,
+        provider_message_id=send.provider_message_id or '',
+    )
 
 
 def _ig_under_daily_cap(organization):
@@ -1502,6 +1539,14 @@ def process_instagram_inbound_task(self, organization_id, normalized):
     ).exists():
         return
 
+    # Human handoff: once a thread is escalated (awaiting_human), a person owns it until
+    # they resolve it. Record the inbound so they see it, but don't let the agent draft or
+    # auto-send over them — re-engaging here (e.g. a cheery "anything else?" on a
+    # customer's "okay") would talk past an unresolved issue. The agent resumes once the
+    # thread is resolved.
+    if conversation.status == InstagramConversation.STATUS_AWAITING_HUMAN:
+        return
+
     try:
         result = InstagramSupportAgentService(org).answer(conversation, text)
         decision = classify_escalation(org, text, result.text)
@@ -1546,8 +1591,111 @@ def process_instagram_inbound_task(self, organization_id, normalized):
             outbound.escalation_reason = (send.error or outbound.escalation_reason)[:300]
         outbound.save()
     else:
-        outbound.status = InstagramMessage.STATUS_PENDING_REVIEW
-        outbound.save()
+        # Queued for a human. Keep the draft ONLY when it's a real answer the human might
+        # approve — a routine answer blocked by the groundedness gate (D14), the daily cap,
+        # or the staleness guard. On a true escalation (should_escalate) the draft is just
+        # a "I'll pass this to a team member" handoff/non-answer: don't save it, the human
+        # writes the real reply.
+        if not decision.should_escalate:
+            outbound.status = InstagramMessage.STATUS_PENDING_REVIEW
+            outbound.save()
         if conversation.status != InstagramConversation.STATUS_AWAITING_HUMAN:
             conversation.status = InstagramConversation.STATUS_AWAITING_HUMAN
             conversation.save(update_fields=['status'])
+            # Acknowledge the customer immediately (fixed, org-editable copy) ONLY on a
+            # genuine escalation, where a human will substantively follow up — so the
+            # thread isn't met with silence while it waits. A guardrail queue (ungrounded
+            # /cap/stale) resolves by approving the AI's own answer, so promising "a team
+            # member will follow up" there would be misleading. Once per transition.
+            if decision.should_escalate:
+                _send_instagram_escalation_ack(org, conversation, ig_user_id)
+            # Notify admins once, only on the open -> awaiting_human transition (D2):
+            # follow-up queued DMs in an already-flagged thread don't re-notify.
+            # on_commit so a rolled-back write never fires a notification.
+            conv_id = str(conversation.id)
+            transaction.on_commit(
+                lambda: notify_instagram_escalation_task.delay(conv_id)
+            )
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def notify_instagram_escalation_task(self, conversation_id):
+    """Notify org admins (email + APNs push) that an IG DM needs human review.
+
+    Fired once when a conversation first flips to ``awaiting_human`` (D2). Recipients
+    are the org's OWNER/ADMIN members (D1) — the people who can act on the inbox.
+    """
+    from django.conf import settings
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.urls import reverse
+
+    from tickets.models import InstagramConversation, InstagramMessage
+    from tickets.services.push_notifications.dispatch import dispatch_to_users
+    from tickets.services.push_notifications.payloads import instagram_escalation_payload
+    from tickets.utils import org_admin_users
+
+    try:
+        conversation = InstagramConversation.objects.select_related('organization').get(
+            id=conversation_id,
+        )
+    except InstagramConversation.DoesNotExist:
+        logger.warning("IG escalation notify: conversation %s not found", conversation_id)
+        return
+
+    org = conversation.organization
+    admins = list(org_admin_users(org))
+    if not admins:
+        logger.info("IG escalation notify: no admins for org %s", org.id)
+        return
+
+    draft = InstagramMessage.objects.filter(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        status=InstagramMessage.STATUS_PENDING_REVIEW,
+    ).order_by('-created_at').first()
+    category = draft.escalation_category if draft else ''
+
+    last_inbound = InstagramMessage.objects.filter(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_INBOUND,
+    ).order_by('-created_at').first()
+
+    site_url = settings.SITE_URL.rstrip('/')
+    inbox_url = site_url + reverse(
+        'tickets:instagram_conversation_detail', args=[conversation.id],
+    )
+    context = {
+        'organization_name': org.name,
+        'ig_username': conversation.ig_username or conversation.ig_user_id,
+        'category': (category or 'message').replace('_', ' '),
+        'message_preview': (last_inbound.content if last_inbound else '')[:200],
+        'inbox_url': inbox_url,
+    }
+
+    # Push first (best-effort, never raises into us); then email (retry on failure).
+    try:
+        dispatch_to_users(
+            org, [u.id for u in admins],
+            instagram_escalation_payload(category=category, conversation_id=conversation.id),
+        )
+    except Exception:
+        logger.exception("IG escalation push failed for conversation %s", conversation_id)
+
+    recipient_list = [u.email for u in admins if u.email]
+    if not recipient_list:
+        return
+
+    html_body = render_to_string('tickets/instagram_escalation_email.html', context)
+    text_body = render_to_string('tickets/instagram_escalation_email.txt', context)
+    try:
+        send_mail(
+            subject=f"Instagram DM needs review — {org.name}",
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=recipient_list,
+            html_message=html_body,
+        )
+    except Exception as exc:
+        logger.exception("Failed to send IG escalation email for conversation %s", conversation_id)
+        raise self.retry(exc=exc)

@@ -920,7 +920,14 @@ class OrganizationAdmin(admin.ModelAdmin):
     actions = ['send_tap_to_pay_ready_push']
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
+        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled', 'instagram_feature_enabled')}),
+        ('Instagram DM Agent', {
+            'fields': ('instagram_support_agent_enabled', 'instagram_escalation_ack_text',
+                       'instagram_business_account_id', 'instagram_username'),
+            'classes': ('collapse',),
+            'description': 'instagram_feature_enabled (in Feature Flags) gates UX visibility; '
+                           'instagram_support_agent_enabled turns on runtime auto-answering.',
+        }),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete', 'tap_to_pay_enabled_push_sent')}),
         ('Meta Ads', {

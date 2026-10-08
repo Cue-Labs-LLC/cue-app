@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #212529; background: #f8f9fa; margin: 0; padding: 24px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden;">
+    <tr>
+      <td style="padding: 24px 28px;">
+        <p style="font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: #6c757d; margin: 0 0 8px;">Instagram support</p>
+        <h1 style="font-size: 20px; margin: 0 0 16px;">A DM needs your review</h1>
+        <p style="margin: 0 0 6px;"><strong>{{ ig_username }}</strong> sent {{ organization_name }} a message flagged as <strong>{{ category }}</strong>.</p>
+        {% if message_preview %}
+        <blockquote style="margin: 16px 0; padding: 12px 16px; background: #f1f3f5; border-radius: 8px; color: #495057;">
+          {{ message_preview }}
+        </blockquote>
+        {% endif %}
+        <p style="margin: 24px 0 0;">
+          <a href="{{ inbox_url }}" style="display: inline-block; background: #0d6efd; color: #fff; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-weight: 600;">Review and reply</a>
+        </p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 16px 28px; border-top: 1px solid #e9ecef; color: #adb5bd; font-size: 12px;">
+        Cue · You're receiving this because you're an admin of {{ organization_name }}.
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

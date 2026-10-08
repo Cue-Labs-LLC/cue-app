@@ -85,6 +85,8 @@ INTEGRATIONS = [
             org.instagram_page_access_token and org.instagram_business_account_id
         ),
         'superuser_only': False,
+        # Rollout gate: hide the card entirely until the org opts into the feature.
+        'feature_enabled': lambda org: bool(org.instagram_feature_enabled),
     },
     {
         'key': 'webhooks',
@@ -108,6 +110,9 @@ def integration_statuses(org, *, include_superuser_only=False):
     rows = []
     for entry in INTEGRATIONS:
         if entry['superuser_only'] and not include_superuser_only:
+            continue
+        feature_pred = entry.get('feature_enabled')
+        if feature_pred is not None and not feature_pred(org):
             continue
         rows.append({**entry, 'connected': bool(entry['is_connected'](org))})
     return rows

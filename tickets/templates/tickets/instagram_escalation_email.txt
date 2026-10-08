@@ -1,0 +1,13 @@
+An Instagram DM needs your review
+
+Organization: {{ organization_name }}
+From: {{ ig_username }}
+Flagged as: {{ category }}
+
+Message:
+{{ message_preview }}
+
+Review and reply:
+{{ inbox_url }}
+
+— Cue

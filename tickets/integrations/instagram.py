@@ -14,18 +14,24 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
+from functools import wraps
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.http import HttpResponse, JsonResponse
+from django.db.models import (
+    Case, Count, IntegerField, OuterRef, Q, Subquery, Value, When,
+)
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from ..forms import OrgFAQForm
-from ..models import Organization, OrgFAQ
+from ..models import InstagramConversation, InstagramMessage, Organization, OrgFAQ
+from ..services.instagram import get_sender
 from ..utils import get_organization, require_admin, require_org
 
 logger = logging.getLogger(__name__)
@@ -38,6 +44,22 @@ def _org_faqs(org):
 
 def _is_ajax(request):
     return request.headers.get('x-requested-with') == 'XMLHttpRequest'
+
+
+def require_instagram_feature(view_func):
+    """404 the Instagram DM agent UX unless the org has the feature flag enabled.
+
+    Master rollout gate: the code can ship to everyone while the whole UX (inbox, FAQ
+    editor, settings) stays invisible until ``instagram_feature_enabled`` is turned on
+    for a specific org. Applied to every UX view below — never the public webhook.
+    """
+    @wraps(view_func)
+    def _wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if org is None or not org.instagram_feature_enabled:
+            raise Http404()
+        return view_func(request, *args, **kwargs)
+    return _wrapped
 
 
 def _faq_json(faq):
@@ -54,6 +76,7 @@ def _faq_json(faq):
 @login_required
 @require_org
 @require_admin
+@require_instagram_feature
 def instagram_faq_list(request):
     """Inline, drag-and-drop editor for this org's support-agent FAQs."""
     org = get_organization(request)
@@ -63,12 +86,28 @@ def instagram_faq_list(request):
         'is_connected': bool(
             org.instagram_page_access_token and org.instagram_business_account_id
         ),
+        'escalation_ack_text': org.instagram_escalation_ack_text,
     })
 
 
 @login_required
 @require_org
 @require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_agent_settings(request):
+    """Save per-org support-agent settings (the escalation acknowledgement copy)."""
+    org = get_organization(request)
+    org.instagram_escalation_ack_text = request.POST.get('escalation_ack_text', '').strip()
+    org.save(update_fields=['instagram_escalation_ack_text'])
+    messages.success(request, 'Agent settings saved.')
+    return redirect('tickets:instagram_faq_list')
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
 @require_http_methods(["GET", "POST"])
 def instagram_faq_create(request):
     """Create a FAQ. Answers JSON for inline (AJAX) adds; redirects otherwise."""
@@ -98,6 +137,7 @@ def instagram_faq_create(request):
 @login_required
 @require_org
 @require_admin
+@require_instagram_feature
 @require_http_methods(["GET", "POST"])
 def instagram_faq_edit(request, faq_id):
     """Edit a FAQ (org-scoped). Answers JSON for inline edits; redirects otherwise."""
@@ -125,6 +165,7 @@ def instagram_faq_edit(request, faq_id):
 @login_required
 @require_org
 @require_admin
+@require_instagram_feature
 @require_http_methods(["GET", "POST"])
 def instagram_faq_delete(request, faq_id):
     """Soft-delete a FAQ (org-scoped). Answers JSON for inline deletes."""
@@ -142,6 +183,7 @@ def instagram_faq_delete(request, faq_id):
 @login_required
 @require_org
 @require_admin
+@require_instagram_feature
 @require_http_methods(["POST"])
 def instagram_faq_reorder(request):
     """AJAX: persist the new FAQ order after a drag-and-drop."""
@@ -215,3 +257,198 @@ def instagram_webhook(request):
         process_instagram_inbound_task.delay(str(org.id), asdict(item))
 
     return HttpResponse(status=200)
+
+
+# ---------------------------------------------------------------------------
+# Human-review inbox (Phase 4)
+#
+# When the agent can't auto-send (sensitive / low-confidence / ungrounded), it
+# queues a draft (status=pending_review) and flags the conversation
+# awaiting_human. These views let an admin read the thread and approve/edit/
+# discard the draft or send their own reply. All sends go through get_sender —
+# the StubSender until the real Graph sender lands in Phase 7.
+# ---------------------------------------------------------------------------
+
+def _maybe_resolve(conversation):
+    """Resolve a flagged conversation once no drafts remain pending review."""
+    still_pending = conversation.messages.filter(
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        status=InstagramMessage.STATUS_PENDING_REVIEW,
+    ).exists()
+    if not still_pending and conversation.status == InstagramConversation.STATUS_AWAITING_HUMAN:
+        conversation.status = InstagramConversation.STATUS_RESOLVED
+        conversation.save(update_fields=['status'])
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+def instagram_inbox(request):
+    """List this org's DM threads: awaiting-human first, then open, then resolved."""
+    org = get_organization(request)
+    status_rank = Case(
+        When(status=InstagramConversation.STATUS_AWAITING_HUMAN, then=Value(0)),
+        When(status=InstagramConversation.STATUS_OPEN, then=Value(1)),
+        default=Value(2),
+        output_field=IntegerField(),
+    )
+    last_message = InstagramMessage.objects.filter(
+        conversation=OuterRef('pk'),
+    ).order_by('-created_at')
+    conversations = (
+        InstagramConversation.objects.filter(organization=org)
+        .annotate(
+            pending_count=Count(
+                'messages',
+                filter=Q(
+                    messages__direction=InstagramMessage.DIRECTION_OUTBOUND,
+                    messages__status=InstagramMessage.STATUS_PENDING_REVIEW,
+                ),
+            ),
+            last_preview=Subquery(last_message.values('content')[:1]),
+            _status_rank=status_rank,
+        )
+        .order_by('_status_rank', '-last_message_at')
+    )
+    return render(request, 'tickets/instagram_inbox.html', {
+        'conversations': conversations,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+def instagram_conversation_detail(request, conversation_id):
+    """Show one DM thread with the pending draft (if any) ready to approve/edit."""
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    all_messages = list(conversation.messages.all())  # ordered by created_at
+    pending_draft = next(
+        (m for m in reversed(all_messages)
+         if m.direction == InstagramMessage.DIRECTION_OUTBOUND
+         and m.status == InstagramMessage.STATUS_PENDING_REVIEW),
+        None,
+    )
+    # The timeline shows only what actually reached (or came from) the customer.
+    # Un-sent drafts — pending_review (shown in the editor below) and discarded —
+    # never went out, so they'd be misleading rendered as sent bubbles.
+    hidden_inline = {
+        InstagramMessage.STATUS_PENDING_REVIEW,
+        InstagramMessage.STATUS_DISCARDED,
+    }
+    thread_messages = [
+        m for m in all_messages
+        if not (m.direction == InstagramMessage.DIRECTION_OUTBOUND
+                and m.status in hidden_inline)
+    ]
+    return render(request, 'tickets/instagram_conversation_detail.html', {
+        'conversation': conversation,
+        'thread_messages': thread_messages,
+        'pending_draft': pending_draft,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_draft_approve(request, conversation_id, message_id):
+    """Approve (optionally edited) or discard a queued draft."""
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    draft = get_object_or_404(
+        InstagramMessage.objects.filter(
+            conversation=conversation,
+            direction=InstagramMessage.DIRECTION_OUTBOUND,
+            status=InstagramMessage.STATUS_PENDING_REVIEW,
+        ),
+        id=message_id,
+    )
+
+    draft.reviewed_by = request.user
+    draft.reviewed_at = timezone.now()
+
+    if request.POST.get('action') == 'discard':
+        draft.status = InstagramMessage.STATUS_DISCARDED
+        draft.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+        messages.success(request, 'Draft discarded.')
+        _maybe_resolve(conversation)
+        return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+    edited = request.POST.get('content', '').strip()
+    if edited:
+        draft.content = edited
+
+    send = get_sender(org).send_text(conversation.ig_user_id, draft.content)
+    if send.ok:
+        draft.status = InstagramMessage.STATUS_APPROVED_SENT
+        draft.provider_message_id = send.provider_message_id or draft.provider_message_id
+        draft.save()
+        messages.success(request, 'Reply sent.')
+        _maybe_resolve(conversation)
+    else:
+        # D-note: a real sender surfaces a 24h-window / transport rejection here.
+        # Keep the conversation awaiting_human so the organizer can retry — don't resolve.
+        draft.status = InstagramMessage.STATUS_FAILED
+        draft.escalation_reason = (send.error or draft.escalation_reason)[:300]
+        draft.save()
+        messages.error(request, f'Send failed: {send.error}')
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_message_send(request, conversation_id):
+    """Send a free-form human reply; the human has taken over the thread."""
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    text = request.POST.get('content', '').strip()
+    if not text:
+        messages.error(request, 'Reply cannot be empty.')
+        return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+    reply = InstagramMessage(
+        conversation=conversation,
+        direction=InstagramMessage.DIRECTION_OUTBOUND,
+        author=InstagramMessage.AUTHOR_HUMAN,
+        content=text,
+        reviewed_by=request.user,
+        reviewed_at=timezone.now(),
+    )
+    send = get_sender(org).send_text(conversation.ig_user_id, text)
+    update_fields = ['last_message_at']
+    if send.ok:
+        reply.status = InstagramMessage.STATUS_APPROVED_SENT
+        reply.provider_message_id = send.provider_message_id or ''
+        reply.save()
+        # Human has answered: supersede any still-pending AI drafts and resolve.
+        conversation.messages.filter(
+            direction=InstagramMessage.DIRECTION_OUTBOUND,
+            status=InstagramMessage.STATUS_PENDING_REVIEW,
+        ).update(
+            status=InstagramMessage.STATUS_DISCARDED,
+            reviewed_by=request.user, reviewed_at=timezone.now(),
+        )
+        conversation.status = InstagramConversation.STATUS_RESOLVED
+        update_fields.append('status')
+        messages.success(request, 'Reply sent.')
+    else:
+        reply.status = InstagramMessage.STATUS_FAILED
+        reply.escalation_reason = (send.error or '')[:300]
+        reply.save()
+        messages.error(request, f'Send failed: {send.error}')
+    conversation.last_message_at = timezone.now()
+    conversation.save(update_fields=update_fields)
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)

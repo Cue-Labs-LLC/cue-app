@@ -1,0 +1,67 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Instagram Inbox{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Instagram Inbox</h1>
+        <p class="page-header-subtitle">
+            DMs the support agent escalated for a human. Threads awaiting a reply are listed first.
+        </p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:instagram_faq_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-question-circle"></i> FAQs
+        </a>
+    </div>
+</div>
+
+{% if conversations %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>From</th>
+                        <th>Last message</th>
+                        <th>Status</th>
+                        <th class="text-end">Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for conv in conversations %}
+                    <tr onclick="window.location='{% url 'tickets:instagram_conversation_detail' conv.id %}'" style="cursor: pointer;">
+                        <td>
+                            <i class="bi bi-instagram me-1 text-muted"></i>
+                            {{ conv.ig_username|default:conv.ig_user_id }}
+                        </td>
+                        <td class="text-muted">{{ conv.last_preview|default:''|truncatechars:70 }}</td>
+                        <td>
+                            {% if conv.status == 'awaiting_human' %}
+                                <span class="badge bg-warning text-dark">
+                                    Needs reply{% if conv.pending_count %} · {{ conv.pending_count }}{% endif %}
+                                </span>
+                            {% elif conv.status == 'resolved' %}
+                                <span class="badge bg-success">Resolved</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Open</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-muted">{{ conv.last_message_at|date:"M j, g:i a" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-instagram d-block"></i>
+    <p>No conversations yet. When the support agent escalates a DM, it shows up here for review.</p>
+    <a href="{% url 'tickets:instagram_faq_list' %}" class="btn btn-primary">Manage FAQs</a>
+</div>
+{% endif %}
+{% endblock %}

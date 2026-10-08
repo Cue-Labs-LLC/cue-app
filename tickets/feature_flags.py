@@ -37,6 +37,13 @@ def external_events_enabled(organization):
     return bool(organization.external_events_enabled)
 
 
+def instagram_feature_enabled(organization):
+    """Return True if the org can see/use the Instagram DM agent UX (rollout gate)."""
+    if organization is None:
+        return False
+    return bool(organization.instagram_feature_enabled)
+
+
 def browse_events_enabled():
     """Return True to make the public Browse Events page accessible."""
     return _global_feature_flags().browse_events_enabled

@@ -1,0 +1,106 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Instagram — {{ conversation.ig_username|default:conversation.ig_user_id }}{% endblock %}
+
+{% block extra_head %}
+<style>
+  .dm-thread { max-width: 760px; margin: 0 auto; }
+  .dm-row { display: flex; margin-bottom: 10px; }
+  .dm-row.out { justify-content: flex-end; }
+  .dm-bubble { max-width: 75%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; }
+  .dm-row.in  .dm-bubble { background: var(--surface-2, #f1f3f5); color: var(--text, #212529); border-bottom-left-radius: 4px; }
+  .dm-row.out .dm-bubble { background: var(--accent, #0d6efd); color: #fff; border-bottom-right-radius: 4px; }
+  .dm-row.out.human .dm-bubble { background: #198754; }
+  .dm-row.out.failed .dm-bubble { background: #dc3545; }
+  .dm-meta { font-size: 11px; opacity: .7; margin-top: 3px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dm-thread">
+<div class="page-header">
+    <div>
+        <h1 class="h3 mb-0">
+            <i class="bi bi-instagram me-1"></i>
+            {{ conversation.ig_username|default:conversation.ig_user_id }}
+        </h1>
+        <p class="page-header-subtitle mb-0">
+            {% if conversation.status == 'awaiting_human' %}
+                <span class="badge bg-warning text-dark">Needs reply</span>
+            {% elif conversation.status == 'resolved' %}
+                <span class="badge bg-success">Resolved</span>
+            {% else %}
+                <span class="badge bg-secondary">Open</span>
+            {% endif %}
+        </p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:instagram_inbox' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Inbox
+        </a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        {% for m in thread_messages %}
+        <div class="dm-row {% if m.direction == 'outbound' %}out{% if m.author == 'human' %} human{% endif %}{% if m.status == 'failed' %} failed{% endif %}{% else %}in{% endif %}">
+            <div>
+                <div class="dm-bubble">{{ m.content }}</div>
+                <div class="dm-meta">
+                    {% if m.direction == 'outbound' %}
+                        {% if m.author == 'human' %}You{% elif m.author == 'system' %}Auto-reply{% else %}Agent{% endif %} ·
+                        {{ m.get_status_display }}
+                    {% else %}
+                        {{ conversation.ig_username|default:conversation.ig_user_id }}
+                    {% endif %}
+                    · {{ m.created_at|date:"M j, g:i a" }}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% if pending_draft %}
+<div class="card mb-3">
+    <div class="card-body">
+        <h2 class="h6">
+            Agent draft
+            {% if pending_draft.escalation_category %}
+                <span class="badge bg-light text-dark ms-1">{{ pending_draft.escalation_category }}</span>
+            {% endif %}
+        </h2>
+        {% if pending_draft.escalation_reason %}
+            <p class="text-muted small mb-2">{{ pending_draft.escalation_reason }}</p>
+        {% endif %}
+        <form method="post" action="{% url 'tickets:instagram_draft_approve' conversation.id pending_draft.id %}">
+            {% csrf_token %}
+            <textarea name="content" class="form-control mb-2" rows="3">{{ pending_draft.content }}</textarea>
+            <div class="d-flex gap-2">
+                <button type="submit" name="action" value="approve" class="btn btn-primary">
+                    <i class="bi bi-send"></i> Approve &amp; send
+                </button>
+                <button type="submit" name="action" value="discard" class="btn btn-outline-danger">
+                    Discard
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-body">
+        <h2 class="h6">Reply as yourself</h2>
+        <form method="post" action="{% url 'tickets:instagram_message_send' conversation.id %}">
+            {% csrf_token %}
+            <textarea name="content" class="form-control mb-2" rows="3" placeholder="Type a reply…"></textarea>
+            <button type="submit" class="btn btn-success">
+                <i class="bi bi-send"></i> Send reply
+            </button>
+        </form>
+    </div>
+</div>
+</div>
+{% endblock %}

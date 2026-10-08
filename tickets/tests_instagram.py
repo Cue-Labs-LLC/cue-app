@@ -245,7 +245,9 @@ class _FAQViewTestBase(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='FAQ View Org', slug='faq-view-org')
+        self.org = Organization.objects.create(
+            name='FAQ View Org', slug='faq-view-org', instagram_feature_enabled=True,
+        )
         self.other_org = Organization.objects.create(name='Other FAQ Org', slug='other-faq-org')
 
         self.admin_user = User.objects.create_user(
@@ -1044,21 +1046,22 @@ class IGOrchestrationTaskTests(TestCase):
         self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
         self.assertTrue(out.provider_message_id)
 
-    def test_sensitive_queues_and_flags_conversation(self):
+    def test_sensitive_escalates_and_flags_conversation_without_draft(self):
         self._patch_pipeline(escalate=True, category='refund_dispute')
         self._run(text='I need a refund')
         conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
         self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
-        out = InstagramMessage.objects.get(conversation=conv,
-                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
-        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
-        self.assertEqual(out.escalation_category, 'refund_dispute')
+        # A true escalation produces no agent draft — the handoff reply isn't useful.
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT).exists())
 
     def test_ungrounded_answer_queued(self):
         self._patch_pipeline(tools=())  # no tool hit -> not grounded -> D14 queue
         self._run()
         out = InstagramMessage.objects.get(conversation__organization=self.org,
-                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND,
+                                           author=InstagramMessage.AUTHOR_AGENT)
         self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
 
     def test_agent_disabled_no_op(self):
@@ -1127,10 +1130,11 @@ class IGOrchestrationTaskTests(TestCase):
         )
         self._patch_pipeline()
         self._run(mid='capped')
-        out = InstagramMessage.objects.filter(
+        out = InstagramMessage.objects.get(
             conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
-        ).exclude(provider_message_id='prev').get()
-        self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
+            status=InstagramMessage.STATUS_PENDING_REVIEW,
+        )
+        self.assertEqual(out.author, InstagramMessage.AUTHOR_AGENT)
 
     @override_settings(IG_AGENT_DAILY_ANSWER_CAP=2)
     def test_just_under_daily_cap_auto_sends(self):
@@ -1159,7 +1163,8 @@ class IGOrchestrationTaskTests(TestCase):
         self._patch_pipeline()
         self._run(mid='older')  # task's inbound is created "now", older than `newer`
         out = InstagramMessage.objects.get(conversation=conv,
-                                           direction=InstagramMessage.DIRECTION_OUTBOUND)
+                                           direction=InstagramMessage.DIRECTION_OUTBOUND,
+                                           author=InstagramMessage.AUTHOR_AGENT)
         self.assertEqual(out.status, InstagramMessage.STATUS_PENDING_REVIEW)
 
     def test_send_failure_marks_failed_not_awaiting(self):
@@ -1201,9 +1206,482 @@ class IGSimulateCommandTests(TestCase):
                      '--text', 'when do doors open?', stdout=out)
         self.assertIn('auto_sent', out.getvalue())
 
-    def test_refund_pending_review(self):
+    def test_refund_escalates_without_draft(self):
         self._patch(escalate=True, category='refund_dispute')
         out = StringIO()
         call_command('simulate_instagram_dm', '--org', 'sim-org',
                      '--text', 'I need a refund', stdout=out)
-        self.assertIn('pending_review', out.getvalue())
+        output = out.getvalue()
+        self.assertIn('awaiting_human', output)
+        self.assertIn('escalated to a human', output)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — human-review inbox + escalation notifications
+# ---------------------------------------------------------------------------
+
+from django.core import mail  # noqa: E402
+
+
+@override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+class _InboxViewTestBase(_FAQViewTestBase):
+    """Reuses the FAQ base (admin + host + other_org) with IG thread helpers."""
+
+    def _conversation(self, organization=None, ig_user_id='cust-1',
+                      status=InstagramConversation.STATUS_AWAITING_HUMAN, **kwargs):
+        return InstagramConversation.objects.create(
+            organization=organization or self.org,
+            ig_user_id=ig_user_id, status=status, **kwargs,
+        )
+
+    def _draft(self, conv, content='Doors at 9pm!', category='routine'):
+        # save() copies organization from the conversation (tenancy invariant).
+        return InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT, content=content,
+            status=InstagramMessage.STATUS_PENDING_REVIEW, escalation_category=category,
+        )
+
+
+class InstagramFeatureFlagTests(_InboxViewTestBase):
+    def test_ux_404s_when_feature_off(self):
+        self.org.instagram_feature_enabled = False
+        self.org.save(update_fields=['instagram_feature_enabled'])
+        self._login_admin()
+        conv = self._conversation()
+        faq = self._faq()
+        for url in (
+            reverse('tickets:instagram_inbox'),
+            reverse('tickets:instagram_conversation_detail', args=[conv.id]),
+            reverse('tickets:instagram_faq_list'),
+            reverse('tickets:instagram_faq_edit', args=[faq.id]),
+        ):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+        self.assertEqual(
+            self.client.post(
+                reverse('tickets:instagram_agent_settings'),
+                {'escalation_ack_text': 'x'}).status_code,
+            404,
+        )
+
+    def test_ux_visible_when_feature_on(self):
+        self._login_admin()  # base sets instagram_feature_enabled=True
+        self.assertEqual(
+            self.client.get(reverse('tickets:instagram_inbox')).status_code, 200)
+        self.assertEqual(
+            self.client.get(reverse('tickets:instagram_faq_list')).status_code, 200)
+
+
+class InstagramRegistryGateTests(TestCase):
+    def test_card_hidden_when_feature_off(self):
+        from tickets.integrations.registry import integration_statuses
+        org = Organization.objects.create(name='Reg Off', slug='reg-off')
+        keys = {e['key'] for e in integration_statuses(org)}
+        self.assertNotIn('instagram', keys)
+
+    def test_card_shown_when_feature_on(self):
+        from tickets.integrations.registry import integration_statuses
+        org = Organization.objects.create(
+            name='Reg On', slug='reg-on', instagram_feature_enabled=True)
+        keys = {e['key'] for e in integration_statuses(org)}
+        self.assertIn('instagram', keys)
+
+
+class InboxAccessControlTests(_InboxViewTestBase):
+    def test_non_admin_forbidden(self):
+        self._login_host()
+        conv = self._conversation()
+        for url in (
+            reverse('tickets:instagram_inbox'),
+            reverse('tickets:instagram_conversation_detail', args=[conv.id]),
+        ):
+            self.assertEqual(self.client.get(url).status_code, 403, url)
+
+    def test_admin_can_open_inbox(self):
+        self._login_admin()
+        self.assertEqual(
+            self.client.get(reverse('tickets:instagram_inbox')).status_code, 200,
+        )
+
+
+class InboxOrgScopingTests(_InboxViewTestBase):
+    def test_only_own_orgs_conversations_listed(self):
+        self._login_admin()
+        mine = self._conversation(ig_user_id='mine')
+        theirs = self._conversation(organization=self.other_org, ig_user_id='theirs')
+        convs = list(self.client.get(
+            reverse('tickets:instagram_inbox')).context['conversations'])
+        self.assertIn(mine, convs)
+        self.assertNotIn(theirs, convs)
+
+    def test_cannot_open_other_orgs_conversation(self):
+        self._login_admin()
+        theirs = self._conversation(organization=self.other_org, ig_user_id='theirs')
+        self.assertEqual(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[theirs.id])
+            ).status_code,
+            404,
+        )
+
+
+class ConversationDetailThreadTests(_InboxViewTestBase):
+    def test_pending_draft_excluded_from_inline_thread(self):
+        # The un-sent draft belongs in the editor, not the sent-message timeline.
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        resp = self.client.get(
+            reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        self.assertNotIn(draft, resp.context['thread_messages'])
+        self.assertEqual(resp.context['pending_draft'], draft)
+
+    def test_sent_messages_shown_in_thread(self):
+        self._login_admin()
+        conv = self._conversation()
+        sent = InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT, content='Doors at 9pm.',
+            status=InstagramMessage.STATUS_AUTO_SENT, provider_message_id='x')
+        resp = self.client.get(
+            reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        self.assertIn(sent, resp.context['thread_messages'])
+
+
+class InboxDraftApproveTests(_InboxViewTestBase):
+    def test_approve_sends_and_marks_approved_then_resolves(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        resp = self.client.post(
+            reverse('tickets:instagram_draft_approve', args=[conv.id, draft.id]),
+        )
+        self.assertRedirects(
+            resp, reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        draft.refresh_from_db(); conv.refresh_from_db()
+        self.assertEqual(draft.status, InstagramMessage.STATUS_APPROVED_SENT)
+        self.assertEqual(draft.reviewed_by, self.admin_user)
+        self.assertIsNotNone(draft.reviewed_at)
+        self.assertTrue(draft.provider_message_id)  # stub sender returns an id
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+
+    def test_approve_with_edit_sends_edited_text(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv, content='original')
+        self.client.post(
+            reverse('tickets:instagram_draft_approve', args=[conv.id, draft.id]),
+            {'content': 'edited reply'},
+        )
+        draft.refresh_from_db()
+        self.assertEqual(draft.content, 'edited reply')
+        self.assertEqual(draft.status, InstagramMessage.STATUS_APPROVED_SENT)
+
+    def test_discard_marks_discarded_no_send(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        self.client.post(
+            reverse('tickets:instagram_draft_approve', args=[conv.id, draft.id]),
+            {'action': 'discard'},
+        )
+        draft.refresh_from_db(); conv.refresh_from_db()
+        self.assertEqual(draft.status, InstagramMessage.STATUS_DISCARDED)
+        self.assertEqual(draft.reviewed_by, self.admin_user)
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+
+    def test_send_failure_marks_failed_and_keeps_awaiting(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        failing = MagicMock()
+        failing.send_text.return_value = SendResult(ok=False, error='window closed')
+        with patch('tickets.integrations.instagram.get_sender', return_value=failing):
+            self.client.post(
+                reverse('tickets:instagram_draft_approve', args=[conv.id, draft.id]))
+        draft.refresh_from_db(); conv.refresh_from_db()
+        self.assertEqual(draft.status, InstagramMessage.STATUS_FAILED)
+        # Not silently resolved — the organizer can retry.
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+
+    def test_cannot_reapprove_already_sent_draft(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        draft.status = InstagramMessage.STATUS_APPROVED_SENT
+        draft.save(update_fields=['status'])
+        self.assertEqual(
+            self.client.post(
+                reverse('tickets:instagram_draft_approve', args=[conv.id, draft.id])
+            ).status_code,
+            404,
+        )
+
+
+class InboxHumanReplyTests(_InboxViewTestBase):
+    def test_human_reply_creates_outbound_sends_and_resolves(self):
+        self._login_admin()
+        conv = self._conversation()
+        draft = self._draft(conv)
+        self.client.post(
+            reverse('tickets:instagram_message_send', args=[conv.id]),
+            {'content': 'Hey, happy to help!'},
+        )
+        conv.refresh_from_db(); draft.refresh_from_db()
+        reply = InstagramMessage.objects.get(
+            conversation=conv, author=InstagramMessage.AUTHOR_HUMAN)
+        self.assertEqual(reply.direction, InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(reply.status, InstagramMessage.STATUS_APPROVED_SENT)
+        self.assertEqual(reply.reviewed_by, self.admin_user)
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        # The pending AI draft is superseded by the human taking over.
+        self.assertEqual(draft.status, InstagramMessage.STATUS_DISCARDED)
+
+    def test_empty_reply_rejected(self):
+        self._login_admin()
+        conv = self._conversation()
+        self.client.post(
+            reverse('tickets:instagram_message_send', args=[conv.id]),
+            {'content': '   '},
+        )
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_HUMAN).exists())
+
+
+@override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+class InboxEscalationNotifyTriggerTests(TestCase):
+    """The orchestration task notifies once, only on the awaiting_human transition (D2)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Notify Trigger Org', slug='notify-trigger-org',
+            instagram_business_account_id='acct-n',
+            instagram_support_agent_enabled=True,
+        )
+
+    def _normalized(self, text='I need a refund', mid='m1', sender='cust-1'):
+        return {'ig_account_id': 'acct-n', 'sender_id': sender, 'text': text,
+                'provider_message_id': mid, 'timestamp': 0}
+
+    def _patch_pipeline(self):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(
+            text='Let me check', tool_calls=['get_faq'])
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(
+                        should_escalate=True, confidence=0.9,
+                        category='refund_dispute', reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+
+    def test_enqueues_once_on_transition_not_on_followup(self):
+        from tickets.tasks import process_instagram_inbound_task
+        self._patch_pipeline()
+        with patch('tickets.tasks.notify_instagram_escalation_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                process_instagram_inbound_task.apply(
+                    args=[str(self.org.id), self._normalized(mid='a')])
+            # A second queued DM in the already-awaiting thread must not re-notify.
+            with self.captureOnCommitCallbacks(execute=True):
+                process_instagram_inbound_task.apply(
+                    args=[str(self.org.id),
+                          self._normalized(mid='b', text='still waiting')])
+        self.assertEqual(delay.call_count, 1)
+
+
+@override_settings(INSTAGRAM_SENDER_BACKEND='stub', SITE_URL='https://cue.test')
+class InboxEscalationNotifyTaskTests(TestCase):
+    """notify_instagram_escalation_task emails + pushes only org admins (D1)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Notify Org', slug='notify-org')
+        self.owner = User.objects.create_user('owner1', 'owner@example.com', 'pw')
+        OrganizationMembership.objects.create(
+            user=self.owner, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER)
+        self.host = User.objects.create_user('host1', 'host@example.com', 'pw')
+        OrganizationMembership.objects.create(
+            user=self.host, organization=self.org,
+            org_role=UserProfile.OrgRole.HOST)
+        self.conv = InstagramConversation.objects.create(
+            organization=self.org, ig_user_id='cust-1',
+            status=InstagramConversation.STATUS_AWAITING_HUMAN)
+        InstagramMessage.objects.create(
+            conversation=self.conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='I need a refund',
+            status=InstagramMessage.STATUS_RECEIVED)
+        InstagramMessage.objects.create(
+            conversation=self.conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT, content='draft',
+            status=InstagramMessage.STATUS_PENDING_REVIEW,
+            escalation_category='refund_dispute')
+
+    def test_emails_admins_only_and_pushes_admin_ids(self):
+        from tickets.tasks import notify_instagram_escalation_task
+        with patch(
+            'tickets.services.push_notifications.dispatch.dispatch_to_users'
+        ) as push:
+            notify_instagram_escalation_task.apply(args=[str(self.conv.id)])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['owner@example.com'])  # host excluded
+        push.assert_called_once()
+        pushed_user_ids = push.call_args.args[1]
+        self.assertIn(self.owner.id, pushed_user_ids)
+        self.assertNotIn(self.host.id, pushed_user_ids)
+
+    def test_no_admins_no_email(self):
+        from tickets.tasks import notify_instagram_escalation_task
+        OrganizationMembership.objects.filter(organization=self.org).delete()
+        notify_instagram_escalation_task.apply(args=[str(self.conv.id)])
+        self.assertEqual(len(mail.outbox), 0)
+
+
+@override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+class IGEscalationAckTests(TestCase):
+    """On escalation the customer gets an immediate, org-editable acknowledgement."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Ack Org', slug='ack-org',
+            instagram_business_account_id='acct-ack',
+            instagram_support_agent_enabled=True,
+        )
+
+    def _normalized(self, text='I need a refund', mid='m1', sender='cust-1'):
+        return {'ig_account_id': 'acct-ack', 'sender_id': sender, 'text': text,
+                'provider_message_id': mid, 'timestamp': 0}
+
+    def _run(self, **kw):
+        from tickets.tasks import process_instagram_inbound_task
+        process_instagram_inbound_task.apply(args=[str(self.org.id), self._normalized(**kw)])
+
+    def _patch_escalate(self):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(text='draft', tool_calls=['get_faq'])
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=True, confidence=0.9,
+                                                    category='refund_dispute', reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+
+    def test_escalation_sends_ack_and_no_agent_draft(self):
+        self._patch_escalate()
+        self._run()
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        # No agent draft on a true escalation — the human writes the real reply.
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
+            direction=InstagramMessage.DIRECTION_OUTBOUND).exists())
+        # But the customer still got an immediate acknowledgement.
+        ack = InstagramMessage.objects.get(
+            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM)
+        self.assertEqual(ack.status, InstagramMessage.STATUS_AUTO_SENT)
+        self.assertEqual(ack.content, self.org.instagram_escalation_ack_text)
+        self.assertTrue(ack.provider_message_id)  # actually sent via the stub
+
+    def test_guardrail_queue_keeps_draft_without_ack(self):
+        # A routine answer that couldn't auto-send (here: ungrounded, no tool hit) is
+        # queued for approval — keep the draft and flag the thread, but DON'T ack the
+        # customer: the human just approves the AI answer, no follow-up is promised.
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(text='Doors at 9pm', tool_calls=[])
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=False, confidence=0.95,
+                                                    category='routine', reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+        self._run()
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+        self.assertTrue(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
+            status=InstagramMessage.STATUS_PENDING_REVIEW).exists())
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).exists())
+
+    def test_blank_ack_text_sends_nothing(self):
+        self.org.instagram_escalation_ack_text = ''
+        self.org.save(update_fields=['instagram_escalation_ack_text'])
+        self._patch_escalate()
+        self._run()
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).exists())
+
+    def test_ack_sent_once_per_transition(self):
+        self._patch_escalate()
+        self._run(mid='a')
+        self._run(mid='b', text='still waiting')
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(InstagramMessage.objects.filter(
+            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).count(), 1)
+
+    def test_no_new_draft_while_awaiting_human(self):
+        # First DM escalates -> awaiting_human (+ ack). A follow-up on the now
+        # human-owned thread is recorded but the agent must not draft over the human.
+        self._patch_escalate()
+        self._run(mid='first')
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        agent_drafts_before = InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT).count()
+        self._run(mid='second', text='okay')
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+        # Inbound recorded so the human sees it...
+        self.assertTrue(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            content='okay').exists())
+        # ...but no new agent draft was produced.
+        self.assertEqual(
+            InstagramMessage.objects.filter(
+                conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+                author=InstagramMessage.AUTHOR_AGENT).count(),
+            agent_drafts_before,
+        )
+
+    @override_settings(IG_AGENT_DAILY_ANSWER_CAP=1)
+    def test_ack_does_not_count_against_daily_cap(self):
+        # A prior automated ack must not consume the auto-answer budget.
+        conv = InstagramConversation.objects.create(
+            organization=self.org, ig_user_id='cust-2')
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_SYSTEM, content='ack',
+            status=InstagramMessage.STATUS_AUTO_SENT, provider_message_id='ackprev')
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(
+            text='Doors at 9pm', tool_calls=['get_faq'])
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=False, confidence=0.95,
+                                                    category='routine', reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+        self._run(sender='cust-2', mid='routine-1', text='when do doors open?')
+        answer = InstagramMessage.objects.get(
+            conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
+            direction=InstagramMessage.DIRECTION_OUTBOUND)
+        self.assertEqual(answer.status, InstagramMessage.STATUS_AUTO_SENT)
+
+
+class InstagramAgentSettingsViewTests(_FAQViewTestBase):
+    def test_admin_can_update_ack_text(self):
+        self._login_admin()
+        resp = self.client.post(
+            reverse('tickets:instagram_agent_settings'),
+            {'escalation_ack_text': 'We will get back to you soon!'})
+        self.assertRedirects(resp, reverse('tickets:instagram_faq_list'))
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.instagram_escalation_ack_text, 'We will get back to you soon!')
+
+    def test_non_admin_forbidden(self):
+        self._login_host()
+        self.assertEqual(
+            self.client.post(
+                reverse('tickets:instagram_agent_settings'),
+                {'escalation_ack_text': 'x'}).status_code,
+            403,
+        )
+        self.org.refresh_from_db()
+        self.assertNotEqual(self.org.instagram_escalation_ack_text, 'x')
