@@ -13,6 +13,8 @@
   .dm-row.out.human .dm-bubble { background: #198754; }
   .dm-row.out.failed .dm-bubble { background: #dc3545; }
   .dm-meta { font-size: 11px; opacity: .7; margin-top: 3px; }
+  /* Keep the thread inside its own scroll area so the header + reply box stay put. */
+  .dm-scroll { max-height: 60vh; overflow-y: auto; }
 </style>
 {% endblock %}
 
@@ -55,7 +57,7 @@
 </div>
 
 <div class="card mb-3">
-    <div class="card-body">
+    <div class="card-body dm-scroll" id="dm-scroll">
         {% for m in thread_messages %}
         <div class="dm-row {% if m.direction == 'outbound' %}out{% if m.author == 'human' %} human{% endif %}{% if m.status == 'failed' %} failed{% endif %}{% else %}in{% endif %}">
             <div>
@@ -131,4 +133,14 @@
     </div>
 </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  // Start the thread scrolled to the newest message (chat convention).
+  document.addEventListener('DOMContentLoaded', function () {
+    var el = document.getElementById('dm-scroll');
+    if (el) { el.scrollTop = el.scrollHeight; }
+  });
+</script>
 {% endblock %}
