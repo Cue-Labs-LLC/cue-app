@@ -51,10 +51,16 @@ class InstagramSupportAgentService:
         from langchain_openai import ChatOpenAI
         from langgraph.prebuilt import create_react_agent
 
+        # Non-zero temperature (default 0.3, settings.IG_AGENT_ANSWER_TEMPERATURE) because
+        # this agent writes customer-facing prose: a little variation keeps replies warm and
+        # natural instead of stiff and templated. It stays low so the agent remains grounded
+        # and on-instruction — the tool outputs, the D14 groundedness gate, and the temp-0
+        # classifier are what catch bad drafts. (The classifier, a decision not prose, is
+        # deterministic at 0.) Tunable per-env; see the setting's comment for the trade-off.
         llm = ChatOpenAI(
             model=getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
             api_key=getattr(settings, 'OPENAI_API_KEY', ''),
-            temperature=0.3,
+            temperature=getattr(settings, 'IG_AGENT_ANSWER_TEMPERATURE', 0.3),
             stream_usage=True,
         )
         return create_react_agent(llm, build_ig_tools(self.organization))
