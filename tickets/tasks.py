@@ -1539,12 +1539,15 @@ def process_instagram_inbound_task(self, organization_id, normalized):
     ).exists():
         return
 
-    # Human handoff: once a thread is escalated (awaiting_human), a person owns it until
-    # they resolve it. Record the inbound so they see it, but don't let the agent draft or
-    # auto-send over them — re-engaging here (e.g. a cheery "anything else?" on a
-    # customer's "okay") would talk past an unresolved issue. The agent resumes once the
-    # thread is resolved.
-    if conversation.status == InstagramConversation.STATUS_AWAITING_HUMAN:
+    # Human handoff: once a thread is escalated (awaiting_human) or a human has taken it
+    # over (human_handling), a person owns it until they explicitly hand it back. Record
+    # the inbound so they see it, but don't let the agent draft or auto-send over them —
+    # re-engaging here (e.g. a cheery "anything else?" on a customer's "okay") would talk
+    # past the human. The agent resumes only once the thread is resolved (handed back).
+    if conversation.status in (
+        InstagramConversation.STATUS_AWAITING_HUMAN,
+        InstagramConversation.STATUS_HUMAN_HANDLING,
+    ):
         return
 
     try:

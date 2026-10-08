@@ -43,6 +43,8 @@
                                 <span class="badge bg-warning text-dark">
                                     Needs reply{% if conv.pending_count %} · {{ conv.pending_count }}{% endif %}
                                 </span>
+                            {% elif conv.status == 'human_handling' %}
+                                <span class="badge bg-info text-dark">With human</span>
                             {% elif conv.status == 'resolved' %}
                                 <span class="badge bg-success">Resolved</span>
                             {% else %}

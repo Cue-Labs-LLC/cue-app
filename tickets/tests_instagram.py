@@ -1183,6 +1183,38 @@ class IGOrchestrationTaskTests(TestCase):
             author=InstagramMessage.AUTHOR_AGENT).exists())
         delay.assert_called_once()
 
+    def test_agent_stays_out_during_human_handling(self):
+        # A human has taken the thread over (human_handling). A new customer message must
+        # be recorded but the agent must NOT draft or auto-send over the human.
+        conv = InstagramConversation.objects.create(
+            organization=self.org, ig_user_id='cust-1',
+            status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self._patch_pipeline()  # would auto-send if the gate let it through
+        self._run(text='one more thing…')
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_HUMAN_HANDLING)
+        # Inbound recorded so the human sees it...
+        self.assertTrue(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            content='one more thing…').exists())
+        # ...but the agent produced no outbound at all.
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT).exists())
+
+    def test_resolved_conversation_lets_agent_reply(self):
+        # After a hand-back (status resolved) the agent resumes on the next message.
+        InstagramConversation.objects.create(
+            organization=self.org, ig_user_id='cust-1',
+            status=InstagramConversation.STATUS_RESOLVED)
+        self._patch_pipeline()
+        self._run(text='when do doors open?')
+        out = InstagramMessage.objects.get(
+            conversation__organization=self.org,
+            direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT)
+        self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
+
     def test_ungrounded_answer_queued(self):
         self._patch_pipeline(tools=())  # no tool hit -> not grounded -> D14 queue
         self._run()
@@ -1546,7 +1578,7 @@ class InboxDraftApproveTests(_InboxViewTestBase):
 
 
 class InboxHumanReplyTests(_InboxViewTestBase):
-    def test_human_reply_creates_outbound_sends_and_resolves(self):
+    def test_human_reply_sends_and_marks_human_handling(self):
         self._login_admin()
         conv = self._conversation()
         draft = self._draft(conv)
@@ -1560,7 +1592,10 @@ class InboxHumanReplyTests(_InboxViewTestBase):
         self.assertEqual(reply.direction, InstagramMessage.DIRECTION_OUTBOUND)
         self.assertEqual(reply.status, InstagramMessage.STATUS_APPROVED_SENT)
         self.assertEqual(reply.reviewed_by, self.admin_user)
-        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        # The thread is now human-owned (agent paused) and assigned to the replier —
+        # it does NOT resolve, so the agent won't jump back in on the next message.
+        self.assertEqual(conv.status, InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(conv.assigned_to, self.admin_user)
         # The pending AI draft is superseded by the human taking over.
         self.assertEqual(draft.status, InstagramMessage.STATUS_DISCARDED)
 
@@ -1573,6 +1608,97 @@ class InboxHumanReplyTests(_InboxViewTestBase):
         )
         self.assertFalse(InstagramMessage.objects.filter(
             conversation=conv, author=InstagramMessage.AUTHOR_HUMAN).exists())
+
+
+class InboxHandbackTests(_InboxViewTestBase):
+    """Explicit 'hand back to agent' control on a human-owned thread."""
+
+    def _human_owned(self):
+        return self._conversation(
+            status=InstagramConversation.STATUS_HUMAN_HANDLING,
+            assigned_to=self.admin_user,
+        )
+
+    def test_handback_resumes_agent(self):
+        self._login_admin()
+        conv = self._human_owned()
+        resp = self.client.post(
+            reverse('tickets:instagram_conversation_handback', args=[conv.id]))
+        self.assertRedirects(
+            resp, reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        conv.refresh_from_db()
+        # Resolved re-enables the agent; ownership is cleared.
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        self.assertIsNone(conv.assigned_to)
+
+    def test_handback_requires_post(self):
+        self._login_admin()
+        conv = self._human_owned()
+        self.assertEqual(
+            self.client.get(
+                reverse('tickets:instagram_conversation_handback', args=[conv.id])
+            ).status_code,
+            405,
+        )
+
+    def test_handback_non_admin_forbidden(self):
+        self._login_host()
+        conv = self._human_owned()
+        self.assertEqual(
+            self.client.post(
+                reverse('tickets:instagram_conversation_handback', args=[conv.id])
+            ).status_code,
+            403,
+        )
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_HUMAN_HANDLING)
+
+    def test_handback_other_org_404(self):
+        self._login_admin()
+        theirs = self._conversation(
+            organization=self.other_org, ig_user_id='theirs',
+            status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(
+            self.client.post(
+                reverse('tickets:instagram_conversation_handback', args=[theirs.id])
+            ).status_code,
+            404,
+        )
+
+    def test_inbox_ranks_human_handling_between_awaiting_and_open(self):
+        self._login_admin()
+        from django.utils import timezone
+        now = timezone.now()
+        # Equal last_message_at so ordering is driven purely by status rank.
+        awaiting = self._conversation(
+            ig_user_id='a', status=InstagramConversation.STATUS_AWAITING_HUMAN,
+            last_message_at=now)
+        human = self._conversation(
+            ig_user_id='h', status=InstagramConversation.STATUS_HUMAN_HANDLING,
+            last_message_at=now)
+        opened = self._conversation(
+            ig_user_id='o', status=InstagramConversation.STATUS_OPEN, last_message_at=now)
+        resolved = self._conversation(
+            ig_user_id='r', status=InstagramConversation.STATUS_RESOLVED,
+            last_message_at=now)
+        order = list(self.client.get(
+            reverse('tickets:instagram_inbox')).context['conversations'])
+        self.assertEqual(order, [awaiting, human, opened, resolved])
+
+    def test_detail_shows_handback_button_only_when_human_owned(self):
+        self._login_admin()
+        human = self._human_owned()
+        handback_url = reverse('tickets:instagram_conversation_handback', args=[human.id])
+        self.assertContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[human.id])),
+            handback_url)
+        # Not shown on an awaiting-human thread (human hasn't taken over yet).
+        awaiting = self._conversation(ig_user_id='aw2')
+        self.assertNotContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[awaiting.id])),
+            reverse('tickets:instagram_conversation_handback', args=[awaiting.id]))
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')

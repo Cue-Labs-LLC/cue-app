@@ -3289,10 +3289,12 @@ class InstagramConversation(BaseModel):
 
     STATUS_OPEN = 'open'
     STATUS_AWAITING_HUMAN = 'awaiting_human'
+    STATUS_HUMAN_HANDLING = 'human_handling'
     STATUS_RESOLVED = 'resolved'
     STATUS_CHOICES = [
         (STATUS_OPEN, 'Open'),
         (STATUS_AWAITING_HUMAN, 'Awaiting human'),
+        (STATUS_HUMAN_HANDLING, 'With human'),
         (STATUS_RESOLVED, 'Resolved'),
     ]
 

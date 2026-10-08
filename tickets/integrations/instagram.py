@@ -285,12 +285,13 @@ def _maybe_resolve(conversation):
 @require_admin
 @require_instagram_feature
 def instagram_inbox(request):
-    """List this org's DM threads: awaiting-human first, then open, then resolved."""
+    """List this org's DM threads: awaiting-human first, then with-human, open, resolved."""
     org = get_organization(request)
     status_rank = Case(
         When(status=InstagramConversation.STATUS_AWAITING_HUMAN, then=Value(0)),
-        When(status=InstagramConversation.STATUS_OPEN, then=Value(1)),
-        default=Value(2),
+        When(status=InstagramConversation.STATUS_HUMAN_HANDLING, then=Value(1)),
+        When(status=InstagramConversation.STATUS_OPEN, then=Value(2)),
+        default=Value(3),
         output_field=IntegerField(),
     )
     last_message = InstagramMessage.objects.filter(
@@ -433,7 +434,9 @@ def instagram_message_send(request, conversation_id):
         reply.status = InstagramMessage.STATUS_APPROVED_SENT
         reply.provider_message_id = send.provider_message_id or ''
         reply.save()
-        # Human has answered: supersede any still-pending AI drafts and resolve.
+        # Human has taken over: supersede any still-pending AI drafts and keep the thread
+        # human-owned (agent paused) until someone explicitly hands it back. The agent does
+        # NOT resume on the next customer message — that's the whole point of the handoff.
         conversation.messages.filter(
             direction=InstagramMessage.DIRECTION_OUTBOUND,
             status=InstagramMessage.STATUS_PENDING_REVIEW,
@@ -441,8 +444,9 @@ def instagram_message_send(request, conversation_id):
             status=InstagramMessage.STATUS_DISCARDED,
             reviewed_by=request.user, reviewed_at=timezone.now(),
         )
-        conversation.status = InstagramConversation.STATUS_RESOLVED
-        update_fields.append('status')
+        conversation.status = InstagramConversation.STATUS_HUMAN_HANDLING
+        conversation.assigned_to = request.user
+        update_fields.extend(['status', 'assigned_to'])
         messages.success(request, 'Reply sent.')
     else:
         reply.status = InstagramMessage.STATUS_FAILED
@@ -451,4 +455,27 @@ def instagram_message_send(request, conversation_id):
         messages.error(request, f'Send failed: {send.error}')
     conversation.last_message_at = timezone.now()
     conversation.save(update_fields=update_fields)
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_conversation_handback(request, conversation_id):
+    """Hand a human-owned thread back to the AI agent.
+
+    Clears human ownership and resolves the thread so the inbound task's handoff gate
+    lets the agent answer future customer messages again. Any admin may hand back —
+    ``assigned_to`` is informational, not an ownership lock.
+    """
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    conversation.status = InstagramConversation.STATUS_RESOLVED
+    conversation.assigned_to = None
+    conversation.save(update_fields=['status', 'assigned_to'])
+    messages.success(request, 'Conversation handed back to the agent.')
     return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)

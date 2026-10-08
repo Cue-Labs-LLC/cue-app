@@ -27,6 +27,11 @@
         <p class="page-header-subtitle mb-0">
             {% if conversation.status == 'awaiting_human' %}
                 <span class="badge bg-warning text-dark">Needs reply</span>
+            {% elif conversation.status == 'human_handling' %}
+                <span class="badge bg-info text-dark">With human</span>
+                {% if conversation.assigned_to %}
+                    <span class="text-muted small ms-1">Handled by {{ conversation.assigned_to.get_full_name|default:conversation.assigned_to.username }}</span>
+                {% endif %}
             {% elif conversation.status == 'resolved' %}
                 <span class="badge bg-success">Resolved</span>
             {% else %}
@@ -35,6 +40,14 @@
         </p>
     </div>
     <div class="page-header-actions">
+        {% if conversation.status == 'human_handling' %}
+        <form method="post" action="{% url 'tickets:instagram_conversation_handback' conversation.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-primary">
+                <i class="bi bi-robot"></i> Hand back to agent
+            </button>
+        </form>
+        {% endif %}
         <a href="{% url 'tickets:instagram_inbox' %}" class="btn btn-outline-secondary">
             <i class="bi bi-arrow-left"></i> Inbox
         </a>
