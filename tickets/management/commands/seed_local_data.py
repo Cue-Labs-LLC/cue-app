@@ -437,6 +437,10 @@ class Command(BaseCommand):
             waitlist_feature_enabled=True,
             sms_marketing_enabled=True,
             loyalty_feature_enabled=True,
+            # Instagram DM agent: show the UX (feature gate) and run the agent at
+            # runtime so the seeded FAQs + simulate_instagram_dm work out of the box.
+            instagram_feature_enabled=True,
+            instagram_support_agent_enabled=True,
         )
         # Seed a prepaid SMS credit balance via the wallet service so the ledger
         # invariant holds (every balance change writes an SMSCreditTransaction).

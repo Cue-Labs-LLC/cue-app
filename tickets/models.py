@@ -259,9 +259,27 @@ class Organization(BaseModel):
     instagram_page_id = models.CharField(max_length=64, blank=True, default='')
     instagram_username = models.CharField(max_length=80, blank=True, default='')
     instagram_token_expires_at = models.DateTimeField(null=True, blank=True)
+    instagram_feature_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Master visibility gate for the Instagram DM agent UX (inbox, FAQ editor, '
+            'settings, integration card). Off by default so the feature can ship dark and '
+            'be turned on per org. Distinct from instagram_support_agent_enabled, which '
+            'controls whether the agent actually auto-answers at runtime.'
+        ),
+    )
     instagram_support_agent_enabled = models.BooleanField(
         default=False,
         help_text='When on, the Instagram DM support agent auto-answers routine FAQ DMs and queues the rest for review.',
+    )
+    instagram_escalation_ack_text = models.TextField(
+        blank=True,
+        default='Thanks for your message! A team member will follow up with you shortly.',
+        help_text=(
+            "Auto-sent to the customer the moment a DM is escalated to a human, so an "
+            "escalated thread isn't met with silence while it waits for a reply. "
+            "Leave blank to send no acknowledgement."
+        ),
     )
     mailchimp_access_token = models.CharField(max_length=512, blank=True, default='')
     mailchimp_dc = models.CharField(max_length=20, blank=True, default='')
@@ -3339,10 +3357,12 @@ class InstagramMessage(BaseModel):
     AUTHOR_CUSTOMER = 'customer'
     AUTHOR_AGENT = 'agent'
     AUTHOR_HUMAN = 'human'
+    AUTHOR_SYSTEM = 'system'
     AUTHOR_CHOICES = [
         (AUTHOR_CUSTOMER, 'Customer'),
         (AUTHOR_AGENT, 'AI agent'),
         (AUTHOR_HUMAN, 'Human'),
+        (AUTHOR_SYSTEM, 'Automated'),
     ]
 
     STATUS_RECEIVED = 'received'

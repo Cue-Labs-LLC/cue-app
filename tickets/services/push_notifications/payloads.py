@@ -26,3 +26,20 @@ TAP_TO_PAY_ENABLED = _alert(
     'Tap to Pay is ready',
     'You can now accept in-person payments at your events.',
 )
+
+
+def instagram_escalation_payload(category='', conversation_id=None):
+    """Push body for an Instagram DM escalated to human review.
+
+    Unlike the static constants above this carries per-conversation context: a
+    ``instagram_conversation_id`` custom key (sibling to ``aps``, where APNs custom
+    data lives) so the app can deep-link straight to the thread.
+    """
+    label = (category or 'message').replace('_', ' ')
+    payload = _alert(
+        'Instagram DM needs review',
+        f'A DM was flagged ({label}). Tap to review and reply.',
+    )
+    if conversation_id:
+        payload['instagram_conversation_id'] = str(conversation_id)
+    return payload

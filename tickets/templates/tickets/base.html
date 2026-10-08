@@ -137,6 +137,13 @@
                             <i class="bi bi-chat-dots"></i> SMS
                         </a>
                     </li>
+                    {% if is_org_admin and instagram_feature_enabled %}
+                    <li>
+                        <a href="{% url 'tickets:instagram_inbox' %}" class="sidebar-link{% if '/inbox/instagram/' in request.path %} active{% endif %}">
+                            <i class="bi bi-inbox"></i> Inbox
+                        </a>
+                    </li>
+                    {% endif %}
                     <li>
                         <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path and '/analytics/surveys/' not in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
                             <i class="bi bi-bar-chart-line"></i> Analytics

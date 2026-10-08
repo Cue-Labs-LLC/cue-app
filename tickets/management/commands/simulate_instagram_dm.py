@@ -55,18 +55,35 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("No conversation created (task no-op?)."))
             return
 
+        # The agent's own answer/draft (the automated escalation ack, author=system, is
+        # reported separately below so it doesn't masquerade as the reply).
         outbound = (
             InstagramMessage.objects
-            .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND)
+            .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+                    author=InstagramMessage.AUTHOR_AGENT)
             .order_by('-created_at')
             .first()
         )
         self.stdout.write(self.style.MIGRATE_HEADING(f"Q: {options['text']}"))
         self.stdout.write(f"conversation: {conv.status}")
         if outbound is None:
-            self.stdout.write(self.style.WARNING("No reply produced."))
-            return
-        self.stdout.write(f"reply status: {outbound.status}")
-        self.stdout.write(f"category:     {outbound.escalation_category or '-'} "
-                          f"(confidence {outbound.confidence})")
-        self.stdout.write(f"reply:        {outbound.content}")
+            # A true escalation produces no agent draft — the human writes the reply.
+            if conv.status == InstagramConversation.STATUS_AWAITING_HUMAN:
+                self.stdout.write("escalated to a human — no agent draft")
+            else:
+                self.stdout.write(self.style.WARNING("No reply produced."))
+        else:
+            self.stdout.write(f"reply status: {outbound.status}")
+            self.stdout.write(f"category:     {outbound.escalation_category or '-'} "
+                              f"(confidence {outbound.confidence})")
+            self.stdout.write(f"reply:        {outbound.content}")
+
+        ack = (
+            InstagramMessage.objects
+            .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+                    author=InstagramMessage.AUTHOR_SYSTEM)
+            .order_by('-created_at')
+            .first()
+        )
+        if ack is not None:
+            self.stdout.write(f"auto-ack:     {ack.content}")

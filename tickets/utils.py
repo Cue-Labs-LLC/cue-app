@@ -247,6 +247,26 @@ def require_owner(view_func):
     return _org_role_required(lambda p: p.is_org_owner)(view_func)
 
 
+def org_admin_users(organization):
+    """Users with an OWNER/ADMIN membership in ``organization``.
+
+    The canonical multi-org admin query (matches ``UserProfile.is_org_admin`` and the
+    context processor). Used to pick notification recipients for admin-facing events
+    like an Instagram DM escalation.
+    """
+    from django.contrib.auth.models import User
+    from .models import UserProfile
+
+    if organization is None:
+        return User.objects.none()
+    return User.objects.filter(
+        org_memberships__organization=organization,
+        org_memberships__org_role__in=[
+            UserProfile.OrgRole.OWNER, UserProfile.OrgRole.ADMIN,
+        ],
+    ).distinct()
+
+
 def next_order_number():
     """Return the next globally-unique sequential order number string. Call inside a transaction."""
     from .models import OrderCounter
