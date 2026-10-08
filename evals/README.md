@@ -20,13 +20,14 @@ command (`eval_ig_agent`) so it reuses the real service code and the app databas
   and are unit-tested, so they're reproducible and CI-gating.
 - **Private-disclosure score** (`no_private_disclosure`) — a semantic check, since a
   substring blocklist false-positives on refusals that echo the term (e.g. "I can't share
-  lifetime value"). It uses an in-code LLM-judge (`judge_private_disclosure`), run only on
-  the adversarial rows (those with `forbid`). **TODO(Phase 6): migrate to a Langfuse managed
-  LLM-judge** in the UI so non-engineers can tune the rubric without a deploy; keep the
-  in-code judge as the headless/CI path.
-- **Subjective quality** — semantic `expected_answer` / tone grading is best added the same
-  way: a **Langfuse managed LLM-as-judge evaluator** configured in the UI against this
-  dataset (Phase 6).
+  lifetime value"). Configured as a **Langfuse managed LLM-judge** in the UI (non-engineers
+  tune the rubric without a deploy); the in-code judge (`judge_private_disclosure`, run only
+  on the adversarial rows with `forbid`) is retained as the headless/CI path. See
+  [`ig_support_agent/judges/`](ig_support_agent/judges/README.md).
+- **Answer-quality score** (`answer_quality`) — semantic `expected_answer` / tone grading,
+  likewise a **Langfuse managed LLM-judge** in the UI with an in-code counterpart
+  (`judge_answer_quality`) for CI. Scored only on rows carrying an `expected_answer`
+  reference. Same runbook: [`ig_support_agent/judges/`](ig_support_agent/judges/README.md).
 
 ## Setup
 
@@ -64,7 +65,7 @@ One JSON object per line, each wrapping an `item` (only `input` is required):
 | field | meaning | score |
 |-------|---------|-------|
 | `input` | the customer's DM | — |
-| `expected_answer` | reference answer | stored as `expected_output`; grade with a Langfuse LLM-judge |
+| `expected_answer` | reference answer | stored as `expected_output`; scored by the `answer_quality` judge |
 | `expected_tool` | `get_faq` / `list_upcoming_events` / `find_event` / `get_contact_info` | `tool_correct` |
 | `expected_category` | `""` (skip) / `routine` (must not escalate) / `refund_dispute`·`complaint`·`partnership`·`guest_list`·`safety`·`other` (must escalate with that category) | `escalation_correct` |
 | `forbid` | marks an adversarial row + lists example private data; triggers the LLM-judge | `no_private_disclosure` |
@@ -72,9 +73,15 @@ One JSON object per line, each wrapping an `item` (only `input` is required):
 Grow the suite by adding rows — the next run upserts them. Because the agent is grounded
 in the org's data, keep the corpus aligned with the seeded org's FAQs and events.
 
+## CI
+
+`.github/workflows/evals.yml` runs this eval on `workflow_dispatch` (manual trigger only for
+now; a nightly `schedule` can be added later) — never per-PR, since it makes live, metered
+calls. It seeds `familiar-faces` on a fresh DB, then runs `eval_ig_agent --org familiar-faces`.
+Needs `LANGFUSE_*` + `OPENAI_API_KEY` repo secrets. The agent is non-deterministic, so a run is
+a trend signal in Langfuse, not a hard gate.
+
 ## Roadmap
 
-- **Phase 6:** migrate the in-code `no_private_disclosure` judge to a Langfuse **managed**
-  LLM-judge in the UI, and add one for `expected_answer` quality + tone.
-- Nightly CI (`workflow_dispatch` + schedule) running `eval_ig_agent` and pushing runs.
-- SMS-plan evals as a second dataset/experiment (today: the standalone `eval_sms_plans`).
+- **SMS-plan evals** — migrate the standalone `eval_sms_plans` command onto Langfuse as a
+  second dataset/experiment (its own track; verify grader parity before retiring the runner).

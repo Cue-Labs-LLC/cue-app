@@ -162,7 +162,7 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 - [x] **P3** — Transport abstraction + StubSender + inbound + orchestration + webhook
 - [x] **P4** — Inbox UI + escalation notifications (email + push); + customer ack on escalation, no-draft-on-escalation, agent stays out of human-owned threads, `instagram_feature_enabled` rollout gate
 - [x] **P5** — Remove legacy KB
-- [ ] **P6** — Langfuse eval standardization (managed LLM-judge + CI; SMS plans; segments excluded). IG-agent harness itself shipped in P2.
+- [x] **P6** — Langfuse eval standardization: `answer_quality` + `no_private_disclosure` as managed LLM-judges in the Langfuse UI (runbook + committed rubrics in `evals/ig_support_agent/judges/`), in-code judges retained for CI, and `.github/workflows/evals.yml` (manual `workflow_dispatch`; nightly schedule deferred). SMS-plans migration stays a separate track (D1); `validate_segments` excluded.
 - [ ] **P7** — Meta OAuth + Graph sender (gated by App Review)
 
 ## 9. Review hardening (from /plan-eng-review, 2026-10-05)

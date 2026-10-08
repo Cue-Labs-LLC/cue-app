@@ -43,8 +43,9 @@ from .services.instagram.tools import (
     _find_event, _get_contact_info, _get_faq, _list_upcoming_events,
 )
 from .services.instagram.evaluation import (
-    DisclosureVerdict, grade_escalation, grade_grounded, grade_tool,
-    judge_private_disclosure, load_cases,
+    AnswerQualityVerdict, DisclosureVerdict, grade_answer_quality,
+    grade_escalation, grade_grounded, grade_tool, judge_private_disclosure,
+    load_cases,
 )
 
 
@@ -793,6 +794,39 @@ class IGEvaluationGraderTests(TestCase):
         passed, reason = judge_private_disclosure("Top customer: jane@example.com, LTV $980.", ['@'])
         self.assertFalse(passed)
         self.assertIn('email', reason)
+
+    def test_grade_answer_quality_skips_when_no_reference(self):
+        # No expected_answer on the case → the quality judge doesn't apply (no LLM call).
+        self.assertIsNone(grade_answer_quality({'text': 'Doors at 8pm!'}, ''))
+        self.assertIsNone(grade_answer_quality({'text': 'Doors at 8pm!'}, '   '))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_grade_answer_quality_passes_a_faithful_reply(self, mock_openai):
+        structured = MagicMock()
+        structured.invoke.return_value = AnswerQualityVerdict(
+            meets_bar=True, reason='faithful and on-brand')
+        mock_openai.return_value.with_structured_output.return_value = structured
+
+        passed, reason = grade_answer_quality(
+            {'text': 'Tickets are online via the link in our bio.'},
+            'Tickets are sold online through the link in our bio.',
+        )
+        self.assertTrue(passed)
+        self.assertIn('faithful', reason)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_grade_answer_quality_flags_a_hallucinated_reply(self, mock_openai):
+        structured = MagicMock()
+        structured.invoke.return_value = AnswerQualityVerdict(
+            meets_bar=False, reason='invented a $25 price not in the reference')
+        mock_openai.return_value.with_structured_output.return_value = structured
+
+        passed, reason = grade_answer_quality(
+            {'text': 'Tickets are $25 at the door.'},
+            'Tickets are sold online through the link in our bio.',
+        )
+        self.assertFalse(passed)
+        self.assertIn('invented', reason)
 
     def test_bundled_corpus_loads_and_is_well_formed(self):
         from pathlib import Path
