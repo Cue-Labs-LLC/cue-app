@@ -23,19 +23,25 @@ from django.utils import timezone
 # ---------------------------------------------------------------------------
 # Querysets (customer-visible scoping)
 # ---------------------------------------------------------------------------
-def _customer_visible_events(organization):
+def _customer_visible_events(organization, direct_statuses=None):
     """Events a customer could reasonably ask about.
 
-    Never deleted, never cancelled. For on-platform (direct) events we require the
-    organizer to have set them LIVE — a direct draft is still being built and must
-    not leak. External (CSV-imported) events carry no meaningful publication state
-    (``status`` defaults to ``draft`` on import), so they are included regardless of
-    status; excluding them would hide the bulk of an external-first org's events.
+    Never deleted, never cancelled. For on-platform (direct) events we gate on status so
+    a draft (still being built) never leaks: upcoming listings require LIVE, while past
+    listings also admit ENDED — a direct event that actually ran ends up ENDED, not LIVE,
+    so requiring LIVE would wrongly hide every past direct show. Pass ``direct_statuses``
+    to widen the allowed set (default ``(LIVE,)``). External (CSV-imported) events carry
+    no meaningful publication state (``status`` defaults to ``draft`` on import), so they
+    are included regardless of status; excluding them would hide the bulk of an
+    external-first org's events.
     """
     from tickets.models import (
         EVENT_STATUS_CANCELLED, EVENT_STATUS_LIVE,
         TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL, Event,
     )
+
+    if direct_statuses is None:
+        direct_statuses = (EVENT_STATUS_LIVE,)
 
     return (
         Event.objects
@@ -43,7 +49,7 @@ def _customer_visible_events(organization):
         .exclude(status=EVENT_STATUS_CANCELLED)
         .filter(
             Q(ticketing_type=TICKETING_TYPE_EXTERNAL)
-            | Q(ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE)
+            | Q(ticketing_type=TICKETING_TYPE_DIRECT, status__in=direct_statuses)
         )
         .select_related('venue')
     )
@@ -55,6 +61,16 @@ def _future_events(qs):
     return qs.filter(
         Q(end_date__isnull=False, end_date__gte=today)
         | Q(end_date__isnull=True, start_date__gte=today)
+    )
+
+
+def _past_events(qs):
+    """Restrict an event queryset to ones that have already finished (complement of
+    ``_future_events``)."""
+    today = timezone.localdate()
+    return qs.filter(
+        Q(end_date__isnull=False, end_date__lt=today)
+        | Q(end_date__isnull=True, start_date__lt=today)
     )
 
 
@@ -120,6 +136,30 @@ def _list_upcoming_events(organization, limit: int = 5) -> str:
         return "There are no upcoming events on the calendar right now."
 
     return "Upcoming events:\n" + "\n".join(_event_line(e) for e in events)
+
+
+def _list_past_events(organization, limit: int = 5) -> str:
+    """List recent past events, most recent first. Public details only — no counts/
+    revenue/capacity. Answers 'when was your last event?' and similar history questions."""
+    from tickets.models import EVENT_STATUS_ENDED, EVENT_STATUS_LIVE
+
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        limit = 5
+
+    # A direct event that already ran is ENDED (not LIVE), so include both here — while
+    # still excluding DRAFT (never published) and CANCELLED.
+    visible = _customer_visible_events(
+        organization, direct_statuses=(EVENT_STATUS_LIVE, EVENT_STATUS_ENDED),
+    )
+    events = list(
+        _past_events(visible).order_by('-start_date', '-start_time', 'name')[:limit]
+    )
+    if not events:
+        return "There are no past events on record."
+
+    return "Past events (most recent first):\n" + "\n".join(_event_line(e) for e in events)
 
 
 def _find_event(organization, query: str) -> str:
@@ -194,6 +234,13 @@ def build_ig_tools(organization):
         return _list_upcoming_events(org, limit=limit)
 
     @tool
+    def list_past_events(limit: int = 5) -> str:
+        """List the organizer's recent past events, most recent first, with date and
+        venue. Use for questions about event history, e.g. 'when was your last event?'
+        or 'what shows have you done before?'."""
+        return _list_past_events(org, limit=limit)
+
+    @tool
     def find_event(query: str) -> str:
         """Find a specific event by name, city, or date and return its public details
         and how to get tickets."""
@@ -204,4 +251,4 @@ def build_ig_tools(organization):
         """Get the organizer's public contact details (name, website, Instagram)."""
         return _get_contact_info(org)
 
-    return [get_faq, list_upcoming_events, find_event, get_contact_info]
+    return [get_faq, list_upcoming_events, list_past_events, find_event, get_contact_info]

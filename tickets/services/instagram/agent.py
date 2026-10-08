@@ -7,6 +7,7 @@ which tools fired (for the groundedness gate), and token usage (for metering).
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -14,7 +15,7 @@ from django.conf import settings
 
 from ...models import AITokenUsage
 from ..ai_metering import TokenUsageAccumulator, record_ai_token_usage
-from .prompts import SYSTEM_PROMPT
+from .prompts import NEEDS_HUMAN_SENTINEL, SYSTEM_PROMPT
 from .tools import build_ig_tools
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class AnswerResult:
     text: str
     usage: object = None
     tool_calls: list = field(default_factory=list)
+    needs_human: bool = False
 
     @property
     def grounded(self) -> bool:
@@ -123,6 +125,15 @@ class InstagramSupportAgentService:
             if content:
                 final_text = content if isinstance(content, str) else str(content)
 
+        # The agent appends NEEDS_HUMAN_SENTINEL (system prompt rule 6) whenever it defers
+        # to a human. Detect it, then strip it so the customer never sees the marker; the
+        # flag forces the pipeline to escalate so the promised follow-up is actually queued.
+        needs_human = NEEDS_HUMAN_SENTINEL.lower() in final_text.lower()
+        if needs_human:
+            final_text = re.sub(
+                re.escape(NEEDS_HUMAN_SENTINEL), '', final_text, flags=re.IGNORECASE,
+            ).strip()
+
         usage = accumulator.total()
         record_ai_token_usage(
             organization=self.organization,
@@ -133,4 +144,6 @@ class InstagramSupportAgentService:
             metadata={'stage': 'answer'},
         )
 
-        return AnswerResult(text=final_text, usage=usage, tool_calls=tool_calls)
+        return AnswerResult(
+            text=final_text, usage=usage, tool_calls=tool_calls, needs_human=needs_human,
+        )
