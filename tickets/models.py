@@ -3289,10 +3289,12 @@ class InstagramConversation(BaseModel):
 
     STATUS_OPEN = 'open'
     STATUS_AWAITING_HUMAN = 'awaiting_human'
+    STATUS_HUMAN_HANDLING = 'human_handling'
     STATUS_RESOLVED = 'resolved'
     STATUS_CHOICES = [
         (STATUS_OPEN, 'Open'),
         (STATUS_AWAITING_HUMAN, 'Awaiting human'),
+        (STATUS_HUMAN_HANDLING, 'With human'),
         (STATUS_RESOLVED, 'Resolved'),
     ]
 
@@ -3334,6 +3336,18 @@ class InstagramConversation(BaseModel):
                 name='ig_conv_org_status_idx',
             ),
         ]
+
+    @property
+    def agent_in_control(self):
+        """True when the AI agent (not a human) will handle the next customer message.
+
+        The single source of truth for the inbound-task pause gate and the "who's in
+        control" UI: paused states (awaiting_human / human_handling) mean a human owns
+        the thread; open / resolved mean the agent does.
+        """
+        return self.status not in (
+            self.STATUS_AWAITING_HUMAN, self.STATUS_HUMAN_HANDLING,
+        )
 
     def __str__(self):
         return f"IG {self.ig_username or self.ig_user_id} ({self.status})"

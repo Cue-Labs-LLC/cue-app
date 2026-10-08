@@ -285,12 +285,13 @@ def _maybe_resolve(conversation):
 @require_admin
 @require_instagram_feature
 def instagram_inbox(request):
-    """List this org's DM threads: awaiting-human first, then open, then resolved."""
+    """List this org's DM threads: awaiting-human first, then with-human, open, resolved."""
     org = get_organization(request)
     status_rank = Case(
         When(status=InstagramConversation.STATUS_AWAITING_HUMAN, then=Value(0)),
-        When(status=InstagramConversation.STATUS_OPEN, then=Value(1)),
-        default=Value(2),
+        When(status=InstagramConversation.STATUS_HUMAN_HANDLING, then=Value(1)),
+        When(status=InstagramConversation.STATUS_OPEN, then=Value(2)),
+        default=Value(3),
         output_field=IntegerField(),
     )
     last_message = InstagramMessage.objects.filter(
@@ -433,7 +434,9 @@ def instagram_message_send(request, conversation_id):
         reply.status = InstagramMessage.STATUS_APPROVED_SENT
         reply.provider_message_id = send.provider_message_id or ''
         reply.save()
-        # Human has answered: supersede any still-pending AI drafts and resolve.
+        # Human has taken over: supersede any still-pending AI drafts and keep the thread
+        # human-owned (agent paused) until someone explicitly hands it back. The agent does
+        # NOT resume on the next customer message — that's the whole point of the handoff.
         conversation.messages.filter(
             direction=InstagramMessage.DIRECTION_OUTBOUND,
             status=InstagramMessage.STATUS_PENDING_REVIEW,
@@ -441,8 +444,9 @@ def instagram_message_send(request, conversation_id):
             status=InstagramMessage.STATUS_DISCARDED,
             reviewed_by=request.user, reviewed_at=timezone.now(),
         )
-        conversation.status = InstagramConversation.STATUS_RESOLVED
-        update_fields.append('status')
+        conversation.status = InstagramConversation.STATUS_HUMAN_HANDLING
+        conversation.assigned_to = request.user
+        update_fields.extend(['status', 'assigned_to'])
         messages.success(request, 'Reply sent.')
     else:
         reply.status = InstagramMessage.STATUS_FAILED
@@ -452,3 +456,58 @@ def instagram_message_send(request, conversation_id):
     conversation.last_message_at = timezone.now()
     conversation.save(update_fields=update_fields)
     return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_conversation_handback(request, conversation_id):
+    """Hand a human-owned thread back to the AI agent.
+
+    Clears human ownership and resolves the thread so the inbound task's handoff gate
+    lets the agent answer future customer messages again. Any admin may hand back —
+    ``assigned_to`` is informational, not an ownership lock.
+    """
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    conversation.status = InstagramConversation.STATUS_RESOLVED
+    conversation.assigned_to = None
+    conversation.save(update_fields=['status', 'assigned_to'])
+    # If the thread ends on a customer message the human never answered, let the now-
+    # resumed agent pick it up — handing back shouldn't leave a question hanging.
+    _resume_agent_on_pending_inbound(conversation, org)
+    messages.success(request, 'Conversation handed back to the agent.')
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+
+def _resume_agent_on_pending_inbound(conversation, organization):
+    """Re-run the inbound pipeline for a trailing unanswered customer message.
+
+    Only when the last message in the thread is an inbound (no reply came after it). The
+    task is idempotent — it dedups on provider_message_id and no-ops if a reply already
+    exists or the agent is disabled — so this is safe. Skips a blank provider_message_id
+    (can't dedup it, which would create a duplicate inbound). Enqueued on_commit so the
+    worker reads the committed ``resolved`` status rather than racing the save.
+    """
+    from ..tasks import process_instagram_inbound_task
+
+    last = conversation.messages.order_by('-created_at').first()
+    if last is None or last.direction != InstagramMessage.DIRECTION_INBOUND:
+        return
+    if not last.provider_message_id:
+        return
+    normalized = {
+        'ig_account_id': organization.instagram_business_account_id or '',
+        'sender_id': conversation.ig_user_id,
+        'text': last.content,
+        'provider_message_id': last.provider_message_id,
+        'timestamp': 0,
+    }
+    org_id = str(organization.id)
+    transaction.on_commit(
+        lambda: process_instagram_inbound_task.delay(org_id, normalized)
+    )
