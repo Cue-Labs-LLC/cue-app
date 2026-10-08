@@ -1543,11 +1543,9 @@ def process_instagram_inbound_task(self, organization_id, normalized):
     # over (human_handling), a person owns it until they explicitly hand it back. Record
     # the inbound so they see it, but don't let the agent draft or auto-send over them —
     # re-engaging here (e.g. a cheery "anything else?" on a customer's "okay") would talk
-    # past the human. The agent resumes only once the thread is resolved (handed back).
-    if conversation.status in (
-        InstagramConversation.STATUS_AWAITING_HUMAN,
-        InstagramConversation.STATUS_HUMAN_HANDLING,
-    ):
+    # past the human. The agent resumes only once the thread is handed back (resolved).
+    # `agent_in_control` is the shared source of truth with the inbox's controller label.
+    if not conversation.agent_in_control:
         return
 
     try:

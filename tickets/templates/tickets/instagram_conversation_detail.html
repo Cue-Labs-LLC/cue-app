@@ -26,19 +26,23 @@
             <i class="bi bi-instagram me-1"></i>
             {{ conversation.ig_username|default:conversation.ig_user_id }}
         </h1>
-        <p class="page-header-subtitle mb-0">
-            {% if conversation.status == 'awaiting_human' %}
-                <span class="badge bg-warning text-dark">Needs reply</span>
-            {% elif conversation.status == 'human_handling' %}
-                <span class="badge bg-info text-dark">With human</span>
-                {% if conversation.assigned_to %}
-                    <span class="text-muted small ms-1">Handled by {{ conversation.assigned_to.get_full_name|default:conversation.assigned_to.username }}</span>
-                {% endif %}
-            {% elif conversation.status == 'resolved' %}
-                <span class="badge bg-success">Resolved</span>
+        <p class="page-header-subtitle mb-0 d-flex align-items-center gap-2 flex-wrap">
+            {% if conversation.agent_in_control %}
+                <span class="badge bg-success"><i class="bi bi-robot me-1"></i>Agent in control</span>
             {% else %}
-                <span class="badge bg-secondary">Open</span>
+                <span class="badge bg-info text-dark"><i class="bi bi-person-fill me-1"></i>Human in control</span>
             {% endif %}
+            <span class="text-muted small">
+                {% if conversation.status == 'awaiting_human' %}
+                    Escalated — needs a human reply
+                {% elif conversation.status == 'human_handling' %}
+                    You're handling this{% if conversation.assigned_to %} · {{ conversation.assigned_to.get_full_name|default:conversation.assigned_to.username }}{% endif %}
+                {% elif conversation.status == 'resolved' %}
+                    Resolved — the agent will take new messages
+                {% else %}
+                    Open — the agent is answering
+                {% endif %}
+            </span>
         </p>
     </div>
     <div class="page-header-actions">

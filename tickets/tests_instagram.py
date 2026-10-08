@@ -110,6 +110,17 @@ class InstagramConversationModelTests(TestCase):
         conv = InstagramConversation.objects.create(organization=self.other_org, ig_user_id='shared')
         self.assertEqual(conv.organization, self.other_org)
 
+    def test_agent_in_control_matches_pause_states(self):
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='ctl')
+        for status, expected in [
+            (InstagramConversation.STATUS_OPEN, True),
+            (InstagramConversation.STATUS_RESOLVED, True),
+            (InstagramConversation.STATUS_AWAITING_HUMAN, False),
+            (InstagramConversation.STATUS_HUMAN_HANDLING, False),
+        ]:
+            conv.status = status
+            self.assertEqual(conv.agent_in_control, expected, status)
+
 
 class InstagramMessageModelTests(TestCase):
     def setUp(self):
@@ -1505,6 +1516,23 @@ class ConversationDetailThreadTests(_InboxViewTestBase):
         resp = self.client.get(
             reverse('tickets:instagram_conversation_detail', args=[conv.id]))
         self.assertIn(sent, resp.context['thread_messages'])
+
+    def test_controller_label_reflects_who_is_in_control(self):
+        self._login_admin()
+        # Human in control while the thread is human-owned...
+        human = self._conversation(
+            ig_user_id='h', status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[human.id])),
+            'Human in control')
+        # ...and agent in control once it's resolved (handed back).
+        resolved = self._conversation(
+            ig_user_id='r', status=InstagramConversation.STATUS_RESOLVED)
+        self.assertContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[resolved.id])),
+            'Agent in control')
 
 
 class InboxDraftApproveTests(_InboxViewTestBase):
