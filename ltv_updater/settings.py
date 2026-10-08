@@ -417,6 +417,15 @@ IG_AGENT_DAILY_ANSWER_CAP = int(os.environ.get('IG_AGENT_DAILY_ANSWER_CAP', '200
 # Validate inbound Instagram webhook signatures (X-Hub-Signature-256). Disable in local
 # dev without a tunnel; mirrors TWILIO_VALIDATE_WEBHOOKS.
 INSTAGRAM_VALIDATE_WEBHOOKS = os.environ.get('INSTAGRAM_VALIDATE_WEBHOOKS', 'True') == 'True'
+# Sampling temperature for the customer-facing answer agent (NOT the classifier, which is
+# always deterministic at 0). A small non-zero default (0.3) keeps replies warm and natural
+# rather than stiff/templated, while staying low enough to remain grounded and on-instruction
+# (tool outputs + the groundedness gate + the temp-0 classifier catch bad drafts). Raise for
+# more varied phrasing (more run-to-run variance in evals), lower toward 0 for more
+# repeatable, more templated replies.
+IG_AGENT_ANSWER_TEMPERATURE = float(
+    os.environ.get('IG_AGENT_ANSWER_TEMPERATURE', '0.3')
+)
 
 # Mailchimp integration
 MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')
