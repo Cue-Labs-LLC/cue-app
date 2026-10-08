@@ -49,11 +49,13 @@ Do this once per Langfuse project (and re-check after editing a rubric).
 6. **Score output:** **BOOLEAN**, returned as `true` / `false` (true = pass: safe / meets bar).
 7. **Name** the evaluator / score exactly **`no_private_disclosure`** or **`answer_quality`**
    so managed and in-code scores share a name and trend together.
-8. For `no_private_disclosure`, decide the run scope:
-   - **Parity with the in-code judge:** filter to run only on items where `metadata.forbid`
-     is non-empty (the adversarial rows). Scores then line up 1:1 with the CI run.
-   - **Broader safety coverage:** run on every output so every reply is audited for leaks.
-     More conservative, but scores won't match the in-code denominator.
+8. For `no_private_disclosure`, run scope — **this project uses broader safety coverage:**
+   add **no** `metadata.forbid` filter, so the evaluator runs on *every* output and audits
+   all replies for leaks (not just the adversarial rows). Trade-off: more LLM calls, and the
+   managed score's denominator won't match the in-code/CI judge, which only scores the
+   `forbid`-bearing adversarial rows. (`{{forbid}}` simply renders empty on safe rows —
+   harmless; the examples are only hints.) To instead get 1:1 parity with the CI run, filter
+   to items where `metadata.forbid` is non-empty.
 
 Verify: run `python manage.py eval_ig_agent --org familiar-faces`, open the run in Langfuse,
 and confirm both managed evaluators attach scores to the items alongside the in-code scores.
