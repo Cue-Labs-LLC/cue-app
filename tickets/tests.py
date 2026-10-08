@@ -1738,6 +1738,47 @@ class ChatToolsTest(ChatTestMixin, TestCase):
         result = _search_customers(self.org, query='bob')
         self.assertIn('No customers found', result)
 
+    def test_build_tools_tool_set(self):
+        """build_tools still constructs; KB tool removed, 11 analytics tools remain."""
+        from .services.chat.tools import build_tools
+        tools = build_tools(self.org)
+        names = sorted(t.name for t in tools)
+        self.assertEqual(names, sorted([
+            'get_organization_summary',
+            'search_customers',
+            'get_customer_detail',
+            'search_events',
+            'get_event_detail',
+            'get_segment_distribution',
+            'get_top_customers',
+            'get_revenue_by_venue',
+            'get_repeat_customer_stats',
+            'get_cohort_retention',
+            'get_upcoming_events',
+        ]))
+        self.assertNotIn('get_knowledge_base', names)
+
+    def test_no_legacy_kb_references(self):
+        """Grep guard: no tickets/ source file imports or reads the legacy KB."""
+        import os as _os
+        tickets_dir = _os.path.dirname(__file__)
+        this_file = _os.path.abspath(__file__)
+        needles = ('_get_knowledge_base', 'get_knowledge_base', 'tickets/kb', "'kb'", '"kb"')
+        offenders = []
+        for root, _dirs, files in _os.walk(tickets_dir):
+            for fname in files:
+                if not fname.endswith('.py'):
+                    continue
+                path = _os.path.join(root, fname)
+                if _os.path.abspath(path) == this_file:
+                    continue
+                with open(path, 'r', encoding='utf-8') as fh:
+                    content = fh.read()
+                for needle in needles:
+                    if needle in content:
+                        offenders.append(f'{path}: {needle}')
+        self.assertEqual(offenders, [], f'Legacy KB references found: {offenders}')
+
 
 class ChatViewTest(ChatTestMixin, TestCase):
     """Tests for chat view endpoints."""

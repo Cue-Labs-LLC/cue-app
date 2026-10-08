@@ -6,7 +6,6 @@ time, `functools.partial` binds the real org so the LLM never controls which org
 is queried.
 """
 
-import os
 from datetime import date
 from decimal import Decimal
 
@@ -361,31 +360,6 @@ def _get_upcoming_events(organization, limit: int = 10) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 12. Knowledge base
-# ---------------------------------------------------------------------------
-def _get_knowledge_base(organization, topic: str = "") -> str:
-    """Read markdown files from the tickets/kb/ directory for general knowledge."""
-    kb_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'kb')
-    if not os.path.isdir(kb_dir):
-        return "No knowledge base articles available."
-
-    articles = []
-    for filename in sorted(os.listdir(kb_dir)):
-        if not filename.endswith('.md'):
-            continue
-        if topic and topic.lower() not in filename.lower():
-            continue
-        filepath = os.path.join(kb_dir, filename)
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read(4000)
-        articles.append(f"## {filename}\n{content}")
-
-    if not articles:
-        return f"No knowledge base articles found{' for topic: ' + topic if topic else ''}."
-    return "\n\n".join(articles)
-
-
-# ---------------------------------------------------------------------------
 # Build tool list with org binding
 # ---------------------------------------------------------------------------
 def build_tools(organization):
@@ -453,11 +427,6 @@ def build_tools(organization):
         """Get future events sorted by date."""
         return _get_upcoming_events(org, limit=limit)
 
-    @tool
-    def get_knowledge_base(topic: str = "") -> str:
-        """Search the knowledge base for general information."""
-        return _get_knowledge_base(org, topic=topic)
-
     return [
         get_organization_summary,
         search_customers,
@@ -470,5 +439,4 @@ def build_tools(organization):
         get_repeat_customer_stats,
         get_cohort_retention,
         get_upcoming_events,
-        get_knowledge_base,
     ]

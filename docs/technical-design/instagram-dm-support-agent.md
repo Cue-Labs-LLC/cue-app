@@ -161,7 +161,7 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 - [x] **P2** — Answer pipeline + customer-safe tools + classifier (tool-safety tests) + Langfuse eval harness (eval-first)
 - [x] **P3** — Transport abstraction + StubSender + inbound + orchestration + webhook
 - [x] **P4** — Inbox UI + escalation notifications (email + push); + customer ack on escalation, no-draft-on-escalation, agent stays out of human-owned threads, `instagram_feature_enabled` rollout gate
-- [ ] **P5** — Remove legacy KB
+- [x] **P5** — Remove legacy KB
 - [ ] **P6** — Langfuse eval standardization (managed LLM-judge + CI; SMS plans; segments excluded). IG-agent harness itself shipped in P2.
 - [ ] **P7** — Meta OAuth + Graph sender (gated by App Review)
 
