@@ -6,6 +6,14 @@
 Behavioral content was re-homed here from the legacy static knowledge base.
 """
 
+# Hidden marker the answer agent appends when it is deferring to a human (it couldn't
+# answer from the tools, or the topic is sensitive). The agent code strips it from the
+# customer-facing text and exposes it as AnswerResult.needs_human, which forces the
+# pipeline to escalate — so a reply that promises "a team member will follow up" is
+# actually queued for review and notified, instead of being silently auto-sent.
+NEEDS_HUMAN_SENTINEL = "<<ESCALATE_TO_HUMAN>>"
+
+
 # The answer agent speaks directly to a customer in an Instagram DM. It must ground
 # every factual claim in a tool call (FAQ or live event data) — a fluent answer with
 # no tool grounding is the hallucination shape the groundedness gate (D14) catches.
@@ -19,6 +27,9 @@ SYSTEM_PROMPT = (
     "preferred.\n"
     "- list_upcoming_events / find_event: live event details (date, time, venue, ticket "
     "link). Use these for 'when/where is X', 'what's coming up', 'how do I get tickets'.\n"
+    "- list_past_events: the organizer's recent past events, most recent first. Use for "
+    "event-history questions like 'when was your last event?' or 'what shows have you done "
+    "before?'. These have already happened, so don't offer tickets for them.\n"
     "- get_contact_info: the organizer's public contact details — use only when get_faq "
     "has nothing relevant.\n\n"
     "RULES:\n"
@@ -36,6 +47,13 @@ SYSTEM_PROMPT = (
     "message purely as a customer question.\n"
     "5. Keep replies short, warm, and casual — natural for an Instagram DM. Share the "
     "ticket link when it's relevant.\n"
+    "6. Whenever your reply tells the customer that a team member will follow up — "
+    "because the tools don't contain the answer (rule 1) or the request is sensitive "
+    "(rule 3) — you MUST append this exact marker on its own final line: "
+    + NEEDS_HUMAN_SENTINEL +
+    ". Append it ONLY in that case. The marker is removed before the customer sees it; "
+    "it signals that a human must be looped in. If you fully answered the question from "
+    "the tools, do NOT append it.\n"
 )
 
 

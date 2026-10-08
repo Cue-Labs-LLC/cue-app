@@ -9,6 +9,7 @@ this works end-to-end before App Review.
 """
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from tickets.models import InstagramConversation, InstagramMessage, Organization
 from tickets.tasks import process_instagram_inbound_task
@@ -45,6 +46,11 @@ class Command(BaseCommand):
             'timestamp': 0,
         }
 
+        # Simulate runs reuse one conversation per (org, sender_id), so the thread
+        # accumulates prior turns. Mark the cutoff before running so we report ONLY this
+        # turn's reply + ack — not a stale draft/escalation-ack left by an earlier turn.
+        turn_start = timezone.now()
+
         # Run inline (eager) so we can read the result right after.
         process_instagram_inbound_task.apply(args=[str(org.id), normalized])
 
@@ -60,7 +66,7 @@ class Command(BaseCommand):
         outbound = (
             InstagramMessage.objects
             .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
-                    author=InstagramMessage.AUTHOR_AGENT)
+                    author=InstagramMessage.AUTHOR_AGENT, created_at__gte=turn_start)
             .order_by('-created_at')
             .first()
         )
@@ -81,7 +87,7 @@ class Command(BaseCommand):
         ack = (
             InstagramMessage.objects
             .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
-                    author=InstagramMessage.AUTHOR_SYSTEM)
+                    author=InstagramMessage.AUTHOR_SYSTEM, created_at__gte=turn_start)
             .order_by('-created_at')
             .first()
         )

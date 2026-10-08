@@ -1555,6 +1555,16 @@ def process_instagram_inbound_task(self, organization_id, normalized):
         # checks keep the retry from double-processing.
         raise self.retry(exc=exc)
 
+    # Honor the answer agent's own deferral: if it told the customer a team member will
+    # follow up (needs_human), that promise must actually queue a human. The classifier
+    # is lenient about follow-up mentions (routine), so a grounded, confident deferral can
+    # otherwise auto-send with nobody looped in. Force escalation so the thread flips to
+    # awaiting_human, the customer gets the org's escalation ack, and admins are notified.
+    if result.needs_human and not decision.should_escalate:
+        decision.should_escalate = True
+        if not decision.reason:
+            decision.reason = "Answer agent deferred to a human."
+
     # Fragment staleness guard: only auto-send if this is still the newest inbound in
     # the thread. A partial mitigation for fragmented DMs (full coalesce is a follow-up).
     is_latest = True

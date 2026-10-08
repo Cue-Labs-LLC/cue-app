@@ -40,7 +40,7 @@ from .services.instagram import (
     decide_autosend,
 )
 from .services.instagram.tools import (
-    _find_event, _get_contact_info, _get_faq, _list_upcoming_events,
+    _find_event, _get_contact_info, _get_faq, _list_past_events, _list_upcoming_events,
 )
 from .services.instagram.evaluation import (
     AnswerQualityVerdict, DisclosureVerdict, grade_answer_quality,
@@ -501,7 +501,8 @@ class FAQFormTests(_FAQViewTestBase):
         self.assertIn('answer', form.errors)
 
 
-ALLOWED_IG_TOOL_NAMES = {'get_faq', 'list_upcoming_events', 'find_event', 'get_contact_info'}
+ALLOWED_IG_TOOL_NAMES = {'get_faq', 'list_upcoming_events', 'list_past_events',
+                         'find_event', 'get_contact_info'}
 
 
 class IGToolsSafetyTests(TestCase):
@@ -515,8 +516,9 @@ class IGToolsSafetyTests(TestCase):
         from datetime import date, time, timedelta
 
         from .models import (
-            EVENT_STATUS_CANCELLED, EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE,
-            TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL, Customer, Event, Venue,
+            EVENT_STATUS_CANCELLED, EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED,
+            EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
+            Customer, Event, Venue,
         )
 
         self.org = Organization.objects.create(name='Tools Org', slug='tools-org')
@@ -554,6 +556,16 @@ class IGToolsSafetyTests(TestCase):
             'Past External Show', status=EVENT_STATUS_DRAFT,
             ticketing_type=TICKETING_TYPE_EXTERNAL, days=-10,
         )
+        # A direct event that already ran ends up ENDED (not LIVE) — it must still show in
+        # past listings. A past direct DRAFT (never published) must stay hidden.
+        self.past_direct_ended = make_event(
+            'Past Direct Ended Show', status=EVENT_STATUS_ENDED,
+            ticketing_type=TICKETING_TYPE_DIRECT, days=-5,
+        )
+        self.past_direct_draft = make_event(
+            'Past Direct Draft Show', status=EVENT_STATUS_DRAFT,
+            ticketing_type=TICKETING_TYPE_DIRECT, days=-7,
+        )
 
         # Private data that must NEVER surface through the customer tools.
         Customer.objects.create(
@@ -568,6 +580,7 @@ class IGToolsSafetyTests(TestCase):
     def test_tool_outputs_never_leak_private_data(self):
         outputs = [
             _list_upcoming_events(self.org),
+            _list_past_events(self.org),
             _find_event(self.org, query='Rooftop'),
             _get_faq(self.org),
             _get_contact_info(self.org),
@@ -585,6 +598,30 @@ class IGToolsSafetyTests(TestCase):
         self.assertNotIn('Cancelled Gig', out)
         self.assertNotIn('Deleted Event', out)
         self.assertNotIn('Past External Show', out)
+
+    def test_list_past_events_shows_only_visible_past_events(self):
+        out = _list_past_events(self.org, limit=10)
+        # Visible past events: an external show AND a direct show that has ENDED.
+        self.assertIn('Past External Show', out)
+        self.assertIn('Past Direct Ended Show', out)
+        # Future events, a past direct DRAFT, and other hidden events are not listed.
+        self.assertNotIn('Past Direct Draft Show', out)
+        self.assertNotIn('Rooftop Live', out)
+        self.assertNotIn('External Fest', out)
+        self.assertNotIn('Secret Draft Show', out)
+        self.assertNotIn('Cancelled Gig', out)
+        self.assertNotIn('Deleted Event', out)
+
+    def test_list_past_events_most_recent_first(self):
+        # The ENDED direct show (-5 days) is more recent than the external one (-10).
+        out = _list_past_events(self.org, limit=10)
+        self.assertLess(out.index('Past Direct Ended Show'), out.index('Past External Show'))
+
+    def test_list_past_events_empty_when_none(self):
+        # Remove every visible past event (the hidden draft doesn't count).
+        self.past_event.hard_delete()
+        self.past_direct_ended.hard_delete()
+        self.assertIn('no past events', _list_past_events(self.org).lower())
 
     def test_find_event_resolves_visible_but_not_draft_or_deleted(self):
         # A visible event resolves with its public details.
@@ -667,6 +704,39 @@ class IGAnswerAgentTests(_FAQViewTestBase):
         result = InstagramSupportAgentService(self.org).answer(None, 'random chit chat')
         self.assertFalse(result.grounded)
         self.assertEqual(result.tool_calls, [])
+
+    @patch('langgraph.prebuilt.create_react_agent')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_needs_human_sentinel_sets_flag_and_is_stripped(self, mock_openai, mock_create):
+        from tickets.services.instagram.prompts import NEEDS_HUMAN_SENTINEL
+
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [_ai_message(
+                "I'm not sure when our last event was — a team member will follow up!\n"
+                + NEEDS_HUMAN_SENTINEL,
+                [{'name': 'list_upcoming_events'}],
+            )],
+        }
+        mock_create.return_value = fake_agent
+
+        result = InstagramSupportAgentService(self.org).answer(None, 'when was your last event?')
+        self.assertTrue(result.needs_human)
+        # The marker must never reach the customer-facing text.
+        self.assertNotIn(NEEDS_HUMAN_SENTINEL, result.text)
+        self.assertTrue(result.text.endswith('follow up!'))
+
+    @patch('langgraph.prebuilt.create_react_agent')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_no_sentinel_leaves_needs_human_false(self, mock_openai, mock_create):
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [_ai_message('Doors open at 9pm!', [{'name': 'get_faq'}])],
+        }
+        mock_create.return_value = fake_agent
+
+        result = InstagramSupportAgentService(self.org).answer(None, 'when do doors open?')
+        self.assertFalse(result.needs_human)
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
@@ -834,7 +904,8 @@ class IGEvaluationGraderTests(TestCase):
 
         cases = load_cases(Path(settings.BASE_DIR) / 'evals' / 'ig_support_agent' / 'cases.jsonl')
         self.assertGreater(len(cases), 0)
-        allowed_tools = {'', 'get_faq', 'list_upcoming_events', 'find_event', 'get_contact_info'}
+        allowed_tools = {'', 'get_faq', 'list_upcoming_events', 'list_past_events',
+                         'find_event', 'get_contact_info'}
         allowed_cats = {'', 'routine', 'refund_dispute', 'complaint', 'partnership',
                         'guest_list', 'safety', 'other'}
         for case in cases:
@@ -1057,11 +1128,13 @@ class IGOrchestrationTaskTests(TestCase):
         process_instagram_inbound_task.apply(args=[str(self.org.id), self._normalized(**kw)])
 
     def _patch_pipeline(self, *, text='Doors at 9pm!', tools=('get_faq',),
-                        escalate=False, category='routine', confidence=0.95):
+                        escalate=False, category='routine', confidence=0.95,
+                        needs_human=False):
         svc = patch('tickets.services.instagram.InstagramSupportAgentService')
         cls = svc.start()
         self.addCleanup(svc.stop)
-        cls.return_value.answer.return_value = AnswerResult(text=text, tool_calls=list(tools))
+        cls.return_value.answer.return_value = AnswerResult(
+            text=text, tool_calls=list(tools), needs_human=needs_human)
         clf = patch('tickets.services.instagram.classify_escalation',
                     return_value=EscalationDecision(should_escalate=escalate,
                                                     confidence=confidence, category=category,
@@ -1089,6 +1162,26 @@ class IGOrchestrationTaskTests(TestCase):
         self.assertFalse(InstagramMessage.objects.filter(
             conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
             author=InstagramMessage.AUTHOR_AGENT).exists())
+
+    def test_answer_agent_deferral_escalates_even_when_classifier_routine(self):
+        # The agent promised a human follow-up (needs_human) but the classifier rated it
+        # routine + grounded + confident. The deferral must still queue a human: flip to
+        # awaiting_human, save no agent draft, and notify once.
+        self._patch_pipeline(
+            text="I don't have access to past event details — a team member will follow up!",
+            tools=('list_upcoming_events',), escalate=False, category='routine',
+            confidence=0.9, needs_human=True,
+        )
+        with patch('tickets.tasks.notify_instagram_escalation_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._run(text='when was your last event?')
+        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+        # Treated as a true escalation: the non-answer handoff draft is not saved.
+        self.assertFalse(InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT).exists())
+        delay.assert_called_once()
 
     def test_ungrounded_answer_queued(self):
         self._patch_pipeline(tools=())  # no tool hit -> not grounded -> D14 queue

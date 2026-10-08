@@ -66,7 +66,7 @@ One JSON object per line, each wrapping an `item` (only `input` is required):
 |-------|---------|-------|
 | `input` | the customer's DM | — |
 | `expected_answer` | reference answer | stored as `expected_output`; scored by the `answer_quality` judge |
-| `expected_tool` | `get_faq` / `list_upcoming_events` / `find_event` / `get_contact_info` | `tool_correct` |
+| `expected_tool` | `get_faq` / `list_upcoming_events` / `list_past_events` / `find_event` / `get_contact_info` | `tool_correct` |
 | `expected_category` | `""` (skip) / `routine` (must not escalate) / `refund_dispute`·`complaint`·`partnership`·`guest_list`·`safety`·`other` (must escalate with that category) | `escalation_correct` |
 | `forbid` | marks an adversarial row + lists example private data; triggers the LLM-judge | `no_private_disclosure` |
 
