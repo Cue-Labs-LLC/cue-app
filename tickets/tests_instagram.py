@@ -1789,6 +1789,104 @@ class InboxHandbackTests(_InboxViewTestBase):
         delay.assert_not_called()
 
 
+class InboxConversationMessagesApiTests(_InboxViewTestBase):
+    """The JSON feed the detail page polls for live updates."""
+
+    def _url(self, conv):
+        return reverse('tickets:instagram_conversation_messages', args=[conv.id])
+
+    def _msg(self, conv, *, direction='inbound', author='customer', content='hi',
+             status='received', minutes_ago=None, **kw):
+        m = InstagramMessage.objects.create(
+            conversation=conv, direction=direction, author=author, content=content,
+            status=status, **kw)
+        if minutes_ago is not None:
+            from datetime import timedelta
+            from django.utils import timezone
+            InstagramMessage.objects.filter(pk=m.pk).update(
+                created_at=timezone.now() - timedelta(minutes=minutes_ago))
+            m.refresh_from_db()
+        return m
+
+    def test_without_after_returns_all_visible(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='hello?')
+        self._msg(conv, direction='outbound', author='agent', content='Doors at 9pm.',
+                  status='auto_sent', provider_message_id='x')
+        data = self.client.get(self._url(conv)).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['hello?', 'Doors at 9pm.'])
+
+    def test_returns_messages_after_cursor(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='old', minutes_ago=5)
+        recent = self._msg(conv, content='new')
+        data = self.client.get(
+            self._url(conv), {'after': recent.created_at.isoformat()}).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['new'])
+
+    def test_excludes_pending_and_discarded_but_reports_draft_id(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='visible')
+        draft = self._draft(conv)  # pending_review
+        self._msg(conv, direction='outbound', author='agent', content='scrapped',
+                  status='discarded')
+        data = self.client.get(self._url(conv)).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['visible'])
+        self.assertEqual(data['pending_draft_id'], str(draft.id))
+
+    def test_reports_status_and_controller(self):
+        self._login_admin()
+        human = self._conversation(
+            ig_user_id='h', status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        hd = self.client.get(self._url(human)).json()
+        self.assertEqual(hd['status'], 'human_handling')
+        self.assertFalse(hd['agent_in_control'])
+        resolved = self._conversation(
+            ig_user_id='r', status=InstagramConversation.STATUS_RESOLVED)
+        rd = self.client.get(self._url(resolved)).json()
+        self.assertTrue(rd['agent_in_control'])
+
+    def test_message_shape(self):
+        self._login_admin()
+        conv = self._conversation(ig_user_id='sim-user-1')
+        self._msg(conv, content='inbound text')
+        self._msg(conv, direction='outbound', author='human', content='my reply',
+                  status='approved_sent', provider_message_id='h1')
+        msgs = self.client.get(self._url(conv)).json()['messages']
+        inbound, human = msgs[0], msgs[1]
+        self.assertEqual(inbound['row_class'], 'in')
+        self.assertEqual(inbound['meta_prefix'], 'sim-user-1')
+        self.assertEqual(human['row_class'], 'out human')
+        self.assertEqual(human['meta_prefix'], 'You')
+        for key in ('id', 'created_at', 'created_display', 'content', 'status_display'):
+            self.assertIn(key, human)
+
+    def test_requires_admin(self):
+        self._login_host()
+        conv = self._conversation()
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 403)
+
+    def test_other_org_404(self):
+        self._login_admin()
+        theirs = self._conversation(organization=self.other_org, ig_user_id='theirs')
+        self.assertEqual(self.client.get(self._url(theirs)).status_code, 404)
+
+    def test_feature_off_404(self):
+        self.org.instagram_feature_enabled = False
+        self.org.save(update_fields=['instagram_feature_enabled'])
+        self._login_admin()
+        conv = self._conversation()
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 404)
+
+    def test_post_not_allowed(self):
+        self._login_admin()
+        conv = self._conversation()
+        self.assertEqual(self.client.post(self._url(conv)).status_code, 405)
+
+
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
 class InboxEscalationNotifyTriggerTests(TestCase):
     """The orchestration task notifies once, only on the awaiting_human transition (D2)."""
