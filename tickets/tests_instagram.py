@@ -1689,10 +1689,11 @@ class InboxHandbackTests(_InboxViewTestBase):
         self._login_admin()
         human = self._human_owned()
         handback_url = reverse('tickets:instagram_conversation_handback', args=[human.id])
+        # Shown in both spots: the header and down by the reply box (discoverability).
         self.assertContains(
             self.client.get(
                 reverse('tickets:instagram_conversation_detail', args=[human.id])),
-            handback_url)
+            handback_url, count=2)
         # Not shown on an awaiting-human thread (human hasn't taken over yet).
         awaiting = self._conversation(ig_user_id='aw2')
         self.assertNotContains(
