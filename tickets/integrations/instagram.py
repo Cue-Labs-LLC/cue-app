@@ -477,5 +477,37 @@ def instagram_conversation_handback(request, conversation_id):
     conversation.status = InstagramConversation.STATUS_RESOLVED
     conversation.assigned_to = None
     conversation.save(update_fields=['status', 'assigned_to'])
+    # If the thread ends on a customer message the human never answered, let the now-
+    # resumed agent pick it up — handing back shouldn't leave a question hanging.
+    _resume_agent_on_pending_inbound(conversation, org)
     messages.success(request, 'Conversation handed back to the agent.')
     return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)
+
+
+def _resume_agent_on_pending_inbound(conversation, organization):
+    """Re-run the inbound pipeline for a trailing unanswered customer message.
+
+    Only when the last message in the thread is an inbound (no reply came after it). The
+    task is idempotent — it dedups on provider_message_id and no-ops if a reply already
+    exists or the agent is disabled — so this is safe. Skips a blank provider_message_id
+    (can't dedup it, which would create a duplicate inbound). Enqueued on_commit so the
+    worker reads the committed ``resolved`` status rather than racing the save.
+    """
+    from ..tasks import process_instagram_inbound_task
+
+    last = conversation.messages.order_by('-created_at').first()
+    if last is None or last.direction != InstagramMessage.DIRECTION_INBOUND:
+        return
+    if not last.provider_message_id:
+        return
+    normalized = {
+        'ig_account_id': organization.instagram_business_account_id or '',
+        'sender_id': conversation.ig_user_id,
+        'text': last.content,
+        'provider_message_id': last.provider_message_id,
+        'timestamp': 0,
+    }
+    org_id = str(organization.id)
+    transaction.on_commit(
+        lambda: process_instagram_inbound_task.delay(org_id, normalized)
+    )

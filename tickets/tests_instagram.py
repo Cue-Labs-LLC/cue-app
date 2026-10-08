@@ -1701,6 +1701,65 @@ class InboxHandbackTests(_InboxViewTestBase):
                 reverse('tickets:instagram_conversation_detail', args=[awaiting.id])),
             reverse('tickets:instagram_conversation_handback', args=[awaiting.id]))
 
+    def _patch_autosend_pipeline(self):
+        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
+        cls = svc.start(); self.addCleanup(svc.stop)
+        cls.return_value.answer.return_value = AnswerResult(
+            text='Let me check on that!', tool_calls=['get_faq'])
+        clf = patch('tickets.services.instagram.classify_escalation',
+                    return_value=EscalationDecision(should_escalate=False, confidence=0.95,
+                                                    category='routine', reason='r'))
+        clf.start(); self.addCleanup(clf.stop)
+
+    def test_handback_resumes_agent_on_trailing_customer_message(self):
+        # The customer asked something while the thread was human-owned and it went
+        # unanswered. Handing back should let the agent pick it up, not leave it hanging.
+        self._login_admin()
+        self.org.instagram_support_agent_enabled = True
+        self.org.save(update_fields=['instagram_support_agent_enabled'])
+        conv = self._human_owned()
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='do you have footage?',
+            provider_message_id='pm-pending', status=InstagramMessage.STATUS_RECEIVED)
+        self._patch_autosend_pipeline()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(
+                reverse('tickets:instagram_conversation_handback', args=[conv.id]))
+        out = InstagramMessage.objects.filter(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_AGENT).first()
+        self.assertIsNotNone(out)
+        self.assertEqual(out.status, InstagramMessage.STATUS_AUTO_SENT)
+
+    def test_handback_no_resume_when_last_message_is_human_reply(self):
+        # The human already answered last — nothing is pending, so don't poke the agent.
+        self._login_admin()
+        conv = self._human_owned()
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
+            author=InstagramMessage.AUTHOR_HUMAN, content='on it!',
+            status=InstagramMessage.STATUS_APPROVED_SENT, provider_message_id='h1')
+        with patch('tickets.tasks.process_instagram_inbound_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(
+                    reverse('tickets:instagram_conversation_handback', args=[conv.id]))
+        delay.assert_not_called()
+
+    def test_handback_skips_resume_for_blank_provider_message_id(self):
+        # A blank id can't be deduped — re-running would duplicate the inbound, so skip.
+        self._login_admin()
+        conv = self._human_owned()
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='hmm?',
+            status=InstagramMessage.STATUS_RECEIVED)  # provider_message_id defaults to ''
+        with patch('tickets.tasks.process_instagram_inbound_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(
+                    reverse('tickets:instagram_conversation_handback', args=[conv.id]))
+        delay.assert_not_called()
+
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
 class InboxEscalationNotifyTriggerTests(TestCase):
