@@ -683,6 +683,29 @@ def _ai_message(content='', tool_calls=None, input_tokens=40, output_tokens=20):
 class IGAnswerAgentTests(_FAQViewTestBase):
     """InstagramSupportAgentService.answer() with the ReAct agent mocked."""
 
+    def test_history_respects_context_reset(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='rc')
+        old = InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='OLD sensitive incident',
+            status=InstagramMessage.STATUS_RECEIVED)
+        InstagramMessage.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(minutes=10))
+        conv.agent_context_reset_at = timezone.now() - timedelta(minutes=5)
+        conv.save(update_fields=['agent_context_reset_at'])
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='NEW fresh question',
+            status=InstagramMessage.STATUS_RECEIVED)
+
+        contents = [h['content'] for h
+                    in InstagramSupportAgentService(self.org)._history_messages(conv)]
+        self.assertIn('NEW fresh question', contents)
+        self.assertNotIn('OLD sensitive incident', contents)
+
     @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
     def test_answer_returns_text_usage_tools_and_meters(self, mock_openai, mock_create):
@@ -1885,6 +1908,82 @@ class InboxConversationMessagesApiTests(_InboxViewTestBase):
         self._login_admin()
         conv = self._conversation()
         self.assertEqual(self.client.post(self._url(conv)).status_code, 405)
+
+
+class InboxResolveCloseTests(_InboxViewTestBase):
+    """'Resolve & close' resolves, clears ownership, and resets the agent's context."""
+
+    def _url(self, conv):
+        return reverse('tickets:instagram_conversation_resolve_close', args=[conv.id])
+
+    def test_resolves_clears_owner_and_sets_reset(self):
+        self._login_admin()
+        conv = self._conversation(
+            status=InstagramConversation.STATUS_HUMAN_HANDLING, assigned_to=self.admin_user)
+        resp = self.client.post(self._url(conv))
+        self.assertRedirects(
+            resp, reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        self.assertIsNone(conv.assigned_to)
+        self.assertIsNotNone(conv.agent_context_reset_at)
+
+    def test_available_on_awaiting_human(self):
+        # The escape hatch for a thread that bounced back to awaiting_human.
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_AWAITING_HUMAN)
+        self.client.post(self._url(conv))
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        self.assertIsNotNone(conv.agent_context_reset_at)
+
+    def test_does_not_resume_agent(self):
+        # Unlike hand-back, resolve & close never re-runs the agent on a trailing message.
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='its ok',
+            provider_message_id='pm-ok', status=InstagramMessage.STATUS_RECEIVED)
+        with patch('tickets.tasks.process_instagram_inbound_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(self._url(conv))
+        delay.assert_not_called()
+
+    def test_button_shown_when_human_in_control_only(self):
+        self._login_admin()
+        url = 'tickets:instagram_conversation_resolve_close'
+        for status in (InstagramConversation.STATUS_AWAITING_HUMAN,
+                       InstagramConversation.STATUS_HUMAN_HANDLING):
+            conv = self._conversation(ig_user_id='u-' + status, status=status)
+            self.assertContains(
+                self.client.get(
+                    reverse('tickets:instagram_conversation_detail', args=[conv.id])),
+                reverse(url, args=[conv.id]))
+        # Agent in control → no resolve & close control.
+        resolved = self._conversation(
+            ig_user_id='u-resolved', status=InstagramConversation.STATUS_RESOLVED)
+        self.assertNotContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[resolved.id])),
+            reverse(url, args=[resolved.id]))
+
+    def test_requires_admin(self):
+        self._login_host()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.post(self._url(conv)).status_code, 403)
+
+    def test_other_org_404(self):
+        self._login_admin()
+        theirs = self._conversation(
+            organization=self.other_org, ig_user_id='theirs',
+            status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.post(self._url(theirs)).status_code, 404)
+
+    def test_post_only(self):
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 405)
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')

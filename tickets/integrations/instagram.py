@@ -603,3 +603,30 @@ def _resume_agent_on_pending_inbound(conversation, organization):
     transaction.on_commit(
         lambda: process_instagram_inbound_task.delay(org_id, normalized)
     )
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_conversation_resolve_close(request, conversation_id):
+    """Resolve a human-owned thread AND reset the agent's context.
+
+    Like hand-back, this re-enables the agent (status resolved, ownership cleared). Unlike
+    hand-back, it stamps ``agent_context_reset_at`` so the agent treats future messages as
+    a fresh conversation — it won't re-escalate a benign follow-up against an already-handled
+    sensitive incident. It intentionally does NOT re-run the agent on a trailing message: the
+    human is declaring the thread handled.
+    """
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    conversation.status = InstagramConversation.STATUS_RESOLVED
+    conversation.assigned_to = None
+    conversation.agent_context_reset_at = timezone.now()
+    conversation.save(update_fields=['status', 'assigned_to', 'agent_context_reset_at'])
+    messages.success(
+        request, 'Conversation resolved and closed. The agent will start fresh on new messages.')
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)

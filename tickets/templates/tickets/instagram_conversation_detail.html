@@ -54,6 +54,14 @@
             </button>
         </form>
         {% endif %}
+        {% if not conversation.agent_in_control %}
+        <form method="post" action="{% url 'tickets:instagram_conversation_resolve_close' conversation.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-success">
+                <i class="bi bi-check2-circle"></i> Resolve &amp; close
+            </button>
+        </form>
+        {% endif %}
         <a href="{% url 'tickets:instagram_inbox' %}" class="btn btn-outline-secondary">
             <i class="bi bi-arrow-left"></i> Inbox
         </a>
@@ -119,19 +127,33 @@
                 <i class="bi bi-send"></i> Send reply
             </button>
         </form>
-        {% if conversation.status == 'human_handling' %}
+        {% if not conversation.agent_in_control %}
         <hr class="my-3">
         <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
             <span class="text-muted small">
                 <i class="bi bi-person-check me-1"></i>
-                You're handling this conversation — the agent is paused.
+                {% if conversation.status == 'human_handling' %}
+                    You're handling this conversation — the agent is paused.
+                {% else %}
+                    Escalated and waiting on a human — the agent is paused.
+                {% endif %}
             </span>
-            <form method="post" action="{% url 'tickets:instagram_conversation_handback' conversation.id %}" class="d-inline">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-outline-primary btn-sm">
-                    <i class="bi bi-robot"></i> Hand back to agent
-                </button>
-            </form>
+            <div class="d-flex gap-2 flex-wrap">
+                {% if conversation.status == 'human_handling' %}
+                <form method="post" action="{% url 'tickets:instagram_conversation_handback' conversation.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-robot"></i> Hand back to agent
+                    </button>
+                </form>
+                {% endif %}
+                <form method="post" action="{% url 'tickets:instagram_conversation_resolve_close' conversation.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-success btn-sm">
+                        <i class="bi bi-check2-circle"></i> Resolve &amp; close
+                    </button>
+                </form>
+            </div>
         </div>
         {% endif %}
     </div>

@@ -380,6 +380,7 @@ urlpatterns = [
     path('inbox/instagram/<uuid:conversation_id>/reply/', instagram_views.instagram_message_send, name='instagram_message_send'),
     path('inbox/instagram/<uuid:conversation_id>/drafts/<uuid:message_id>/approve/', instagram_views.instagram_draft_approve, name='instagram_draft_approve'),
     path('inbox/instagram/<uuid:conversation_id>/handback/', instagram_views.instagram_conversation_handback, name='instagram_conversation_handback'),
+    path('inbox/instagram/<uuid:conversation_id>/resolve-close/', instagram_views.instagram_conversation_resolve_close, name='instagram_conversation_resolve_close'),
     path('inbox/instagram/<uuid:conversation_id>/messages/', instagram_views.instagram_conversation_messages, name='instagram_conversation_messages'),
 
     path('settings/profile/', views.org_profile, name='org_profile'),

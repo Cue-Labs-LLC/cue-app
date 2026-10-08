@@ -73,11 +73,13 @@ class InstagramSupportAgentService:
             return []
         from ...models import InstagramMessage
 
-        rows = list(
-            InstagramMessage.objects
-            .filter(conversation=conversation)
-            .order_by('-created_at')[:HISTORY_LIMIT]
-        )
+        rows_qs = InstagramMessage.objects.filter(conversation=conversation)
+        # After a human "resolves & closes" a thread, the agent starts fresh: only messages
+        # at/after the reset point count as history, so an already-handled sensitive incident
+        # doesn't make the agent re-escalate a later benign follow-up.
+        if conversation.agent_context_reset_at:
+            rows_qs = rows_qs.filter(created_at__gte=conversation.agent_context_reset_at)
+        rows = list(rows_qs.order_by('-created_at')[:HISTORY_LIMIT])
         rows.reverse()
         messages = []
         for row in rows:
