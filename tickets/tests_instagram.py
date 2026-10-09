@@ -767,6 +767,39 @@ class IGAnswerAgentTests(_FAQViewTestBase):
         self.assertEqual(result.text, 'The next event is Bloom — Spring Edition at The Echo.')
         self.assertEqual(result.tool_calls, ['list_upcoming_events'])
 
+    def test_strip_markdown_links_helper(self):
+        from tickets.services.instagram.agent import _strip_markdown_links
+        self.assertEqual(_strip_markdown_links('see [here](https://x.co/a)'),
+                         'see https://x.co/a')
+        # Tolerates whitespace between ] and (
+        self.assertEqual(_strip_markdown_links('see [here] (https://x.co/a)'),
+                         'see https://x.co/a')
+        # Multiple links in one message
+        self.assertEqual(
+            _strip_markdown_links('tix [a](https://x.co/1) or [b](https://x.co/2)'),
+            'tix https://x.co/1 or https://x.co/2')
+        # Plain text and a bare URL are left untouched
+        self.assertEqual(_strip_markdown_links('no links here'), 'no links here')
+        self.assertEqual(_strip_markdown_links('grab tickets https://x.co/a'),
+                         'grab tickets https://x.co/a')
+
+    @patch('langgraph.prebuilt.create_react_agent')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_answer_strips_markdown_links_to_bare_url(self, mock_openai, mock_create):
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [_ai_message('Grab tickets [here](https://posh.vip/f/e712a)!',
+                                     [{'name': 'find_event'}])],
+        }
+        mock_create.return_value = fake_agent
+
+        result = InstagramSupportAgentService(self.org).answer(None, 'tickets?')
+
+        self.assertEqual(result.text, 'Grab tickets https://posh.vip/f/e712a!')
+        self.assertIn('https://posh.vip/f/e712a', result.text)
+        self.assertNotIn('](', result.text)
+        self.assertNotIn('[here]', result.text)
+
     @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
     def test_answer_with_no_tool_hit_is_not_grounded(self, mock_openai, mock_create):
