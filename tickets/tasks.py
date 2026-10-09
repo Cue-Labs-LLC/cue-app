@@ -1550,7 +1550,7 @@ def process_instagram_inbound_task(self, organization_id, normalized):
 
     try:
         result = InstagramSupportAgentService(org).answer(conversation, text)
-        decision = classify_escalation(org, text, result.text)
+        decision = classify_escalation(org, text, result.text, session_id=conversation.id)
     except InstagramAgentError as exc:
         # LLM unavailable/unreadable — transient. Retry; the dedup + outbound-exists
         # checks keep the retry from double-processing.
