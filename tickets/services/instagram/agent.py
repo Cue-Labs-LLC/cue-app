@@ -36,6 +36,7 @@ class AnswerResult:
     text: str
     usage: object = None
     tool_calls: list = field(default_factory=list)
+    tool_outputs: list = field(default_factory=list)
     needs_human: bool = False
 
     @property
@@ -125,6 +126,7 @@ class InstagramSupportAgentService:
 
         accumulator = TokenUsageAccumulator()
         tool_calls = []
+        tool_outputs = []
         final_text = ""
         for index, message in enumerate(out_messages):
             accumulator.add(message, key=str(index))
@@ -132,6 +134,16 @@ class InstagramSupportAgentService:
                 name = call.get('name') if isinstance(call, dict) else getattr(call, 'name', None)
                 if name:
                     tool_calls.append(name)
+            if getattr(message, 'type', None) == 'tool':
+                # A ToolMessage carries a tool's returned content. Capture it (name +
+                # output) for observability — it surfaces in the eval task's Output JSON —
+                # and skip it so a tool result can't be mistaken for the final reply below.
+                content = getattr(message, 'content', None)
+                tool_outputs.append({
+                    'name': getattr(message, 'name', '') or '',
+                    'content': content if isinstance(content, str) else str(content),
+                })
+                continue
             content = getattr(message, 'content', None)
             if content:
                 final_text = content if isinstance(content, str) else str(content)
@@ -156,5 +168,6 @@ class InstagramSupportAgentService:
         )
 
         return AnswerResult(
-            text=final_text, usage=usage, tool_calls=tool_calls, needs_human=needs_human,
+            text=final_text, usage=usage, tool_calls=tool_calls,
+            tool_outputs=tool_outputs, needs_human=needs_human,
         )
