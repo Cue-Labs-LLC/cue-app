@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 # How many prior messages of the conversation to feed the agent (D12 multi-turn).
 HISTORY_LIMIT = 10
 
+# Instagram DMs render as plain text, so Markdown link syntax ``[label](url)`` shows the
+# literal brackets to the customer. System-prompt rule 5 tells the agent to send bare URLs;
+# this regex is the hard guarantee that strips any ``[label](url)`` the model still emits
+# down to just the URL. Tolerates optional whitespace between ``]`` and ``(``.
+_MARKDOWN_LINK_RE = re.compile(r'\[[^\]]*\]\s*\(\s*([^)\s]+)\s*\)')
+
+
+def _strip_markdown_links(text: str) -> str:
+    """Replace Markdown links ``[label](url)`` with the bare ``url`` (IG DMs show brackets)."""
+    return _MARKDOWN_LINK_RE.sub(lambda m: m.group(1), text)
+
 
 class InstagramAgentError(Exception):
     """Raised when the LLM can't be initialized or called."""
@@ -148,7 +159,7 @@ class InstagramSupportAgentService:
             if content:
                 final_text = content if isinstance(content, str) else str(content)
 
-        # The agent appends NEEDS_HUMAN_SENTINEL (system prompt rule 6) whenever it defers
+        # The agent appends NEEDS_HUMAN_SENTINEL (system prompt rule 7) whenever it defers
         # to a human. Detect it, then strip it so the customer never sees the marker; the
         # flag forces the pipeline to escalate so the promised follow-up is actually queued.
         needs_human = NEEDS_HUMAN_SENTINEL.lower() in final_text.lower()
@@ -156,6 +167,10 @@ class InstagramSupportAgentService:
             final_text = re.sub(
                 re.escape(NEEDS_HUMAN_SENTINEL), '', final_text, flags=re.IGNORECASE,
             ).strip()
+
+        # Hard guarantee for rule 5: convert any Markdown link the model still emitted into
+        # a bare URL, since Instagram DMs would otherwise show the literal [label](url).
+        final_text = _strip_markdown_links(final_text)
 
         usage = accumulator.total()
         record_ai_token_usage(
