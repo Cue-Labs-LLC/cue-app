@@ -29,6 +29,7 @@ def run_ig_agent(organization, message: str) -> dict:
         'confidence': decision.confidence,
         'grounded': result.grounded,
         'tools': list(result.tool_calls),
+        'tool_outputs': list(result.tool_outputs),
         'auto_send': decide_autosend(decision, result),
     }
 

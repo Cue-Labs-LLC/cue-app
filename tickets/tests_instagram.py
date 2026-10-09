@@ -638,14 +638,17 @@ class IGToolsSafetyTests(TestCase):
         # A visible event resolves with its public details.
         self.assertIn('Rooftop Live', _find_event(self.org, query='Rooftop'))
         # A direct draft and a soft-deleted event must not resolve.
-        self.assertIn("couldn't find", _find_event(self.org, query='Secret Draft Show'))
-        self.assertIn("couldn't find", _find_event(self.org, query='Deleted Event'))
+        self.assertIn("No event directly matched",
+                      _find_event(self.org, query='Secret Draft Show'))
+        self.assertIn("No event directly matched",
+                      _find_event(self.org, query='Deleted Event'))
 
     def test_find_event_excludes_past_events(self):
         # Regression: find_event previously skipped the future filter that
         # list_upcoming_events applies, so a past event matching by name or city
         # was surfaced as if tickets were available.
-        self.assertIn("couldn't find", _find_event(self.org, query='Past External Show'))
+        self.assertIn("No event directly matched",
+                      _find_event(self.org, query='Past External Show'))
         # A city search matches both the past and the future events at this venue;
         # only the future one should come back.
         out = _find_event(self.org, query='Austin')
@@ -675,6 +678,17 @@ def _ai_message(content='', tool_calls=None, input_tokens=40, output_tokens=20):
         'output_tokens': output_tokens,
         'total_tokens': input_tokens + output_tokens,
     }
+    return msg
+
+
+def _tool_message(name, content):
+    """A fake LangChain ToolMessage carrying a tool's returned content (type='tool')."""
+    msg = MagicMock()
+    msg.type = 'tool'
+    msg.name = name
+    msg.content = content
+    msg.tool_calls = []
+    msg.usage_metadata = None
     return msg
 
 
@@ -727,6 +741,31 @@ class IGAnswerAgentTests(_FAQViewTestBase):
         self.assertEqual(usage.metadata.get('stage'), 'answer')
         self.assertIsNone(usage.user)
         self.assertEqual(usage.total_tokens, 60)
+
+    @patch('langgraph.prebuilt.create_react_agent')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_answer_captures_tool_outputs(self, mock_openai, mock_create):
+        # A ReAct turn: AI asks for a tool, the ToolMessage returns content, AI replies.
+        fake_agent = MagicMock()
+        fake_agent.invoke.return_value = {
+            'messages': [
+                _ai_message('', [{'name': 'list_upcoming_events'}]),
+                _tool_message('list_upcoming_events',
+                              'Upcoming events:\n- Bloom — Spring Edition — The Echo, Los Angeles'),
+                _ai_message('The next event is Bloom — Spring Edition at The Echo.', []),
+            ],
+        }
+        mock_create.return_value = fake_agent
+
+        result = InstagramSupportAgentService(self.org).answer(None, "what's coming up?")
+
+        # The tool's returned content is captured (name + output) for observability...
+        self.assertEqual(len(result.tool_outputs), 1)
+        self.assertEqual(result.tool_outputs[0]['name'], 'list_upcoming_events')
+        self.assertIn('Bloom — Spring Edition', result.tool_outputs[0]['content'])
+        # ...and a tool result is never mistaken for the agent's final reply.
+        self.assertEqual(result.text, 'The next event is Bloom — Spring Edition at The Echo.')
+        self.assertEqual(result.tool_calls, ['list_upcoming_events'])
 
     @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')

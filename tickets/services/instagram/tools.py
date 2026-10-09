@@ -133,7 +133,7 @@ def _list_upcoming_events(organization, limit: int = 5) -> str:
         .order_by('start_date', 'start_time', 'name')[:limit]
     )
     if not events:
-        return "There are no upcoming events on the calendar right now."
+        return "No upcoming events have been announced yet."
 
     return "Upcoming events:\n" + "\n".join(_event_line(e) for e in events)
 
@@ -175,7 +175,14 @@ def _find_event(organization, query: str) -> str:
         .order_by('start_date', 'start_time', 'name')[:5]
     )
     if not matches:
-        return f"I couldn't find an event matching '{query}'."
+        # The filter is a literal substring match, so an abbreviation or nearby place
+        # name (e.g. "LA" vs the stored "Los Angeles") misses here. Tell the agent to
+        # verify against the full upcoming list rather than declaring none exist.
+        return (
+            f"No event directly matched '{query}'. This may be an abbreviation or nearby "
+            f"place name (e.g. 'LA' for Los Angeles) — check list_upcoming_events before "
+            f"telling the customer there are none."
+        )
 
     blocks = []
     for e in matches:
