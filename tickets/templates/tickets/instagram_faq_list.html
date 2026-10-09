@@ -59,25 +59,6 @@
 
 </div>
 
-<div style="max-width: 900px; margin: 24px auto 0;">
-    <div class="card">
-        <div class="card-body">
-            <h2 class="h6 mb-1">Escalation acknowledgement</h2>
-            <p class="text-muted small mb-3">
-                Sent to the customer the moment a DM is handed to a human, so an escalated
-                thread isn't met with silence while it waits for your reply. Leave blank to
-                send nothing.
-            </p>
-            <form method="post" action="{% url 'tickets:instagram_agent_settings' %}">
-                {% csrf_token %}
-                <textarea name="escalation_ack_text" class="form-control mb-2" rows="2"
-                          maxlength="500" placeholder="(blank — no acknowledgement sent)">{{ escalation_ack_text }}</textarea>
-                <button type="submit" class="btn btn-outline-primary btn-sm">Save</button>
-            </form>
-        </div>
-    </div>
-</div>
-
 {% comment %}
 Template for a brand-new, unsaved FAQ row (cloned by JS on "Add FAQ"). Kept structurally
 identical to the _instagram_faq_item.html partial.

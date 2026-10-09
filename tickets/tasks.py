@@ -1410,40 +1410,6 @@ def _ig_daily_autosend_count(organization):
     ).count()
 
 
-def _send_instagram_escalation_ack(organization, conversation, recipient_id):
-    """Immediately send the org's fixed acknowledgement to an escalated customer.
-
-    Best-effort and safety-neutral: fixed, org-editable copy (no LLM, no facts), so it's
-    safe to auto-send even though the real answer waits for a human. A blank ack text
-    disables it. A send failure is logged, not fatal — the queue + notification still fire.
-    Recorded as an ``author=system`` ``auto_sent`` row so it shows in the thread but never
-    counts as an AI answer.
-    """
-    from tickets.models import InstagramMessage
-    from tickets.services.instagram import get_sender
-
-    ack_text = (organization.instagram_escalation_ack_text or '').strip()
-    if not ack_text:
-        return
-    try:
-        send = get_sender(organization).send_text(recipient_id, ack_text)
-    except Exception:
-        logger.exception("IG escalation ack send errored for conversation %s", conversation.id)
-        return
-    if not send.ok:
-        logger.warning("IG escalation ack not sent for conversation %s: %s",
-                       conversation.id, send.error)
-        return
-    InstagramMessage.objects.create(
-        conversation=conversation,
-        direction=InstagramMessage.DIRECTION_OUTBOUND,
-        author=InstagramMessage.AUTHOR_SYSTEM,
-        content=ack_text,
-        status=InstagramMessage.STATUS_AUTO_SENT,
-        provider_message_id=send.provider_message_id or '',
-    )
-
-
 def _ig_under_daily_cap(organization):
     """True if the org may auto-send another answer today (0 = cap disabled)."""
     from django.conf import settings
@@ -1560,7 +1526,7 @@ def process_instagram_inbound_task(self, organization_id, normalized):
     # follow up (needs_human), that promise must actually queue a human. The classifier
     # is lenient about follow-up mentions (routine), so a grounded, confident deferral can
     # otherwise auto-send with nobody looped in. Force escalation so the thread flips to
-    # awaiting_human, the customer gets the org's escalation ack, and admins are notified.
+    # awaiting_human and admins are notified.
     if result.needs_human and not decision.should_escalate:
         decision.should_escalate = True
         if not decision.reason:
@@ -1613,13 +1579,6 @@ def process_instagram_inbound_task(self, organization_id, normalized):
         if conversation.status != InstagramConversation.STATUS_AWAITING_HUMAN:
             conversation.status = InstagramConversation.STATUS_AWAITING_HUMAN
             conversation.save(update_fields=['status'])
-            # Acknowledge the customer immediately (fixed, org-editable copy) ONLY on a
-            # genuine escalation, where a human will substantively follow up — so the
-            # thread isn't met with silence while it waits. A guardrail queue (ungrounded
-            # /cap/stale) resolves by approving the AI's own answer, so promising "a team
-            # member will follow up" there would be misleading. Once per transition.
-            if decision.should_escalate:
-                _send_instagram_escalation_ack(org, conversation, ig_user_id)
             # Notify admins once, only on the open -> awaiting_human transition (D2):
             # follow-up queued DMs in an already-flagged thread don't re-notify.
             # on_commit so a rolled-back write never fires a notification.
