@@ -683,6 +683,29 @@ def _ai_message(content='', tool_calls=None, input_tokens=40, output_tokens=20):
 class IGAnswerAgentTests(_FAQViewTestBase):
     """InstagramSupportAgentService.answer() with the ReAct agent mocked."""
 
+    def test_history_respects_context_reset(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        conv = InstagramConversation.objects.create(organization=self.org, ig_user_id='rc')
+        old = InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='OLD sensitive incident',
+            status=InstagramMessage.STATUS_RECEIVED)
+        InstagramMessage.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(minutes=10))
+        conv.agent_context_reset_at = timezone.now() - timedelta(minutes=5)
+        conv.save(update_fields=['agent_context_reset_at'])
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='NEW fresh question',
+            status=InstagramMessage.STATUS_RECEIVED)
+
+        contents = [h['content'] for h
+                    in InstagramSupportAgentService(self.org)._history_messages(conv)]
+        self.assertIn('NEW fresh question', contents)
+        self.assertNotIn('OLD sensitive incident', contents)
+
     @patch('langgraph.prebuilt.create_react_agent')
     @patch('langchain_openai.ChatOpenAI')
     def test_answer_returns_text_usage_tools_and_meters(self, mock_openai, mock_create):
@@ -1787,6 +1810,180 @@ class InboxHandbackTests(_InboxViewTestBase):
                 self.client.post(
                     reverse('tickets:instagram_conversation_handback', args=[conv.id]))
         delay.assert_not_called()
+
+
+class InboxConversationMessagesApiTests(_InboxViewTestBase):
+    """The JSON feed the detail page polls for live updates."""
+
+    def _url(self, conv):
+        return reverse('tickets:instagram_conversation_messages', args=[conv.id])
+
+    def _msg(self, conv, *, direction='inbound', author='customer', content='hi',
+             status='received', minutes_ago=None, **kw):
+        m = InstagramMessage.objects.create(
+            conversation=conv, direction=direction, author=author, content=content,
+            status=status, **kw)
+        if minutes_ago is not None:
+            from datetime import timedelta
+            from django.utils import timezone
+            InstagramMessage.objects.filter(pk=m.pk).update(
+                created_at=timezone.now() - timedelta(minutes=minutes_ago))
+            m.refresh_from_db()
+        return m
+
+    def test_without_after_returns_all_visible(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='hello?')
+        self._msg(conv, direction='outbound', author='agent', content='Doors at 9pm.',
+                  status='auto_sent', provider_message_id='x')
+        data = self.client.get(self._url(conv)).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['hello?', 'Doors at 9pm.'])
+
+    def test_returns_messages_after_cursor(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='old', minutes_ago=5)
+        recent = self._msg(conv, content='new')
+        data = self.client.get(
+            self._url(conv), {'after': recent.created_at.isoformat()}).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['new'])
+
+    def test_excludes_pending_and_discarded_but_reports_draft_id(self):
+        self._login_admin()
+        conv = self._conversation()
+        self._msg(conv, content='visible')
+        draft = self._draft(conv)  # pending_review
+        self._msg(conv, direction='outbound', author='agent', content='scrapped',
+                  status='discarded')
+        data = self.client.get(self._url(conv)).json()
+        self.assertEqual([m['content'] for m in data['messages']], ['visible'])
+        self.assertEqual(data['pending_draft_id'], str(draft.id))
+
+    def test_reports_status_and_controller(self):
+        self._login_admin()
+        human = self._conversation(
+            ig_user_id='h', status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        hd = self.client.get(self._url(human)).json()
+        self.assertEqual(hd['status'], 'human_handling')
+        self.assertFalse(hd['agent_in_control'])
+        resolved = self._conversation(
+            ig_user_id='r', status=InstagramConversation.STATUS_RESOLVED)
+        rd = self.client.get(self._url(resolved)).json()
+        self.assertTrue(rd['agent_in_control'])
+
+    def test_message_shape(self):
+        self._login_admin()
+        conv = self._conversation(ig_user_id='sim-user-1')
+        self._msg(conv, content='inbound text')
+        self._msg(conv, direction='outbound', author='human', content='my reply',
+                  status='approved_sent', provider_message_id='h1')
+        msgs = self.client.get(self._url(conv)).json()['messages']
+        inbound, human = msgs[0], msgs[1]
+        self.assertEqual(inbound['row_class'], 'in')
+        self.assertEqual(inbound['meta_prefix'], 'sim-user-1')
+        self.assertEqual(human['row_class'], 'out human')
+        self.assertEqual(human['meta_prefix'], 'You')
+        for key in ('id', 'created_at', 'created_display', 'content', 'status_display'):
+            self.assertIn(key, human)
+
+    def test_requires_admin(self):
+        self._login_host()
+        conv = self._conversation()
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 403)
+
+    def test_other_org_404(self):
+        self._login_admin()
+        theirs = self._conversation(organization=self.other_org, ig_user_id='theirs')
+        self.assertEqual(self.client.get(self._url(theirs)).status_code, 404)
+
+    def test_feature_off_404(self):
+        self.org.instagram_feature_enabled = False
+        self.org.save(update_fields=['instagram_feature_enabled'])
+        self._login_admin()
+        conv = self._conversation()
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 404)
+
+    def test_post_not_allowed(self):
+        self._login_admin()
+        conv = self._conversation()
+        self.assertEqual(self.client.post(self._url(conv)).status_code, 405)
+
+
+class InboxResolveCloseTests(_InboxViewTestBase):
+    """'Resolve & close' resolves, clears ownership, and resets the agent's context."""
+
+    def _url(self, conv):
+        return reverse('tickets:instagram_conversation_resolve_close', args=[conv.id])
+
+    def test_resolves_clears_owner_and_sets_reset(self):
+        self._login_admin()
+        conv = self._conversation(
+            status=InstagramConversation.STATUS_HUMAN_HANDLING, assigned_to=self.admin_user)
+        resp = self.client.post(self._url(conv))
+        self.assertRedirects(
+            resp, reverse('tickets:instagram_conversation_detail', args=[conv.id]))
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        self.assertIsNone(conv.assigned_to)
+        self.assertIsNotNone(conv.agent_context_reset_at)
+
+    def test_available_on_awaiting_human(self):
+        # The escape hatch for a thread that bounced back to awaiting_human.
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_AWAITING_HUMAN)
+        self.client.post(self._url(conv))
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, InstagramConversation.STATUS_RESOLVED)
+        self.assertIsNotNone(conv.agent_context_reset_at)
+
+    def test_does_not_resume_agent(self):
+        # Unlike hand-back, resolve & close never re-runs the agent on a trailing message.
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        InstagramMessage.objects.create(
+            conversation=conv, direction=InstagramMessage.DIRECTION_INBOUND,
+            author=InstagramMessage.AUTHOR_CUSTOMER, content='its ok',
+            provider_message_id='pm-ok', status=InstagramMessage.STATUS_RECEIVED)
+        with patch('tickets.tasks.process_instagram_inbound_task.delay') as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(self._url(conv))
+        delay.assert_not_called()
+
+    def test_button_shown_when_human_in_control_only(self):
+        self._login_admin()
+        url = 'tickets:instagram_conversation_resolve_close'
+        for status in (InstagramConversation.STATUS_AWAITING_HUMAN,
+                       InstagramConversation.STATUS_HUMAN_HANDLING):
+            conv = self._conversation(ig_user_id='u-' + status, status=status)
+            self.assertContains(
+                self.client.get(
+                    reverse('tickets:instagram_conversation_detail', args=[conv.id])),
+                reverse(url, args=[conv.id]))
+        # Agent in control → no resolve & close control.
+        resolved = self._conversation(
+            ig_user_id='u-resolved', status=InstagramConversation.STATUS_RESOLVED)
+        self.assertNotContains(
+            self.client.get(
+                reverse('tickets:instagram_conversation_detail', args=[resolved.id])),
+            reverse(url, args=[resolved.id]))
+
+    def test_requires_admin(self):
+        self._login_host()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.post(self._url(conv)).status_code, 403)
+
+    def test_other_org_404(self):
+        self._login_admin()
+        theirs = self._conversation(
+            organization=self.other_org, ig_user_id='theirs',
+            status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.post(self._url(theirs)).status_code, 404)
+
+    def test_post_only(self):
+        self._login_admin()
+        conv = self._conversation(status=InstagramConversation.STATUS_HUMAN_HANDLING)
+        self.assertEqual(self.client.get(self._url(conv)).status_code, 405)
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')

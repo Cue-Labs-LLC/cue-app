@@ -54,6 +54,14 @@
             </button>
         </form>
         {% endif %}
+        {% if not conversation.agent_in_control %}
+        <form method="post" action="{% url 'tickets:instagram_conversation_resolve_close' conversation.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-success">
+                <i class="bi bi-check2-circle"></i> Resolve &amp; close
+            </button>
+        </form>
+        {% endif %}
         <a href="{% url 'tickets:instagram_inbox' %}" class="btn btn-outline-secondary">
             <i class="bi bi-arrow-left"></i> Inbox
         </a>
@@ -63,7 +71,7 @@
 <div class="card mb-3">
     <div class="card-body dm-scroll" id="dm-scroll">
         {% for m in thread_messages %}
-        <div class="dm-row {% if m.direction == 'outbound' %}out{% if m.author == 'human' %} human{% endif %}{% if m.status == 'failed' %} failed{% endif %}{% else %}in{% endif %}">
+        <div class="dm-row {% if m.direction == 'outbound' %}out{% if m.author == 'human' %} human{% endif %}{% if m.status == 'failed' %} failed{% endif %}{% else %}in{% endif %}" data-id="{{ m.id }}">
             <div>
                 <div class="dm-bubble">{{ m.content }}</div>
                 <div class="dm-meta">
@@ -119,19 +127,33 @@
                 <i class="bi bi-send"></i> Send reply
             </button>
         </form>
-        {% if conversation.status == 'human_handling' %}
+        {% if not conversation.agent_in_control %}
         <hr class="my-3">
         <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
             <span class="text-muted small">
                 <i class="bi bi-person-check me-1"></i>
-                You're handling this conversation — the agent is paused.
+                {% if conversation.status == 'human_handling' %}
+                    You're handling this conversation — the agent is paused.
+                {% else %}
+                    Escalated and waiting on a human — the agent is paused.
+                {% endif %}
             </span>
-            <form method="post" action="{% url 'tickets:instagram_conversation_handback' conversation.id %}" class="d-inline">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-outline-primary btn-sm">
-                    <i class="bi bi-robot"></i> Hand back to agent
-                </button>
-            </form>
+            <div class="d-flex gap-2 flex-wrap">
+                {% if conversation.status == 'human_handling' %}
+                <form method="post" action="{% url 'tickets:instagram_conversation_handback' conversation.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-robot"></i> Hand back to agent
+                    </button>
+                </form>
+                {% endif %}
+                <form method="post" action="{% url 'tickets:instagram_conversation_resolve_close' conversation.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-success btn-sm">
+                        <i class="bi bi-check2-circle"></i> Resolve &amp; close
+                    </button>
+                </form>
+            </div>
         </div>
         {% endif %}
     </div>
@@ -140,11 +162,99 @@
 {% endblock %}
 
 {% block extra_js %}
+<script type="application/json" id="dm-live-config">
+{
+  "poll_url": "{% url 'tickets:instagram_conversation_messages' conversation.id %}",
+  "status": "{{ conversation.status }}",
+  "agent_in_control": {{ conversation.agent_in_control|yesno:"true,false" }},
+  "pending_draft_id": {% if pending_draft %}"{{ pending_draft.id }}"{% else %}null{% endif %},
+  "after": "{% with lm=thread_messages|last %}{% if lm %}{{ lm.created_at|date:'c' }}{% endif %}{% endwith %}"
+}
+</script>
 <script>
+(function () {
+  var scrollEl = document.getElementById('dm-scroll');
+  var cfg = JSON.parse(document.getElementById('dm-live-config').textContent);
+  var POLL_MS = 4000, ERROR_MS = 8000, NEAR_BOTTOM_PX = 80;
+
   // Start the thread scrolled to the newest message (chat convention).
-  document.addEventListener('DOMContentLoaded', function () {
-    var el = document.getElementById('dm-scroll');
-    if (el) { el.scrollTop = el.scrollHeight; }
+  if (scrollEl) { scrollEl.scrollTop = scrollEl.scrollHeight; }
+
+  // Seed the set of message ids already on the page so we never double-append.
+  var seen = new Set();
+  document.querySelectorAll('#dm-scroll .dm-row[data-id]').forEach(function (row) {
+    seen.add(row.getAttribute('data-id'));
   });
+  var cursor = cfg.after || '';
+
+  function nearBottom() {
+    if (!scrollEl) { return false; }
+    return scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - NEAR_BOTTOM_PX;
+  }
+
+  function appendMessage(m) {
+    var row = document.createElement('div');
+    row.className = 'dm-row ' + m.row_class;
+    row.setAttribute('data-id', m.id);
+
+    var inner = document.createElement('div');
+    var bubble = document.createElement('div');
+    bubble.className = 'dm-bubble';
+    bubble.textContent = m.content;  // text, not HTML — safe + preserves pre-wrap
+    var meta = document.createElement('div');
+    meta.className = 'dm-meta';
+    var label = m.meta_prefix;
+    if (m.status_display) { label += ' · ' + m.status_display; }
+    meta.textContent = label + ' · ' + m.created_display;
+
+    inner.appendChild(bubble);
+    inner.appendChild(meta);
+    row.appendChild(inner);
+    scrollEl.appendChild(row);
+  }
+
+  function structuralChange(data) {
+    return data.status !== cfg.status
+      || data.agent_in_control !== cfg.agent_in_control
+      || (data.pending_draft_id || null) !== (cfg.pending_draft_id || null);
+  }
+
+  function poll() {
+    if (document.hidden) { setTimeout(poll, POLL_MS); return; }
+    var url = cfg.poll_url + (cursor ? ('?after=' + encodeURIComponent(cursor)) : '');
+    fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('stop'); }  // auth/feature lost -> stop polling
+        return r.json();
+      })
+      .then(function (data) {
+        // A structural change (control flip / draft appears / escalation) needs the
+        // server-rendered header, draft card and hand-back buttons — just reload.
+        if (structuralChange(data)) { window.location.reload(); return; }
+        var wasAtBottom = nearBottom();
+        var appended = false;
+        var msgs = data.messages || [];
+        msgs.forEach(function (m) {
+          if (seen.has(m.id)) { return; }
+          seen.add(m.id);
+          appendMessage(m);
+          appended = true;
+        });
+        // Messages are chronological; advance the cursor to the newest one returned
+        // (endpoint emits UTC ISO — don't lexically compare against the local-tz seed).
+        if (msgs.length) { cursor = msgs[msgs.length - 1].created_at; }
+        if (appended && wasAtBottom) { scrollEl.scrollTop = scrollEl.scrollHeight; }
+        setTimeout(poll, POLL_MS);
+      })
+      .catch(function (err) {
+        if (err && err.message === 'stop') { return; }
+        setTimeout(poll, ERROR_MS);
+      });
+  }
+
+  // This script sits at end of <body>, so the DOM above is ready; start the loop directly
+  // (DOMContentLoaded may have already fired, which would never run a late listener).
+  setTimeout(poll, POLL_MS);
+})();
 </script>
 {% endblock %}

@@ -73,6 +73,46 @@ def _faq_json(faq):
     }
 
 
+def _message_json(message, conversation):
+    """Serialize a thread message for the live-poll endpoint.
+
+    Row class + meta label are computed here (not in JS) so the bubble matches the
+    server-rendered template exactly. ``content`` is raw text; the client inserts it via
+    ``textContent`` (CSS already applies ``white-space: pre-wrap``), so no escaping here.
+    """
+    from django.template.defaultfilters import date as date_filter
+    from django.utils.timezone import localtime
+
+    outbound = message.direction == InstagramMessage.DIRECTION_OUTBOUND
+    if outbound:
+        row_class = 'out'
+        if message.author == InstagramMessage.AUTHOR_HUMAN:
+            row_class += ' human'
+        if message.status == InstagramMessage.STATUS_FAILED:
+            row_class += ' failed'
+        if message.author == InstagramMessage.AUTHOR_HUMAN:
+            meta_prefix = 'You'
+        elif message.author == InstagramMessage.AUTHOR_SYSTEM:
+            meta_prefix = 'Auto-reply'
+        else:
+            meta_prefix = 'Agent'
+        status_display = message.get_status_display()
+    else:
+        row_class = 'in'
+        meta_prefix = conversation.ig_username or conversation.ig_user_id
+        status_display = ''
+
+    return {
+        'id': str(message.id),
+        'created_at': message.created_at.isoformat(),
+        'created_display': date_filter(localtime(message.created_at), 'M j, g:i a'),
+        'row_class': row_class,
+        'meta_prefix': meta_prefix,
+        'status_display': status_display,
+        'content': message.content,
+    }
+
+
 @login_required
 @require_org
 @require_admin
@@ -357,6 +397,58 @@ def instagram_conversation_detail(request, conversation_id):
 @require_org
 @require_admin
 @require_instagram_feature
+@require_http_methods(["GET"])
+def instagram_conversation_messages(request, conversation_id):
+    """JSON feed of thread messages for the detail page's live-poll loop.
+
+    Returns messages at/after the ``?after=<iso8601>`` cursor (all when omitted), plus the
+    conversation's current control state so the client can detect a structural change and
+    reload. Applies the same visibility filter as ``instagram_conversation_detail`` (no
+    un-sent drafts). Uses ``created_at__gte`` so a boundary message is never skipped; the
+    client de-dupes by ``id`` (UUID PKs aren't monotonic, so we page by timestamp).
+    """
+    from django.utils.dateparse import parse_datetime
+
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+
+    messages_qs = conversation.messages.all()  # Meta.ordering = ['created_at']
+    after = parse_datetime(request.GET.get('after', '') or '')
+    if after is not None:
+        messages_qs = messages_qs.filter(created_at__gte=after)
+
+    hidden_inline = {
+        InstagramMessage.STATUS_PENDING_REVIEW,
+        InstagramMessage.STATUS_DISCARDED,
+    }
+    visible = [
+        m for m in messages_qs
+        if not (m.direction == InstagramMessage.DIRECTION_OUTBOUND
+                and m.status in hidden_inline)
+    ]
+
+    pending_draft = (
+        conversation.messages
+        .filter(direction=InstagramMessage.DIRECTION_OUTBOUND,
+                status=InstagramMessage.STATUS_PENDING_REVIEW)
+        .order_by('-created_at')
+        .first()
+    )
+
+    return JsonResponse({
+        'messages': [_message_json(m, conversation) for m in visible],
+        'status': conversation.status,
+        'agent_in_control': conversation.agent_in_control,
+        'pending_draft_id': str(pending_draft.id) if pending_draft else None,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
 @require_http_methods(["POST"])
 def instagram_draft_approve(request, conversation_id, message_id):
     """Approve (optionally edited) or discard a queued draft."""
@@ -511,3 +603,30 @@ def _resume_agent_on_pending_inbound(conversation, organization):
     transaction.on_commit(
         lambda: process_instagram_inbound_task.delay(org_id, normalized)
     )
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_conversation_resolve_close(request, conversation_id):
+    """Resolve a human-owned thread AND reset the agent's context.
+
+    Like hand-back, this re-enables the agent (status resolved, ownership cleared). Unlike
+    hand-back, it stamps ``agent_context_reset_at`` so the agent treats future messages as
+    a fresh conversation — it won't re-escalate a benign follow-up against an already-handled
+    sensitive incident. It intentionally does NOT re-run the agent on a trailing message: the
+    human is declaring the thread handled.
+    """
+    org = get_organization(request)
+    conversation = get_object_or_404(
+        InstagramConversation.objects.filter(organization=org), id=conversation_id,
+    )
+    conversation.status = InstagramConversation.STATUS_RESOLVED
+    conversation.assigned_to = None
+    conversation.agent_context_reset_at = timezone.now()
+    conversation.save(update_fields=['status', 'assigned_to', 'agent_context_reset_at'])
+    messages.success(
+        request, 'Conversation resolved and closed. The agent will start fresh on new messages.')
+    return redirect('tickets:instagram_conversation_detail', conversation_id=conversation.id)

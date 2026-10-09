@@ -3321,6 +3321,10 @@ class InstagramConversation(BaseModel):
         blank=True,
         related_name='assigned_ig_conversations',
     )
+    # When a human "resolves & closes" a thread, this marks a fresh-start point: the agent
+    # only reads messages at/after it as history, so a later benign follow-up isn't judged
+    # against an already-handled sensitive incident. Null = agent sees the full history.
+    agent_context_reset_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-last_message_at']
