@@ -15,6 +15,7 @@ from tickets.services.ai_metering import (
     record_ai_token_usage,
     usage_key_from_metadata,
 )
+from tickets.services.ai_tracing import trace_config
 
 from .history import load_history
 from .prompts import SYSTEM_PROMPT
@@ -94,6 +95,13 @@ class ChatAgentService:
             for event in agent.stream(
                 {"messages": messages},
                 stream_mode="messages",
+                **trace_config(
+                    name='chat-agent',
+                    tags=['chat-agent'],
+                    session_id=conversation_id,
+                    user_id=getattr(self.user, 'id', None),
+                    metadata={'organization_id': str(self.organization.id)},
+                ),
             ):
                 # event is a tuple of (message, metadata)
                 msg, metadata = event

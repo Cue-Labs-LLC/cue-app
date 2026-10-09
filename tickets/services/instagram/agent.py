@@ -15,6 +15,7 @@ from django.conf import settings
 
 from ...models import AITokenUsage
 from ..ai_metering import TokenUsageAccumulator, record_ai_token_usage
+from ..ai_tracing import trace_config
 from .prompts import NEEDS_HUMAN_SENTINEL, SYSTEM_PROMPT
 from .tools import build_ig_tools
 
@@ -105,7 +106,15 @@ class InstagramSupportAgentService:
         messages.append({'role': 'user', 'content': inbound_text})
 
         try:
-            result = agent.invoke({'messages': messages})
+            result = agent.invoke(
+                {'messages': messages},
+                **trace_config(
+                    name='ig-support-answer',
+                    tags=['ig-support-agent', 'answer'],
+                    session_id=conversation.id if conversation is not None else None,
+                    metadata={'organization_id': str(self.organization.id)},
+                ),
+            )
         except Exception as exc:
             logger.error("Instagram support agent call failed: %s", exc)
             raise InstagramAgentError(

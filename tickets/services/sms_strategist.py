@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from tickets.models import AITokenUsage
 from tickets.services.ai_metering import record_ai_token_usage
+from tickets.services.ai_tracing import trace_config
 from tickets.sms import (
     contains_emoji, sms_segment_info, strip_authored_stop_footer, strip_emoji,
     with_stop_footer,
@@ -454,10 +455,18 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
             stream_usage=True,
         )
         structured_llm = llm.with_structured_output(CampaignPlan, include_raw=True)
-        raw_result = structured_llm.invoke([
-            {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user', 'content': user_content},
-        ])
+        raw_result = structured_llm.invoke(
+            [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': user_content},
+            ],
+            **trace_config(
+                name='sms-strategist-plan',
+                tags=['sms-strategist', 'generate'],
+                user_id=getattr(user, 'id', None),
+                metadata={'organization_id': str(organization.id)},
+            ),
+        )
     except Exception as exc:
         logger.error("SMS strategist LLM call failed: %s", exc)
         raise SMSStrategistError(

@@ -220,9 +220,11 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o')
 CHAT_MAX_HISTORY = int(os.environ.get('CHAT_MAX_HISTORY', '50'))
 
-# Langfuse — hosted eval datasets/experiments for the Instagram support agent
-# (`eval_ig_agent` management command). Keys come from a Langfuse Cloud project
-# (or self-hosted). Unset = the eval command errors cleanly; nothing else uses them.
+# Langfuse — the single LLM-observability + eval standard (consolidated off LangSmith; see
+# docs/adr/0001-llm-observability-langfuse.md). Same keys power (1) production tracing of the
+# LangChain/LangGraph agents via tickets/services/ai_tracing.trace_config() and (2) the
+# `eval_ig_agent` datasets/experiments. Unset = no traces + the eval command errors cleanly.
+# Set LANGFUSE_HOST to a self-hosted instance to keep trace data (incl. customer PII) in-boundary.
 LANGFUSE_PUBLIC_KEY = os.environ.get('LANGFUSE_PUBLIC_KEY', '')
 LANGFUSE_SECRET_KEY = os.environ.get('LANGFUSE_SECRET_KEY', '')
 LANGFUSE_HOST = os.environ.get('LANGFUSE_HOST', 'https://cloud.langfuse.com')

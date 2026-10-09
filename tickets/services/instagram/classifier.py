@@ -44,12 +44,17 @@ class EscalationDecision(BaseModel):
     )
 
 
-def classify_escalation(organization, question, draft_answer) -> EscalationDecision:
+def classify_escalation(organization, question, draft_answer,
+                        session_id=None) -> EscalationDecision:
     """Classify whether ``question`` (and its drafted reply) needs a human.
 
-    Raises InstagramAgentError if the LLM is unavailable or returns unreadable output.
+    ``session_id`` (optional) groups this classify trace with the answer trace for the same
+    conversation in Langfuse. Raises InstagramAgentError if the LLM is unavailable or returns
+    unreadable output.
     """
     from langchain_openai import ChatOpenAI
+
+    from ..ai_tracing import trace_config
 
     model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
     user_content = (
@@ -65,10 +70,18 @@ def classify_escalation(organization, question, draft_answer) -> EscalationDecis
             stream_usage=True,
         )
         structured_llm = llm.with_structured_output(EscalationDecision, include_raw=True)
-        raw_result = structured_llm.invoke([
-            {'role': 'system', 'content': CLASSIFIER_PROMPT},
-            {'role': 'user', 'content': user_content},
-        ])
+        raw_result = structured_llm.invoke(
+            [
+                {'role': 'system', 'content': CLASSIFIER_PROMPT},
+                {'role': 'user', 'content': user_content},
+            ],
+            **trace_config(
+                name='ig-escalation-classify',
+                tags=['ig-support-agent', 'classify'],
+                session_id=session_id,
+                metadata={'organization_id': str(organization.id)},
+            ),
+        )
     except Exception as exc:
         logger.error("Instagram escalation classifier LLM call failed: %s", exc)
         raise InstagramAgentError(
