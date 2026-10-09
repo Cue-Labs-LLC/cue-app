@@ -7,12 +7,17 @@
   .dm-thread { max-width: 760px; margin: 0 auto; }
   .dm-row { display: flex; margin-bottom: 10px; }
   .dm-row.out { justify-content: flex-end; }
-  .dm-bubble { max-width: 75%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; }
+  /* The wrapper div is the flex item: cap its width against the row and let it
+     stack + side-align the bubble and meta consistently. */
+  .dm-row > div { display: flex; flex-direction: column; align-items: flex-start; max-width: 75%; }
+  .dm-row.out > div { align-items: flex-end; }
+  .dm-bubble { max-width: 100%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; }
   .dm-row.in  .dm-bubble { background: var(--surface-2, #f1f3f5); color: var(--text, #212529); border-bottom-left-radius: 4px; }
   .dm-row.out .dm-bubble { background: var(--accent, #0d6efd); color: #fff; border-bottom-right-radius: 4px; }
   .dm-row.out.human .dm-bubble { background: #198754; }
   .dm-row.out.failed .dm-bubble { background: #dc3545; }
   .dm-meta { font-size: 11px; opacity: .7; margin-top: 3px; }
+  .dm-row.out .dm-meta { text-align: right; }
   /* Keep the thread inside its own scroll area so the header + reply box stay put. */
   .dm-scroll { max-height: 60vh; overflow-y: auto; }
 </style>
