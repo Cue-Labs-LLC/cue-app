@@ -48,7 +48,7 @@ class Command(BaseCommand):
 
         # Simulate runs reuse one conversation per (org, sender_id), so the thread
         # accumulates prior turns. Mark the cutoff before running so we report ONLY this
-        # turn's reply + ack — not a stale draft/escalation-ack left by an earlier turn.
+        # turn's reply — not a stale draft left by an earlier turn.
         turn_start = timezone.now()
 
         # Run inline (eager) so we can read the result right after.
@@ -61,8 +61,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("No conversation created (task no-op?)."))
             return
 
-        # The agent's own answer/draft (the automated escalation ack, author=system, is
-        # reported separately below so it doesn't masquerade as the reply).
+        # The agent's own answer/draft (a true escalation produces none — see below).
         outbound = (
             InstagramMessage.objects
             .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
@@ -83,13 +82,3 @@ class Command(BaseCommand):
             self.stdout.write(f"category:     {outbound.escalation_category or '-'} "
                               f"(confidence {outbound.confidence})")
             self.stdout.write(f"reply:        {outbound.content}")
-
-        ack = (
-            InstagramMessage.objects
-            .filter(conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
-                    author=InstagramMessage.AUTHOR_SYSTEM, created_at__gte=turn_start)
-            .order_by('-created_at')
-            .first()
-        )
-        if ack is not None:
-            self.stdout.write(f"auto-ack:     {ack.content}")

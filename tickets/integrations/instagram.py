@@ -126,22 +126,7 @@ def instagram_faq_list(request):
         'is_connected': bool(
             org.instagram_page_access_token and org.instagram_business_account_id
         ),
-        'escalation_ack_text': org.instagram_escalation_ack_text,
     })
-
-
-@login_required
-@require_org
-@require_admin
-@require_instagram_feature
-@require_http_methods(["POST"])
-def instagram_agent_settings(request):
-    """Save per-org support-agent settings (the escalation acknowledgement copy)."""
-    org = get_organization(request)
-    org.instagram_escalation_ack_text = request.POST.get('escalation_ack_text', '').strip()
-    org.save(update_fields=['instagram_escalation_ack_text'])
-    messages.success(request, 'Agent settings saved.')
-    return redirect('tickets:instagram_faq_list')
 
 
 @login_required

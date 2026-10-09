@@ -272,15 +272,6 @@ class Organization(BaseModel):
         default=False,
         help_text='When on, the Instagram DM support agent auto-answers routine FAQ DMs and queues the rest for review.',
     )
-    instagram_escalation_ack_text = models.TextField(
-        blank=True,
-        default='Thanks for your message! A team member will follow up with you shortly.',
-        help_text=(
-            "Auto-sent to the customer the moment a DM is escalated to a human, so an "
-            "escalated thread isn't met with silence while it waits for a reply. "
-            "Leave blank to send no acknowledgement."
-        ),
-    )
     mailchimp_access_token = models.CharField(max_length=512, blank=True, default='')
     mailchimp_dc = models.CharField(max_length=20, blank=True, default='')
     mailchimp_account_id = models.CharField(max_length=100, blank=True, default='')

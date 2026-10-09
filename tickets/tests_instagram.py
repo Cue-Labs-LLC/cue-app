@@ -1450,12 +1450,6 @@ class InstagramFeatureFlagTests(_InboxViewTestBase):
             reverse('tickets:instagram_faq_edit', args=[faq.id]),
         ):
             self.assertEqual(self.client.get(url).status_code, 404, url)
-        self.assertEqual(
-            self.client.post(
-                reverse('tickets:instagram_agent_settings'),
-                {'escalation_ack_text': 'x'}).status_code,
-            404,
-        )
 
     def test_ux_visible_when_feature_on(self):
         self._login_admin()  # base sets instagram_feature_enabled=True
@@ -2075,18 +2069,19 @@ class InboxEscalationNotifyTaskTests(TestCase):
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
-class IGEscalationAckTests(TestCase):
-    """On escalation the customer gets an immediate, org-editable acknowledgement."""
+class IGEscalationSilentTests(TestCase):
+    """Escalations happen silently: the customer gets no outbound message until a human
+    replies (no auto-acknowledgement is ever sent)."""
 
     def setUp(self):
         self.org = Organization.objects.create(
-            name='Ack Org', slug='ack-org',
-            instagram_business_account_id='acct-ack',
+            name='Esc Org', slug='esc-org',
+            instagram_business_account_id='acct-esc',
             instagram_support_agent_enabled=True,
         )
 
     def _normalized(self, text='I need a refund', mid='m1', sender='cust-1'):
-        return {'ig_account_id': 'acct-ack', 'sender_id': sender, 'text': text,
+        return {'ig_account_id': 'acct-esc', 'sender_id': sender, 'text': text,
                 'provider_message_id': mid, 'timestamp': 0}
 
     def _run(self, **kw):
@@ -2102,25 +2097,22 @@ class IGEscalationAckTests(TestCase):
                                                     category='refund_dispute', reason='r'))
         clf.start(); self.addCleanup(clf.stop)
 
-    def test_escalation_sends_ack_and_no_agent_draft(self):
+    def test_escalation_sends_no_outbound_message(self):
         self._patch_escalate()
         self._run()
         conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
-        # No agent draft on a true escalation — the human writes the real reply.
+        # Thread is flagged for a human...
+        self.assertEqual(conv.status, InstagramConversation.STATUS_AWAITING_HUMAN)
+        # ...and NOTHING goes out: no agent draft, no automated acknowledgement —
+        # the customer hears nothing until a human replies.
         self.assertFalse(InstagramMessage.objects.filter(
-            conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
+            conversation=conv,
             direction=InstagramMessage.DIRECTION_OUTBOUND).exists())
-        # But the customer still got an immediate acknowledgement.
-        ack = InstagramMessage.objects.get(
-            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM)
-        self.assertEqual(ack.status, InstagramMessage.STATUS_AUTO_SENT)
-        self.assertEqual(ack.content, self.org.instagram_escalation_ack_text)
-        self.assertTrue(ack.provider_message_id)  # actually sent via the stub
 
-    def test_guardrail_queue_keeps_draft_without_ack(self):
+    def test_guardrail_queue_keeps_draft(self):
         # A routine answer that couldn't auto-send (here: ungrounded, no tool hit) is
-        # queued for approval — keep the draft and flag the thread, but DON'T ack the
-        # customer: the human just approves the AI answer, no follow-up is promised.
+        # queued for approval — keep the draft and flag the thread. Still no outbound
+        # message to the customer; the human approves the AI answer.
         svc = patch('tickets.services.instagram.InstagramSupportAgentService')
         cls = svc.start(); self.addCleanup(svc.stop)
         cls.return_value.answer.return_value = AnswerResult(text='Doors at 9pm', tool_calls=[])
@@ -2134,29 +2126,10 @@ class IGEscalationAckTests(TestCase):
         self.assertTrue(InstagramMessage.objects.filter(
             conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
             status=InstagramMessage.STATUS_PENDING_REVIEW).exists())
-        self.assertFalse(InstagramMessage.objects.filter(
-            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).exists())
-
-    def test_blank_ack_text_sends_nothing(self):
-        self.org.instagram_escalation_ack_text = ''
-        self.org.save(update_fields=['instagram_escalation_ack_text'])
-        self._patch_escalate()
-        self._run()
-        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
-        self.assertFalse(InstagramMessage.objects.filter(
-            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).exists())
-
-    def test_ack_sent_once_per_transition(self):
-        self._patch_escalate()
-        self._run(mid='a')
-        self._run(mid='b', text='still waiting')
-        conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
-        self.assertEqual(InstagramMessage.objects.filter(
-            conversation=conv, author=InstagramMessage.AUTHOR_SYSTEM).count(), 1)
 
     def test_no_new_draft_while_awaiting_human(self):
-        # First DM escalates -> awaiting_human (+ ack). A follow-up on the now
-        # human-owned thread is recorded but the agent must not draft over the human.
+        # First DM escalates -> awaiting_human. A follow-up on the now human-owned thread
+        # is recorded but the agent must not draft over the human.
         self._patch_escalate()
         self._run(mid='first')
         conv = InstagramConversation.objects.get(organization=self.org, ig_user_id='cust-1')
@@ -2177,49 +2150,3 @@ class IGEscalationAckTests(TestCase):
                 author=InstagramMessage.AUTHOR_AGENT).count(),
             agent_drafts_before,
         )
-
-    @override_settings(IG_AGENT_DAILY_ANSWER_CAP=1)
-    def test_ack_does_not_count_against_daily_cap(self):
-        # A prior automated ack must not consume the auto-answer budget.
-        conv = InstagramConversation.objects.create(
-            organization=self.org, ig_user_id='cust-2')
-        InstagramMessage.objects.create(
-            conversation=conv, direction=InstagramMessage.DIRECTION_OUTBOUND,
-            author=InstagramMessage.AUTHOR_SYSTEM, content='ack',
-            status=InstagramMessage.STATUS_AUTO_SENT, provider_message_id='ackprev')
-        svc = patch('tickets.services.instagram.InstagramSupportAgentService')
-        cls = svc.start(); self.addCleanup(svc.stop)
-        cls.return_value.answer.return_value = AnswerResult(
-            text='Doors at 9pm', tool_calls=['get_faq'])
-        clf = patch('tickets.services.instagram.classify_escalation',
-                    return_value=EscalationDecision(should_escalate=False, confidence=0.95,
-                                                    category='routine', reason='r'))
-        clf.start(); self.addCleanup(clf.stop)
-        self._run(sender='cust-2', mid='routine-1', text='when do doors open?')
-        answer = InstagramMessage.objects.get(
-            conversation=conv, author=InstagramMessage.AUTHOR_AGENT,
-            direction=InstagramMessage.DIRECTION_OUTBOUND)
-        self.assertEqual(answer.status, InstagramMessage.STATUS_AUTO_SENT)
-
-
-class InstagramAgentSettingsViewTests(_FAQViewTestBase):
-    def test_admin_can_update_ack_text(self):
-        self._login_admin()
-        resp = self.client.post(
-            reverse('tickets:instagram_agent_settings'),
-            {'escalation_ack_text': 'We will get back to you soon!'})
-        self.assertRedirects(resp, reverse('tickets:instagram_faq_list'))
-        self.org.refresh_from_db()
-        self.assertEqual(
-            self.org.instagram_escalation_ack_text, 'We will get back to you soon!')
-
-    def test_non_admin_forbidden(self):
-        self._login_host()
-        self.assertEqual(
-            self.client.post(
-                reverse('tickets:instagram_agent_settings'),
-                {'escalation_ack_text': 'x'}).status_code,
-            403,
-        )
-        self.org.refresh_from_db()
-        self.assertNotEqual(self.org.instagram_escalation_ack_text, 'x')

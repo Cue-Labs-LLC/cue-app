@@ -922,7 +922,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
         ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled', 'instagram_feature_enabled')}),
         ('Instagram DM Agent', {
-            'fields': ('instagram_support_agent_enabled', 'instagram_escalation_ack_text',
+            'fields': ('instagram_support_agent_enabled',
                        'instagram_business_account_id', 'instagram_username'),
             'classes': ('collapse',),
             'description': 'instagram_feature_enabled (in Feature Flags) gates UX visibility; '
