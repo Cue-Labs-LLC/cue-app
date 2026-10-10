@@ -1669,3 +1669,118 @@ def notify_instagram_escalation_task(self, conversation_id):
     except Exception as exc:
         logger.exception("Failed to send IG escalation email for conversation %s", conversation_id)
         raise self.retry(exc=exc)
+
+
+# --- Market Competition Agent (Phase 4): async scan + persistence + gates ---
+
+# In-progress lock TTL (seconds), safely above worst-case scan time (several
+# searches + 2 LLM calls). A crashed/killed worker self-heals when the lock
+# expires instead of wedging the event in "scanning…" forever (D4, §4.1).
+_COMPETITION_SCAN_LOCK_TTL = 300
+
+
+def _competition_lock_key(event_id):
+    """Cache key for the per-event in-progress scan lock (D4)."""
+    return f"market_comp:scan:{event_id}"
+
+
+def _market_comp_daily_scan_count(organization):
+    """How many competition scans this org has completed today (project TIME_ZONE).
+
+    Soft, best-effort cost guard (D3). Counts events whose scan was persisted today
+    (``competition_generated_at`` — set on every completed scan, incl. ``unavailable``);
+    the check-then-act race at the boundary is accepted, like the IG daily cap.
+    """
+    from django.utils import timezone
+
+    from tickets.models import Event
+
+    # __date respects the active timezone under USE_TZ, so "today" is project-local.
+    return Event.objects.filter(
+        organization=organization,
+        competition_generated_at__date=timezone.localdate(),
+    ).count()
+
+
+def _under_market_comp_daily_cap(organization):
+    """True if the org may run another competition scan today (0 = cap disabled)."""
+    from django.conf import settings
+
+    cap = getattr(settings, 'MARKET_COMPETITION_DAILY_SCAN_CAP', 50)
+    if not cap:
+        return True
+    return _market_comp_daily_scan_count(organization) < cap
+
+
+def request_competition_scan(organization, event, *, force=False):
+    """Gate + enqueue a market-competition scan. Returns a short status string.
+
+    The single entry point a view (P5) calls. Order of gates:
+      - ``'fresh'``       — a current result within the TTL already covers the event
+                            (DO4); nothing enqueued (unless ``force``).
+      - ``'capped'``      — the org hit its daily scan cap (D3); nothing enqueued.
+      - ``'in_progress'`` — a scan for this event is already running (lock held, D4).
+      - ``'scanning'``    — gates passed; the Celery task was enqueued.
+
+    The in-progress lock is acquired here, *before* enqueue (§4.1), and released in
+    the task's ``finally``.
+    """
+    from django.core.cache import cache as django_cache
+
+    from tickets.services.market_competition import is_competition_fresh
+
+    if not force and is_competition_fresh(event):
+        return 'fresh'
+    if not _under_market_comp_daily_cap(organization):
+        return 'capped'
+    # cache.add is atomic — returns True only if the key was absent (acquire).
+    if not django_cache.add(
+        _competition_lock_key(event.id), 1, _COMPETITION_SCAN_LOCK_TTL
+    ):
+        return 'in_progress'
+    scan_event_competition_task.delay(str(event.id))
+    return 'scanning'
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def scan_event_competition_task(self, event_id):
+    """Run one market-competition scan for an event and persist the result.
+
+    Mirrors ``regenerate_event_summary_task``: per-event, hash-gated, cache-on-Event,
+    returns a short status string. ``calculate_event_competition`` never raises and
+    reports ``unavailable`` on missing key / guard failure / empty-or-failed scan
+    (D2) — that is a valid persisted terminal result, not a retry. Only unexpected
+    (e.g. DB) errors retry.
+    """
+    from tickets.cache_utils import safe_cache_delete
+    from tickets.models import Event
+    from tickets.services.ai_tracing import flush_traces
+    from tickets.services.market_competition import (
+        calculate_event_competition,
+        is_competition_fresh,
+        persist_competition,
+    )
+
+    event = (
+        Event.objects.select_related('venue', 'organization')
+        .filter(id=event_id, deleted_at__isnull=True)
+        .first()
+    )
+    if event is None:
+        logger.warning("Competition scan: event %s not found, skipping", event_id)
+        safe_cache_delete(_competition_lock_key(event_id))
+        return 'missing'
+
+    try:
+        # Defense-in-depth: a direct/duplicate run no-ops if a fresh result exists.
+        if is_competition_fresh(event):
+            return 'fresh'
+        result = calculate_event_competition(event.organization, event)
+        persist_competition(event, result)
+        return result.status
+    except Exception as exc:
+        logger.exception("Competition scan failed for event %s", event_id)
+        raise self.retry(exc=exc)
+    finally:
+        safe_cache_delete(_competition_lock_key(event_id))
+        flush_traces()

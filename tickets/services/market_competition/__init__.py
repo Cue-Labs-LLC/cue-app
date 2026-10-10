@@ -13,6 +13,11 @@ from .calculator import (
     calculate_event_competition,
     derive_genre_hints,
 )
+from .persistence import (
+    compute_input_hash,
+    is_competition_fresh,
+    persist_competition,
+)
 from .query_plan import build_queries
 from .scanner import scan_competitors
 from .scoring import score_competition
@@ -31,4 +36,7 @@ __all__ = [
     'derive_genre_hints',
     'MarketCompetitionCalculator',
     'calculate_event_competition',
+    'compute_input_hash',
+    'is_competition_fresh',
+    'persist_competition',
 ]

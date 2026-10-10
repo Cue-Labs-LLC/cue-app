@@ -440,10 +440,10 @@ IG_AGENT_ANSWER_TEMPERATURE = float(
     os.environ.get('IG_AGENT_ANSWER_TEMPERATURE', '0.3')
 )
 
-# Market Competition Agent (per-event competitive-density signal). Phases 1-2
-# consume the settings below (the fixed query plan + the web-search client). The
-# remaining config (RESULT_TTL_DAYS, DAILY_SCAN_CAP) lands with the phases that
-# use it (P4). See docs/technical-design/market-competition-agent.md §4.3.
+# Market Competition Agent (per-event competitive-density signal). The settings
+# below feed the fixed query plan + web-search client (P1-P2), and the Celery
+# task's freshness/cost gates (RESULT_TTL_DAYS, DAILY_SCAN_CAP — P4). See
+# docs/technical-design/market-competition-agent.md §4.3.
 # Date-span ±window (days) used to widen the search date range and, as the
 # scorer's default window, to decide date proximity (D4/DO5-b).
 MARKET_COMPETITION_DATE_WINDOW_DAYS = int(
@@ -481,6 +481,17 @@ MARKET_COMPETITION_INCLUDE_DOMAINS = os.environ.get(
 )
 MARKET_COMPETITION_EXCLUDE_DOMAINS = os.environ.get(
     'MARKET_COMPETITION_EXCLUDE_DOMAINS', ''
+)
+# Freshness TTL (DO4): a persisted result older than this forces a re-scan
+# regardless of input hash — the input hash suppresses re-scans only within this
+# window, so an external landscape can't go stale forever. See §4.3.
+MARKET_COMPETITION_RESULT_TTL_DAYS = int(
+    os.environ.get('MARKET_COMPETITION_RESULT_TTL_DAYS', '7')
+)
+# Per-org scans/day (D3). Past it the trigger returns 'capped' and does not
+# enqueue. Mirrors IG_AGENT_DAILY_ANSWER_CAP; 0 disables the guard.
+MARKET_COMPETITION_DAILY_SCAN_CAP = int(
+    os.environ.get('MARKET_COMPETITION_DAILY_SCAN_CAP', '50')
 )
 
 # Mailchimp integration
