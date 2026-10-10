@@ -92,10 +92,12 @@ def normalize_meta_payload(body: dict) -> list:
 
 
 def verify_meta_signature(request) -> bool:
-    """Validate the ``X-Hub-Signature-256`` HMAC on an inbound Meta webhook POST.
+    """Validate the ``X-Hub-Signature-256`` HMAC on an inbound Instagram webhook POST.
 
     Meta signs with a hex HMAC-SHA256 of the raw body under the app secret
-    (``sha256=<hexdigest>``). Bypassed in E2E test mode or when
+    (``sha256=<hexdigest>``). For the Instagram Login path that is the **Instagram App
+    Secret** (``INSTAGRAM_APP_SECRET``); we fall back to ``FACEBOOK_APP_SECRET`` for any
+    legacy Facebook-Login setup. Bypassed in E2E test mode or when
     INSTAGRAM_VALIDATE_WEBHOOKS is False (local dev without a tunnel) — mirrors
     ``validate_twilio_request``.
     """
@@ -103,7 +105,11 @@ def verify_meta_signature(request) -> bool:
         return True
     if not getattr(settings, 'INSTAGRAM_VALIDATE_WEBHOOKS', True):
         return True
-    app_secret = getattr(settings, 'FACEBOOK_APP_SECRET', '') or ''
+    app_secret = (
+        getattr(settings, 'INSTAGRAM_APP_SECRET', '')
+        or getattr(settings, 'FACEBOOK_APP_SECRET', '')
+        or ''
+    )
     header = request.headers.get('X-Hub-Signature-256', '')
     if not app_secret or not header.startswith('sha256='):
         return False

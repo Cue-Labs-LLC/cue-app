@@ -9,6 +9,14 @@ decides whether the draft can be auto-sent or must be queued for a human.
 
 from .agent import AnswerResult, InstagramAgentError, InstagramSupportAgentService
 from .classifier import EscalationDecision, classify_escalation, decide_autosend
+from .graph_client import (
+    OAUTH_SCOPES as IG_OAUTH_SCOPES,
+    GraphAPISender,
+    InstagramGraphAPIError,
+    InstagramGraphClient,
+    exchange_for_long_lived_instagram_token,
+    exchange_instagram_code_for_token,
+)
 from .inbound import NormalizedInbound, normalize_meta_payload, verify_meta_signature
 from .sender import InstagramSender, SendResult, StubSender, get_sender
 from .tools import build_ig_tools
@@ -28,4 +36,10 @@ __all__ = [
     'SendResult',
     'StubSender',
     'get_sender',
+    'GraphAPISender',
+    'InstagramGraphClient',
+    'InstagramGraphAPIError',
+    'exchange_instagram_code_for_token',
+    'exchange_for_long_lived_instagram_token',
+    'IG_OAUTH_SCOPES',
 ]

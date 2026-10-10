@@ -79,7 +79,7 @@ INTEGRATIONS = [
         'label': 'Instagram DMs',
         'icon': 'bi-instagram',
         'category': 'Support',
-        'settings_url': 'tickets:instagram_faq_list',
+        'settings_url': 'tickets:instagram_settings',
         'description': 'Auto-answer routine Instagram DMs from your FAQ and escalate the rest.',
         'is_connected': lambda org: bool(
             org.instagram_page_access_token and org.instagram_business_account_id

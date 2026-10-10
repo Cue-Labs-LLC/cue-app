@@ -1,0 +1,90 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Instagram DM Agent{% endblock %}
+
+{% block content %}
+<div style="max-width: 900px; margin: 0 auto;">
+<div class="page-header">
+    <div>
+        <h1>Instagram DM Agent</h1>
+        <p class="text-body-secondary mb-0">Connect Instagram so the support agent can answer customer DMs from your published FAQs and public event info.</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if not instagram_configured %}
+        <div class="alert alert-warning mb-4">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            Instagram is not configured. Add <code>INSTAGRAM_APP_ID</code> and <code>INSTAGRAM_APP_SECRET</code>.
+        </div>
+        {% endif %}
+
+        {% if not org.instagram_business_account_id %}
+        <h2 class="h5 mb-2">Connect Instagram</h2>
+        <p class="text-body-secondary mb-3">
+            Cue will request message access for your Instagram professional account and subscribe to incoming DMs.
+            You can review every answer before the agent sends automatically.
+        </p>
+        <form method="post" action="{% url 'tickets:instagram_connect' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" {% if not instagram_configured %}disabled{% endif %}>
+                <i class="bi bi-instagram me-1"></i> Connect Instagram
+            </button>
+        </form>
+        {% else %}
+        <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+                <h2 class="h5 mb-2">Connected</h2>
+                <p class="mb-1"><strong>Account:</strong> @{{ org.instagram_username|default:org.instagram_business_account_id }}</p>
+                {% if org.instagram_token_expires_at %}
+                <p class="text-body-secondary mb-0"><strong>Token expires:</strong> {{ org.instagram_token_expires_at|date:"M j, Y g:i A" }}</p>
+                {% endif %}
+            </div>
+            <div class="d-flex align-items-start">
+                <form method="post" action="{% url 'tickets:instagram_disconnect' %}" onsubmit="return confirm('Disconnect Instagram from this organization?');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+                </form>
+            </div>
+        </div>
+
+        <hr class="my-4">
+
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+            <div>
+                <h2 class="h6 mb-1">Auto-answer</h2>
+                <p class="text-body-secondary mb-0">
+                    {% if org.instagram_support_agent_enabled %}
+                        The agent answers routine FAQ DMs automatically and queues the rest for review.
+                    {% else %}
+                        Off — incoming DMs are queued for review; the agent won't send automatically.
+                    {% endif %}
+                </p>
+            </div>
+            <form method="post" action="{% url 'tickets:instagram_toggle_agent' %}">
+                {% csrf_token %}
+                {% if org.instagram_support_agent_enabled %}
+                <button type="submit" class="btn btn-outline-secondary">Turn off auto-answer</button>
+                {% else %}
+                <button type="submit" class="btn btn-success">Turn on auto-answer</button>
+                {% endif %}
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-body d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+        <div>
+            <h2 class="h6 mb-1">FAQs</h2>
+            <p class="text-body-secondary mb-0">The knowledge the agent answers from. Keep these current for the best auto-answers.</p>
+        </div>
+        <a href="{% url 'tickets:instagram_faq_list' %}" class="btn btn-outline-primary">
+            <i class="bi bi-pencil-square me-1"></i> Edit FAQs
+        </a>
+    </div>
+</div>
+</div>
+{% endblock %}
