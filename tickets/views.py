@@ -4229,11 +4229,8 @@ def conversion_rate(request):
     else:
         selected = ''  # ignore stale/invalid ids, fall back to all markets
 
-    # Default to the all-time view so every event with view data shows on first load.
-    if 'window' in request.GET:
-        start_date, end_date, active_window = _parse_window(request)
-    else:
-        start_date, end_date, active_window = None, None, 'all'
+    # Default to the current calendar year (_parse_window falls back to this_year).
+    start_date, end_date, active_window = _parse_window(request)
 
     from tickets.services.conversion import ConversionRateCalculator
     result = ConversionRateCalculator(
@@ -4241,10 +4238,35 @@ def conversion_rate(request):
         start_date=start_date, end_date=end_date,
     ).calculate()
 
+    # Sort the per-event rows for the table (default: best-converting first, so the
+    # table reads as a leaderboard). Maps a ?sort= column key to an event-dict field.
+    sort_fields = {
+        'name': 'name', 'date': 'start_date', 'views': 'views',
+        'orders': 'orders', 'rate': 'conversion_rate',
+    }
+    sort_by = request.GET.get('sort', '-rate')
+    field = sort_fields.get(sort_by.lstrip('-'))
+    if field is None:
+        sort_by, field = '-rate', 'conversion_rate'
+    events = sorted(result['events'], key=lambda e: e[field], reverse=sort_by.startswith('-'))
+
+    # Meter bars default to a full bar == 20% conversion (buy-page rates rarely go
+    # higher, so this uses the width well). The organizer can rescale the ceiling
+    # client-side, persisted in localStorage — a display-only transform that changes
+    # no underlying number.
+    bar_scale_default = 20
+    for e in events:
+        e['bar_pct'] = round(min(100, e['conversion_rate'] / bar_scale_default * 100), 2)
+
     return render(request, 'tickets/conversion_rate.html', {
-        'series_json': json.dumps(result['events'], default=str),
+        'events': events,
+        # Chronological per-event series for the over-time chart (result['events']
+        # stays ordered by start_date; `events` above is re-sorted for the table).
+        'chart_json': json.dumps(result['events'], default=str),
+        'sort_by': sort_by,
+        'bar_scale_default': bar_scale_default,
         'summary': result['summary'],
-        'has_data': bool(result['events']),
+        'has_data': bool(events),
         'markets': markets,
         'has_no_market': has_no_market,
         'selected_market': selected,
