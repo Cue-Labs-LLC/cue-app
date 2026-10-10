@@ -367,6 +367,11 @@ urlpatterns = [
     path('settings/integrations/webhooks/<uuid:endpoint_id>/test/', webhooks_views.webhook_endpoint_test, name='webhook_endpoint_test'),
 
     # Instagram DM support agent — per-org FAQ editor (Phase 1)
+    path('settings/integrations/instagram/', instagram_views.instagram_settings, name='instagram_settings'),
+    path('settings/integrations/instagram/connect/', instagram_views.instagram_connect, name='instagram_connect'),
+    path('settings/instagram/callback/', instagram_views.instagram_callback, name='instagram_callback'),
+    path('settings/integrations/instagram/disconnect/', instagram_views.instagram_disconnect, name='instagram_disconnect'),
+    path('settings/integrations/instagram/toggle-agent/', instagram_views.instagram_toggle_agent, name='instagram_toggle_agent'),
     path('settings/integrations/instagram/faq/', instagram_views.instagram_faq_list, name='instagram_faq_list'),
     path('settings/integrations/instagram/faq/create/', instagram_views.instagram_faq_create, name='instagram_faq_create'),
     path('settings/integrations/instagram/faq/reorder/', instagram_views.instagram_faq_reorder, name='instagram_faq_reorder'),

@@ -12,9 +12,12 @@ form pages keep working without JavaScript.
 
 import json
 import logging
+import secrets
 import uuid
 from dataclasses import asdict
+from datetime import timedelta
 from functools import wraps
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
@@ -25,13 +28,20 @@ from django.db.models import (
 )
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from ..forms import OrgFAQForm
 from ..models import InstagramConversation, InstagramMessage, Organization, OrgFAQ
-from ..services.instagram import get_sender
+from ..services.instagram import (
+    IG_OAUTH_SCOPES,
+    exchange_for_long_lived_instagram_token,
+    exchange_instagram_code_for_token,
+    get_sender,
+)
+from ..services.instagram.graph_client import AUTHORIZE_URL
 from ..utils import get_organization, require_admin, require_org
 
 logger = logging.getLogger(__name__)
@@ -229,6 +239,196 @@ def instagram_faq_reorder(request):
     with transaction.atomic():
         OrgFAQ.objects.bulk_update(to_update, ['sort_order'])
     return JsonResponse({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Instagram OAuth connection + runtime toggle (Phase 7)
+#
+# Uses "Instagram API with Instagram Login" (graph.instagram.com) — connect →
+# Instagram OAuth dialog with a session `state` CSRF token → callback → long-lived
+# token. No Facebook Page is involved; the connected Instagram professional account
+# authenticates directly. The callback persists the credentials the Graph sender +
+# webhook resolver need. The whole feature stays behind the admin-only
+# `instagram_feature_enabled` gate via @require_instagram_feature.
+# ---------------------------------------------------------------------------
+
+
+def _instagram_configured() -> bool:
+    return bool(settings.INSTAGRAM_APP_ID and settings.INSTAGRAM_APP_SECRET)
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["GET"])
+def instagram_settings(request):
+    """Show Instagram connection state + the runtime auto-answer toggle."""
+    return render(request, 'tickets/settings_instagram.html', {
+        'callback_url': request.build_absolute_uri(reverse('tickets:instagram_callback')),
+        'instagram_configured': _instagram_configured(),
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_connect(request):
+    """Start Instagram Business Login for Instagram Messaging access."""
+    if not _instagram_configured():
+        messages.error(request, 'Instagram is not configured. Add INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET.')
+        return redirect('tickets:instagram_settings')
+
+    state = secrets.token_urlsafe(32)
+    request.session['instagram_oauth_state'] = state
+    callback_url = request.build_absolute_uri(reverse('tickets:instagram_callback'))
+    params = urlencode({
+        'client_id': settings.INSTAGRAM_APP_ID,
+        'redirect_uri': callback_url,
+        'state': state,
+        'scope': IG_OAUTH_SCOPES,
+        'response_type': 'code',
+    })
+    return redirect(f'{AUTHORIZE_URL}?{params}')
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["GET"])
+def instagram_callback(request):
+    """Handle the Instagram OAuth callback and persist the Instagram credentials."""
+    from ..services.instagram import InstagramGraphAPIError, InstagramGraphClient
+
+    org = get_organization(request)
+    expected_state = request.session.pop('instagram_oauth_state', None)
+    if not expected_state or request.GET.get('state') != expected_state:
+        messages.error(request, 'Instagram connection could not be verified. Please try again.')
+        return redirect('tickets:instagram_settings')
+
+    if request.GET.get('error'):
+        messages.error(request, request.GET.get('error_description') or 'Instagram authorization was cancelled.')
+        return redirect('tickets:instagram_settings')
+
+    code = request.GET.get('code')
+    if not code:
+        messages.error(request, 'Instagram did not return an authorization code.')
+        return redirect('tickets:instagram_settings')
+
+    callback_url = request.build_absolute_uri(reverse('tickets:instagram_callback'))
+    try:
+        short_token = exchange_instagram_code_for_token(code, callback_url)
+        user_token = short_token['access_token']
+    except (KeyError, InstagramGraphAPIError) as exc:
+        messages.error(request, f'Could not connect Instagram: {exc}')
+        return redirect('tickets:instagram_settings')
+
+    # Upgrade to a 60-day token when possible, but don't fail the connection if the
+    # long-lived exchange hiccups — the short-lived token (≈1h) still lets us verify the
+    # account and send. Token refresh is handled separately (D13).
+    expires_in = 3600
+    try:
+        long_token = exchange_for_long_lived_instagram_token(user_token)
+        user_token = long_token.get('access_token') or user_token
+        expires_in = long_token.get('expires_in') or expires_in
+    except InstagramGraphAPIError as exc:
+        logger.warning("Long-lived IG token exchange failed; using short-lived token: %s", exc)
+
+    try:
+        me = InstagramGraphClient(user_token).get_me()
+    except (KeyError, InstagramGraphAPIError) as exc:
+        logger.warning("Instagram get_me failed: %s", exc)
+        messages.error(
+            request,
+            "Connected to Instagram, but couldn't read the account. This usually means the "
+            "Instagram account isn't a professional (Business or Creator) account, or it "
+            "hasn't accepted the Instagram Tester invite for this app while it's in "
+            "development. Fix that and reconnect.",
+        )
+        return redirect('tickets:instagram_settings')
+
+    # The IGSID that arrives in webhook entry[].id — the org-resolution routing key.
+    ig_account_id = str(me.get('user_id') or short_token.get('user_id') or '')
+    if not ig_account_id:
+        messages.error(request, 'Instagram did not return an account id. Please try again.')
+        return redirect('tickets:instagram_settings')
+
+    # D11: inbound webhooks route to an org by instagram_business_account_id, so it must
+    # map to at most one org. Fail with a clear message instead of an IntegrityError.
+    if Organization.objects.filter(
+        instagram_business_account_id=ig_account_id,
+    ).exclude(pk=org.pk).exists():
+        messages.error(request, 'This Instagram account is already connected to another workspace.')
+        return redirect('tickets:instagram_settings')
+
+    try:
+        InstagramGraphClient(user_token).subscribe_to_messages()
+    except InstagramGraphAPIError as exc:
+        messages.error(request, f'Connected, but could not subscribe to messages: {exc}')
+        return redirect('tickets:instagram_settings')
+
+    org.instagram_page_access_token = user_token  # IG user token (no Page in this flow)
+    org.instagram_business_account_id = ig_account_id
+    org.instagram_page_id = ''
+    org.instagram_username = me.get('username', '')
+    org.instagram_token_expires_at = (
+        timezone.now() + timedelta(seconds=int(expires_in)) if expires_in else None
+    )
+    org.save(update_fields=[
+        'instagram_page_access_token',
+        'instagram_business_account_id',
+        'instagram_page_id',
+        'instagram_username',
+        'instagram_token_expires_at',
+    ])
+    messages.success(
+        request,
+        f'Instagram connected (@{org.instagram_username or ig_account_id}). Turn on the '
+        'support agent below once your FAQs are ready.',
+    )
+    return redirect('tickets:instagram_settings')
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_disconnect(request):
+    """Clear the Instagram credentials for the current org (keeps FAQ/inbox data)."""
+    org = get_organization(request)
+    org.instagram_page_access_token = ''
+    org.instagram_business_account_id = ''
+    org.instagram_page_id = ''
+    org.instagram_username = ''
+    org.instagram_token_expires_at = None
+    org.save(update_fields=[
+        'instagram_page_access_token',
+        'instagram_business_account_id',
+        'instagram_page_id',
+        'instagram_username',
+        'instagram_token_expires_at',
+    ])
+    messages.success(request, 'Instagram disconnected.')
+    return redirect('tickets:instagram_settings')
+
+
+@login_required
+@require_org
+@require_admin
+@require_instagram_feature
+@require_http_methods(["POST"])
+def instagram_toggle_agent(request):
+    """Flip the runtime auto-answer gate (instagram_support_agent_enabled)."""
+    org = get_organization(request)
+    org.instagram_support_agent_enabled = not org.instagram_support_agent_enabled
+    org.save(update_fields=['instagram_support_agent_enabled'])
+    state = 'on' if org.instagram_support_agent_enabled else 'off'
+    messages.success(request, f'Instagram support agent turned {state}.')
+    return redirect('tickets:instagram_settings')
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +664,7 @@ def instagram_draft_approve(request, conversation_id, message_id):
     if edited:
         draft.content = edited
 
-    send = get_sender(org).send_text(conversation.ig_user_id, draft.content)
+    send = get_sender(org).send_text(conversation.ig_user_id, draft.content, human_agent=True)
     if send.ok:
         draft.status = InstagramMessage.STATUS_APPROVED_SENT
         draft.provider_message_id = send.provider_message_id or draft.provider_message_id
@@ -505,7 +705,7 @@ def instagram_message_send(request, conversation_id):
         reviewed_by=request.user,
         reviewed_at=timezone.now(),
     )
-    send = get_sender(org).send_text(conversation.ig_user_id, text)
+    send = get_sender(org).send_text(conversation.ig_user_id, text, human_agent=True)
     update_fields = ['last_message_at']
     if send.ok:
         reply.status = InstagramMessage.STATUS_APPROVED_SENT

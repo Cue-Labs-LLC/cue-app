@@ -402,6 +402,17 @@ FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
 FACEBOOK_GRAPH_API_VERSION = os.environ.get('FACEBOOK_GRAPH_API_VERSION', 'v21.0')
 
+# Instagram DM support agent uses "Instagram API with Instagram Login" (graph.instagram.com),
+# NOT Facebook Login — so it has its own app credentials (Instagram App ID / Secret, found
+# under the Instagram product in the Meta App Dashboard), distinct from FACEBOOK_APP_*.
+# The Instagram App Secret also signs inbound webhook X-Hub-Signature-256 headers.
+INSTAGRAM_APP_ID = os.environ.get('INSTAGRAM_APP_ID', '')
+INSTAGRAM_APP_SECRET = os.environ.get('INSTAGRAM_APP_SECRET', '')
+# graph.instagram.com (Instagram Login) version — kept separate from the Meta Ads
+# FACEBOOK_GRAPH_API_VERSION (v21.0), which predates Instagram Login and makes
+# graph.instagram.com reject versioned paths (e.g. /me) with "Unsupported request".
+INSTAGRAM_GRAPH_API_VERSION = os.environ.get('INSTAGRAM_GRAPH_API_VERSION', 'v23.0')
+
 # Instagram DM support agent — minimum classifier confidence for a routine, grounded
 # answer to auto-send instead of being queued for human review (D14/auto-send gate).
 IG_AGENT_AUTOSEND_MIN_CONFIDENCE = float(

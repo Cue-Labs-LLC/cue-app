@@ -40,20 +40,26 @@ class InstagramSender(ABC):
     """
 
     @abstractmethod
-    def send_text(self, recipient_id: str, text: str) -> SendResult:
+    def send_text(self, recipient_id: str, text: str, *, human_agent: bool = False) -> SendResult:
+        """Send one text DM.
+
+        ``human_agent=True`` marks the message as a human reply (``HUMAN_AGENT`` tag,
+        7-day window) rather than an automated in-window response — used by the inbox
+        reply/approve paths. Auto-answers leave it False (``RESPONSE``, 24h window).
+        """
         ...
 
 
 class StubSender(InstagramSender):
     """No-op sender for demos and tests: logs and reports success, sends nothing."""
 
-    def send_text(self, recipient_id: str, text: str) -> SendResult:
+    def send_text(self, recipient_id: str, text: str, *, human_agent: bool = False) -> SendResult:
         import uuid
 
         provider_message_id = f"stub-{uuid.uuid4().hex[:24]}"
         logger.info(
-            "StubSender: would send to IG user %s (%d chars), mid=%s",
-            recipient_id, len(text or ''), provider_message_id,
+            "StubSender: would send to IG user %s (%d chars, human_agent=%s), mid=%s",
+            recipient_id, len(text or ''), human_agent, provider_message_id,
         )
         return SendResult(ok=True, provider_message_id=provider_message_id)
 
@@ -65,21 +71,30 @@ class UnavailableSender(InstagramSender):
     def __init__(self, reason):
         self.reason = reason
 
-    def send_text(self, recipient_id: str, text: str) -> SendResult:
+    def send_text(self, recipient_id: str, text: str, *, human_agent: bool = False) -> SendResult:
         logger.error("Instagram send backend unavailable: %s", self.reason)
         return SendResult(ok=False, error=self.reason)
 
 
 def get_sender(organization) -> InstagramSender:
-    """Return the sender for the configured backend (``INSTAGRAM_SENDER_BACKEND``)."""
+    """Return the sender for the configured backend (``INSTAGRAM_SENDER_BACKEND``).
+
+    Selection is by setting, NEVER by token presence (D10). Under the ``graph`` backend a
+    missing/expired credential yields an ``UnavailableSender`` (loud ``failed``), not a
+    silent fall-back to ``StubSender`` that would mark messages ``auto_sent`` while the
+    customer receives nothing.
+    """
     backend = getattr(settings, 'INSTAGRAM_SENDER_BACKEND', 'stub')
     if backend == 'stub':
         return StubSender()
     if backend == 'graph':
-        # The real GraphAPISender lands in Phase 7 (gated by Meta App Review). Until
-        # then a 'graph' backend is a misconfiguration — fail loudly, don't stub-send.
+        if organization and organization.instagram_page_access_token and organization.instagram_business_account_id:
+            # Imported lazily so the module has no hard requests/graph dependency when
+            # running on the stub backend (and to avoid any import cycle).
+            from .graph_client import GraphAPISender
+            return GraphAPISender(organization)
         return UnavailableSender(
-            "INSTAGRAM_SENDER_BACKEND='graph' but the Graph sender is not available "
-            "yet (Phase 7). Set INSTAGRAM_SENDER_BACKEND='stub'."
+            "INSTAGRAM_SENDER_BACKEND='graph' but this organization has no Instagram "
+            "credentials — reconnect Instagram in settings."
         )
     return UnavailableSender(f"Unknown INSTAGRAM_SENDER_BACKEND={backend!r}.")

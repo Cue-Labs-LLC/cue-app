@@ -1082,7 +1082,8 @@ class IGNormalizeTests(TestCase):
         self.assertEqual(normalize_meta_payload('nope'), [])
 
 
-@override_settings(FACEBOOK_APP_SECRET='top-secret', E2E_TEST_MODE=False)
+@override_settings(INSTAGRAM_APP_SECRET='top-secret', FACEBOOK_APP_SECRET='top-secret',
+                   E2E_TEST_MODE=False)
 class IGVerifySignatureTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -1125,16 +1126,30 @@ class IGGetSenderTests(TestCase):
         self.assertTrue(sender.send_text('cust-1', 'hi').ok)
 
     @override_settings(INSTAGRAM_SENDER_BACKEND='graph')
-    def test_graph_backend_fails_loud_no_stub_fallback(self):
-        sender = get_sender(MagicMock())
+    def test_graph_backend_without_creds_fails_loud_no_stub_fallback(self):
+        # D10: 'graph' + missing creds → loud UnavailableSender, never a silent StubSender.
+        org = Organization.objects.create(name='No-Creds Org', slug='no-creds-org')
+        from .services.instagram import GraphAPISender
+        sender = get_sender(org)
         self.assertNotIsInstance(sender, StubSender)
+        self.assertNotIsInstance(sender, GraphAPISender)
         result = sender.send_text('cust-1', 'hi')
         self.assertFalse(result.ok)
         self.assertTrue(result.error)
 
+    @override_settings(INSTAGRAM_SENDER_BACKEND='graph')
+    def test_graph_backend_with_creds_returns_graph_sender(self):
+        from .services.instagram import GraphAPISender
+        org = Organization.objects.create(
+            name='Creds Org', slug='creds-org',
+            instagram_page_access_token='page-token', instagram_business_account_id='iba-1',
+        )
+        self.assertIsInstance(get_sender(org), GraphAPISender)
+
 
 @override_settings(INSTAGRAM_WEBHOOK_VERIFY_TOKEN='verify-me',
-                   FACEBOOK_APP_SECRET='top-secret', E2E_TEST_MODE=False)
+                   INSTAGRAM_APP_SECRET='top-secret', FACEBOOK_APP_SECRET='top-secret',
+                   E2E_TEST_MODE=False)
 class IGWebhookViewTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -2222,3 +2237,233 @@ class IGEscalationSilentTests(TestCase):
                 author=InstagramMessage.AUTHOR_AGENT).count(),
             agent_drafts_before,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — Meta OAuth + Graph sender
+# ---------------------------------------------------------------------------
+
+from .services.instagram import GraphAPISender, InstagramGraphAPIError  # noqa: E402
+
+
+def _graph_response(status_code, payload):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = payload
+    return resp
+
+
+class GraphAPISenderTests(TestCase):
+    """GraphAPISender.send_text: POST shape, messaging_type/tag, and failure mapping."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Graph Org', slug='graph-org',
+            instagram_page_access_token='page-token', instagram_business_account_id='iba-9',
+        )
+
+    @patch('tickets.services.instagram.graph_client.requests.post')
+    def test_auto_send_uses_response_type_and_returns_mid(self, mock_post):
+        mock_post.return_value = _graph_response(200, {'recipient_id': 'cust-1', 'message_id': 'mid_123'})
+        result = GraphAPISender(self.org).send_text('cust-1', 'Doors at 9pm.')
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider_message_id, 'mid_123')
+        # URL targets the IG account id; body is RESPONSE with no tag.
+        args, kwargs = mock_post.call_args
+        self.assertIn('/iba-9/messages', args[0])
+        body = kwargs['json']
+        self.assertEqual(body['messaging_type'], 'RESPONSE')
+        self.assertNotIn('tag', body)
+        self.assertEqual(body['recipient'], {'id': 'cust-1'})
+        self.assertEqual(body['message'], {'text': 'Doors at 9pm.'})
+
+    @patch('tickets.services.instagram.graph_client.requests.post')
+    def test_in_window_human_reply_uses_response_no_tag(self, mock_post):
+        # Inside the 24h window a human reply sends as RESPONSE — no HUMAN_AGENT tag, so it
+        # needs no approved Human Agent feature.
+        mock_post.return_value = _graph_response(200, {'message_id': 'mid_456'})
+        result = GraphAPISender(self.org).send_text('cust-1', 'Hi there', human_agent=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(mock_post.call_count, 1)
+        body = mock_post.call_args.kwargs['json']
+        self.assertEqual(body['messaging_type'], 'RESPONSE')
+        self.assertNotIn('tag', body)
+
+    @patch('tickets.services.instagram.graph_client.requests.post')
+    def test_out_of_window_human_reply_falls_back_to_human_agent(self, mock_post):
+        # RESPONSE rejected as outside the window → retry with the HUMAN_AGENT tag.
+        mock_post.side_effect = [
+            _graph_response(400, {'error': {
+                'code': 10, 'message': 'This message is sent outside of allowed window.'}}),
+            _graph_response(200, {'message_id': 'mid_789'}),
+        ]
+        result = GraphAPISender(self.org).send_text('cust-1', 'late reply', human_agent=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider_message_id, 'mid_789')
+        self.assertEqual(mock_post.call_count, 2)
+        second_body = mock_post.call_args_list[1].kwargs['json']
+        self.assertEqual(second_body['messaging_type'], 'MESSAGE_TAG')
+        self.assertEqual(second_body['tag'], 'HUMAN_AGENT')
+
+    @patch('tickets.services.instagram.graph_client.requests.post')
+    def test_auto_send_out_of_window_does_not_tag(self, mock_post):
+        # Auto-answers never escalate to the HUMAN_AGENT tag, even if somehow out-of-window.
+        mock_post.return_value = _graph_response(400, {'error': {
+            'code': 10, 'message': 'This message is sent outside of allowed window.'}})
+        result = GraphAPISender(self.org).send_text('cust-1', 'hi')
+        self.assertFalse(result.ok)
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch('tickets.services.instagram.graph_client.requests.post')
+    def test_out_of_window_failure_surfaces_not_ok(self, mock_post):
+        mock_post.return_value = _graph_response(400, {'error': {
+            'code': 10, 'message': 'This message is sent outside of allowed window.',
+            'fbtrace_id': 'ABC',
+        }})
+        result = GraphAPISender(self.org).send_text('cust-1', 'late reply', human_agent=True)
+        self.assertFalse(result.ok)
+        self.assertIn('code 10', result.error)
+
+    @patch('tickets.services.instagram.graph_client.requests.post',
+           side_effect=__import__('requests').RequestException('boom'))
+    def test_transport_error_surfaces_not_ok(self, mock_post):
+        result = GraphAPISender(self.org).send_text('cust-1', 'hi')
+        self.assertFalse(result.ok)
+        self.assertTrue(result.error)
+
+
+class _IGConnectViewBase(_FAQViewTestBase):
+    """Reuses the FAQ view base (org + admin/host, instagram_feature_enabled=True)."""
+
+    def _set_oauth_state(self, state='state-abc'):
+        session = self.client.session
+        session['instagram_oauth_state'] = state
+        session.save()
+        return state
+
+
+@override_settings(INSTAGRAM_APP_ID='ig-app-id', INSTAGRAM_APP_SECRET='ig-app-secret')
+class InstagramConnectFlowTests(_IGConnectViewBase):
+    def test_settings_page_requires_admin(self):
+        self._login_host()
+        resp = self.client.get(reverse('tickets:instagram_settings'))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_connect_redirects_to_instagram_dialog(self):
+        self._login_admin()
+        resp = self.client.post(reverse('tickets:instagram_connect'))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('instagram.com/oauth/authorize', resp['Location'])
+        self.assertIn('instagram_business_manage_messages', resp['Location'])
+        self.assertIn('instagram_oauth_state', self.client.session)
+
+    def test_callback_state_mismatch_writes_nothing(self):
+        self._login_admin()
+        self._set_oauth_state('expected')
+        resp = self.client.get(reverse('tickets:instagram_callback'),
+                               {'state': 'forged', 'code': 'xyz'})
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.instagram_business_account_id, '')
+
+    @patch('tickets.services.instagram.InstagramGraphClient')
+    @patch('tickets.integrations.instagram.exchange_for_long_lived_instagram_token')
+    @patch('tickets.integrations.instagram.exchange_instagram_code_for_token')
+    def test_callback_persists_credentials(self, mock_short, mock_long, mock_client):
+        self._login_admin()
+        state = self._set_oauth_state()
+        mock_short.return_value = {'access_token': 'short', 'user_id': 'ig-acct-77'}
+        mock_long.return_value = {'access_token': 'user-long', 'expires_in': 5184000}
+        instance = mock_client.return_value
+        instance.get_me.return_value = {'user_id': 'ig-acct-77', 'username': 'mybrand'}
+        instance.subscribe_to_messages.return_value = {'success': True}
+
+        resp = self.client.get(reverse('tickets:instagram_callback'),
+                               {'state': state, 'code': 'authcode'})
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        # The IGSID that will arrive in webhook entry[].id is persisted as the routing key.
+        self.assertEqual(self.org.instagram_business_account_id, 'ig-acct-77')
+        self.assertEqual(self.org.instagram_page_access_token, 'user-long')
+        self.assertEqual(self.org.instagram_page_id, '')
+        self.assertEqual(self.org.instagram_username, 'mybrand')
+        self.assertIsNotNone(self.org.instagram_token_expires_at)
+        instance.subscribe_to_messages.assert_called_once_with()
+
+    @patch('tickets.services.instagram.InstagramGraphClient')
+    @patch('tickets.integrations.instagram.exchange_for_long_lived_instagram_token')
+    @patch('tickets.integrations.instagram.exchange_instagram_code_for_token')
+    def test_callback_already_claimed_account_blocks(self, mock_short, mock_long, mock_client):
+        # D11: another org already holds this IGSID → actionable error, no write, no crash.
+        self.other_org.instagram_business_account_id = 'ig-acct-77'
+        self.other_org.save(update_fields=['instagram_business_account_id'])
+        self._login_admin()
+        state = self._set_oauth_state()
+        mock_short.return_value = {'access_token': 'short', 'user_id': 'ig-acct-77'}
+        mock_long.return_value = {'access_token': 'user-long', 'expires_in': 100}
+        instance = mock_client.return_value
+        instance.get_me.return_value = {'user_id': 'ig-acct-77', 'username': 'mybrand'}
+
+        resp = self.client.get(reverse('tickets:instagram_callback'),
+                               {'state': state, 'code': 'authcode'})
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.instagram_business_account_id, '')
+        instance.subscribe_to_messages.assert_not_called()
+
+    @patch('tickets.services.instagram.InstagramGraphClient')
+    @patch('tickets.integrations.instagram.exchange_for_long_lived_instagram_token')
+    @patch('tickets.integrations.instagram.exchange_instagram_code_for_token')
+    def test_callback_without_account_id_errors(self, mock_short, mock_long, mock_client):
+        self._login_admin()
+        state = self._set_oauth_state()
+        mock_short.return_value = {'access_token': 'short'}
+        mock_long.return_value = {'access_token': 'user-long'}
+        mock_client.return_value.get_me.return_value = {'username': 'mybrand'}  # no user_id
+
+        resp = self.client.get(reverse('tickets:instagram_callback'),
+                               {'state': state, 'code': 'authcode'})
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.instagram_business_account_id, '')
+
+    @patch('tickets.services.instagram.InstagramGraphClient')
+    @patch('tickets.integrations.instagram.exchange_for_long_lived_instagram_token')
+    @patch('tickets.integrations.instagram.exchange_instagram_code_for_token')
+    def test_callback_long_lived_failure_falls_back_to_short_token(self, mock_short, mock_long, mock_client):
+        # The long-lived exchange is non-fatal: connect still completes on the short token.
+        self._login_admin()
+        state = self._set_oauth_state()
+        mock_short.return_value = {'access_token': 'short-token', 'user_id': 'ig-acct-77'}
+        mock_long.side_effect = InstagramGraphAPIError('Unsupported request', code=100)
+        instance = mock_client.return_value
+        instance.get_me.return_value = {'user_id': 'ig-acct-77', 'username': 'mybrand'}
+
+        resp = self.client.get(reverse('tickets:instagram_callback'),
+                               {'state': state, 'code': 'authcode'})
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.instagram_business_account_id, 'ig-acct-77')
+        self.assertEqual(self.org.instagram_page_access_token, 'short-token')
+
+    def test_disconnect_clears_credentials(self):
+        self.org.instagram_page_access_token = 'page-token'
+        self.org.instagram_business_account_id = 'ig-acct-77'
+        self.org.instagram_username = 'mybrand'
+        self.org.save()
+        self._login_admin()
+        resp = self.client.post(reverse('tickets:instagram_disconnect'))
+        self.assertRedirects(resp, reverse('tickets:instagram_settings'))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.instagram_page_access_token, '')
+        self.assertEqual(self.org.instagram_business_account_id, '')
+
+    def test_toggle_agent_flips_runtime_gate(self):
+        self._login_admin()
+        self.assertFalse(self.org.instagram_support_agent_enabled)
+        self.client.post(reverse('tickets:instagram_toggle_agent'))
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.instagram_support_agent_enabled)
+        self.client.post(reverse('tickets:instagram_toggle_agent'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.instagram_support_agent_enabled)

@@ -137,7 +137,15 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 - **Rollout:** submit App Review (external, multi-week); flip `INSTAGRAM_SENDER_BACKEND='graph'` per env once approved; `instagram_support_agent_enabled` stays off by default (orgs opt in after reviewing FAQ quality).
 - **Accept:** real IG DM round-trip in a Meta-approved environment.
 
-**Demo milestones:** Phases 1–6 are fully demoable on the stub backend pre-App-Review; Phase 7 is the only one blocked on Meta.
+**As built (2026-10-10) — core landed, verified end-to-end locally:**
+- **Switched to "Instagram API with Instagram Login"** (`graph.instagram.com`), NOT Facebook Login — the Facebook-Login scopes above returned "Invalid Scopes." Actual scopes: `instagram_business_basic,instagram_business_manage_messages`; dialog at `https://www.instagram.com/oauth/authorize`. New code: `graph_client.py` (`InstagramGraphClient`, `GraphAPISender`, `exchange_instagram_code_for_token`, `exchange_for_long_lived_instagram_token`); connect views in `tickets/integrations/instagram.py` (`instagram_settings/connect/callback/disconnect/toggle_agent`).
+- **No Facebook Page.** The IG professional account authenticates directly. `instagram_business_account_id` = `get_me()` `user_id` (the webhook `entry[].id` routing key). `instagram_page_access_token` holds the IG user token (field name is now a misnomer, kept to avoid a migration); `instagram_page_id` unused. Account subscribed via `POST /me/subscribed_apps` (field `messages`).
+- **New settings:** `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` (distinct from `FACEBOOK_APP_*`; the IG secret also signs webhooks — `verify_meta_signature` prefers it), and `INSTAGRAM_GRAPH_API_VERSION` (default `v23.0`; `FACEBOOK_GRAPH_API_VERSION` v21.0 is too old for `graph.instagram.com`).
+- **Token endpoints require POST** (not GET, despite the docs' GET example); the long-lived exchange is non-fatal (falls back to the ~1h short-lived token — durable refresh is the D13 fast-follow).
+- **D2 refinement:** human replies send a normal in-window `RESPONSE` first and only fall back to the `HUMAN_AGENT` tag when Meta rejects them as outside the 24h window — because the `HUMAN_AGENT` feature itself requires App Review. So in-window manual replies work pre-approval; stale (>24h) replies need the approved feature.
+- **Deferred:** D13 (token-refresh cron), D9 (24h-window inbox indicator), App Review (required before non-tester / other orgs' DMs deliver — dev-mode delivery works for the connected tester account).
+
+**Demo milestones:** Phases 1–6 are fully demoable on the stub backend pre-App-Review; Phase 7's core is demoable end-to-end against a dev-mode tester account; full production delivery is the only thing blocked on Meta App Review.
 
 ---
 
@@ -162,7 +170,7 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 - [x] **P4** — Inbox UI + escalation notifications (email + push); + customer ack on escalation, no-draft-on-escalation, agent stays out of human-owned threads, `instagram_feature_enabled` rollout gate
 - [x] **P5** — Remove legacy KB
 - [x] **P6** — Langfuse eval standardization: `answer_quality` + `no_private_disclosure` as managed LLM-judges in the Langfuse UI (runbook + committed rubrics in `evals/ig_support_agent/judges/`), in-code judges retained for CI, and `.github/workflows/evals.yml` (manual `workflow_dispatch`; nightly schedule deferred). SMS-plans migration stays a separate track (D1); `validate_segments` excluded.
-- [ ] **P7** — Meta OAuth + Graph sender (gated by App Review)
+- [x] **P7 (core)** — Instagram Login OAuth + `GraphAPISender` + connect flow; verified end-to-end locally 2026-10-10. Pivoted from Facebook Login → "Instagram API with Instagram Login" (see "As built" above). Fast-follows: D13 (token refresh), D9 (window indicator); App Review still required for production delivery to non-tester accounts.
 
 ## 9. Review hardening (from /plan-eng-review, 2026-10-05)
 
