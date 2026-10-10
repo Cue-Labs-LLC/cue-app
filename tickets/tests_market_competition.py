@@ -12,7 +12,7 @@ Phase 2 — the web-search client (``search_client``): ``web_search`` (Tavily ov
 accounting). All network I/O is mocked, so these stay offline.
 """
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -996,3 +996,235 @@ class ScanEventCompetitionCommandTests(TestCase):
         output = out.getvalue()
         self.assertIn('include:  eventbrite.com, dice.fm', output)
         self.assertIn('exclude:  ticketmaster.com', output)
+
+
+# --- Phase 4 — Celery task + persistence + gates (calculate mocked) ------------
+
+def _result(status='ready', score=40, label='Medium', summary='Crowded weekend.'):
+    """A canned CompetitionResult, as the calculator would return."""
+    comp = CompetitorEvent(
+        name='Rival Techno Night', date=date(2026, 6, 16), venue_name='Club X',
+        metro_normalized='los angeles, ca', genre='techno', platform='dice',
+        source_url='https://dice/x',
+    )
+    return CompetitionResult(
+        score=score, label=label, status=status,
+        competitors=[comp], undated=[],
+        counts={'total': 1, 'same_metro': 1, 'in_window': 1,
+                'genre_matched': 1, 'undated': 0},
+        coverage={'queries_total': 6, 'queries_with_results': 6, 'ratio': 1.0},
+        summary=summary,
+    )
+
+
+@override_settings(
+    CELERY_TASK_ALWAYS_EAGER=True,
+    CELERY_TASK_EAGER_PROPAGATES=False,
+    CACHES=LOCMEM_CACHE,
+    TAVILY_API_KEY='test-key',
+    MARKET_COMPETITION_RESULT_TTL_DAYS=7,
+    MARKET_COMPETITION_DAILY_SCAN_CAP=50,
+    MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
+)
+class Phase4TaskTests(TestCase):
+    """P4 — the async scan task, persistence, freshness/TTL, daily cap, lock."""
+
+    CALC = 'tickets.services.market_competition.calculate_event_competition'
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()  # LocMem persists across tests in-process.
+        self.org = Organization.objects.create(name='Org P4', slug='org-p4')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Home Venue', city='Los Angeles', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Techno Warehouse Party',
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 15),
+        )
+
+    def _run_task(self):
+        from tickets.tasks import scan_event_competition_task
+        return scan_event_competition_task.apply(args=[str(self.event.id)]).result
+
+    # --- persistence -----------------------------------------------------------
+
+    def test_persists_ready_result_to_event(self):
+        res = _result(status='ready', score=40, label='Medium')
+        with patch(self.CALC, return_value=res):
+            status = self._run_task()
+        self.assertEqual(status, 'ready')
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.competition_score, 40)
+        self.assertEqual(self.event.competition_label, 'Medium')
+        self.assertEqual(self.event.competition_status, 'ready')
+        self.assertEqual(self.event.competition_data, res.to_dict())
+        self.assertIsNotNone(self.event.competition_generated_at)
+
+    def test_hash_written_only_on_success(self):
+        # D5 (CRITICAL): a successful scan fingerprints the event...
+        from tickets.services.market_competition import compute_input_hash
+        with patch(self.CALC, return_value=_result(status='ready')):
+            self._run_task()
+        self.event.refresh_from_db()
+        self.assertEqual(
+            self.event.competition_input_hash, compute_input_hash(self.event))
+        self.assertNotEqual(self.event.competition_input_hash, '')
+
+    def test_unavailable_leaves_hash_empty_and_rescans(self):
+        # D5: an unavailable scan persists status but NOT the hash, so it re-runs.
+        from tickets.services.market_competition import is_competition_fresh
+        from tickets.tasks import request_competition_scan
+        with patch(self.CALC, return_value=_result(status='unavailable', score=0,
+                                                   label='Low', summary='')):
+            self._run_task()
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.competition_status, 'unavailable')
+        self.assertEqual(self.event.competition_input_hash, '')
+        self.assertFalse(is_competition_fresh(self.event))
+        # ...and the next trigger enqueues again rather than skipping as fresh.
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            self.assertEqual(
+                request_competition_scan(self.org, self.event), 'scanning')
+        delay.assert_called_once_with(str(self.event.id))
+
+    def test_inconclusive_writes_hash(self):
+        # D1=A: inconclusive is a completed scan and caches within the TTL.
+        from tickets.services.market_competition import compute_input_hash
+        with patch(self.CALC, return_value=_result(status='inconclusive', score=0,
+                                                   label='Low')):
+            status = self._run_task()
+        self.assertEqual(status, 'inconclusive')
+        self.event.refresh_from_db()
+        self.assertEqual(
+            self.event.competition_input_hash, compute_input_hash(self.event))
+
+    # --- freshness / TTL (DO4) -------------------------------------------------
+
+    def _mark_fresh(self, *, age_days=0):
+        from django.utils import timezone
+        from tickets.services.market_competition import compute_input_hash
+        self.event.competition_input_hash = compute_input_hash(self.event)
+        self.event.competition_generated_at = (
+            timezone.now() - timedelta(days=age_days))
+        self.event.save(update_fields=[
+            'competition_input_hash', 'competition_generated_at'])
+
+    def test_fresh_within_ttl_skips_scan(self):
+        self._mark_fresh(age_days=0)
+        with patch(self.CALC) as calc:
+            status = self._run_task()
+        calc.assert_not_called()
+        self.assertEqual(status, 'fresh')
+
+    def test_trigger_returns_fresh_without_enqueue(self):
+        from tickets.tasks import request_competition_scan
+        self._mark_fresh(age_days=0)
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'fresh')
+        delay.assert_not_called()
+
+    def test_past_ttl_rescans_despite_matching_hash(self):
+        from tickets.tasks import request_competition_scan
+        self._mark_fresh(age_days=8)  # older than TTL=7, hash unchanged
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'scanning')
+        delay.assert_called_once_with(str(self.event.id))
+
+    def test_force_overrides_freshness(self):
+        from tickets.tasks import request_competition_scan
+        self._mark_fresh(age_days=0)
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event, force=True)
+        self.assertEqual(status, 'scanning')
+        delay.assert_called_once_with(str(self.event.id))
+
+    # --- daily cap (D3) --------------------------------------------------------
+
+    def _seed_scans_today(self, n):
+        from django.utils import timezone
+        for i in range(n):
+            Event.objects.create(
+                organization=self.org, venue=self.venue, name=f'Prior {i}',
+                start_date=date(2026, 6, 1),
+                competition_generated_at=timezone.now(),
+            )
+
+    @override_settings(MARKET_COMPETITION_DAILY_SCAN_CAP=2)
+    def test_daily_cap_blocks_enqueue(self):
+        from tickets.tasks import request_competition_scan
+        self._seed_scans_today(2)
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'capped')
+        delay.assert_not_called()
+
+    @override_settings(MARKET_COMPETITION_DAILY_SCAN_CAP=0)
+    def test_daily_cap_zero_disables_guard(self):
+        from tickets.tasks import request_competition_scan
+        self._seed_scans_today(5)
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'scanning')
+        delay.assert_called_once_with(str(self.event.id))
+
+    # --- in-progress lock (D4) -------------------------------------------------
+
+    def test_trigger_acquires_lock_then_enqueues(self):
+        from django.core.cache import cache as django_cache
+        from tickets.tasks import request_competition_scan, _competition_lock_key
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'scanning')
+        delay.assert_called_once_with(str(self.event.id))
+        self.assertIsNotNone(
+            django_cache.get(_competition_lock_key(self.event.id)))
+
+    def test_held_lock_reports_in_progress(self):
+        from django.core.cache import cache as django_cache
+        from tickets.tasks import request_competition_scan, _competition_lock_key
+        django_cache.add(_competition_lock_key(self.event.id), 1, 300)
+        with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
+            status = request_competition_scan(self.org, self.event)
+        self.assertEqual(status, 'in_progress')
+        delay.assert_not_called()
+
+    def test_lock_released_in_finally_even_on_exception(self):
+        from django.core.cache import cache as django_cache
+        from tickets.tasks import scan_event_competition_task, _competition_lock_key
+        django_cache.add(_competition_lock_key(self.event.id), 1, 300)
+        with patch(self.CALC, side_effect=RuntimeError('boom')), \
+                patch.object(scan_event_competition_task, 'retry',
+                             side_effect=Exception('retried')) as retry:
+            scan_event_competition_task.apply(args=[str(self.event.id)])
+        retry.assert_called_once()  # unexpected error => self.retry (D4/task)
+        self.assertIsNone(
+            django_cache.get(_competition_lock_key(self.event.id)))
+
+    # --- loading / retry -------------------------------------------------------
+
+    def test_missing_event_returns_missing(self):
+        import uuid
+        from tickets.tasks import scan_event_competition_task
+        status = scan_event_competition_task.apply(
+            args=[str(uuid.uuid4())]).result
+        self.assertEqual(status, 'missing')
+
+    def test_soft_deleted_event_returns_missing(self):
+        from tickets.tasks import scan_event_competition_task
+        self.event.delete()  # AuditBaseModel soft delete sets deleted_at
+        status = scan_event_competition_task.apply(
+            args=[str(self.event.id)]).result
+        self.assertEqual(status, 'missing')
+
+    def test_unexpected_error_retries(self):
+        from tickets.tasks import scan_event_competition_task
+        with patch(self.CALC, side_effect=RuntimeError('db down')), \
+                patch.object(scan_event_competition_task, 'retry',
+                             side_effect=Exception('retried')) as retry:
+            scan_event_competition_task.apply(args=[str(self.event.id)])
+        retry.assert_called_once()
+        _, kwargs = retry.call_args
+        self.assertIsInstance(kwargs.get('exc'), RuntimeError)
