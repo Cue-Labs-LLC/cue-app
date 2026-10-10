@@ -4243,12 +4243,19 @@ def conversion_rate(request):
     sort_fields = {
         'name': 'name', 'date': 'start_date', 'views': 'views',
         'orders': 'orders', 'rate': 'conversion_rate',
+        'spend': 'marketing_spend', 'cpv': 'cost_per_view', 'cpo': 'cost_per_order',
     }
     sort_by = request.GET.get('sort', '-rate')
     field = sort_fields.get(sort_by.lstrip('-'))
     if field is None:
         sort_by, field = '-rate', 'conversion_rate'
-    events = sorted(result['events'], key=lambda e: e[field], reverse=sort_by.startswith('-'))
+    # cost_per_order (and cost_per_view) can be None when an event has no orders;
+    # coalesce to 0 so the sort stays comparable across Decimal/float/str columns.
+    events = sorted(
+        result['events'],
+        key=lambda e: e[field] if e[field] is not None else 0,
+        reverse=sort_by.startswith('-'),
+    )
 
     # Meter bars default to a full bar == 20% conversion (buy-page rates rarely go
     # higher, so this uses the width well). The organizer can rescale the ceiling
