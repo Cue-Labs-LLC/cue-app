@@ -82,3 +82,22 @@ def trace_config(*, name=None, tags=None, session_id=None, user_id=None, metadat
     if md:
         config['metadata'] = md
     return {'config': config}
+
+
+def flush_traces():
+    """Flush buffered Langfuse spans to the backend; no-op when tracing is off.
+
+    Langfuse batches spans and ships them on a background thread, so a short-lived
+    process (a ``manage.py`` command, a script) can exit before the buffer is sent
+    and silently drop its traces. Long-lived web/Celery workers flush on their own;
+    one-shot entry points should call this before returning. Safe to call always —
+    it no-ops unless ``LANGFUSE_*`` keys are configured.
+    """
+    if not _tracing_enabled():
+        return
+    try:
+        from langfuse import get_client
+
+        get_client().flush()
+    except Exception:
+        logger.exception("Langfuse flush failed")

@@ -104,6 +104,10 @@ def web_search(query, *, max_results=None, include_domains=None,
     )
     cached = django_cache.get(cache_key)
     if cached is not None:
+        logger.info(
+            'Market competition search (cache hit) query=%r include=%s exclude=%s -> %d result(s)',
+            query, include_domains or [], exclude_domains or [], len(cached),
+        )
         return cached or []  # [] sentinel means a recent provider failure
 
     provider = getattr(settings, 'MARKET_COMPETITION_SEARCH_PROVIDER', 'tavily')
@@ -119,6 +123,10 @@ def web_search(query, *, max_results=None, include_domains=None,
         django_cache.set(cache_key, [], SEARCH_FAILURE_TTL_SECONDS)
         return []
 
+    logger.info(
+        'Market competition search query=%r include=%s exclude=%s -> %d result(s)',
+        query, include_domains or [], exclude_domains or [], len(results),
+    )
     django_cache.set(cache_key, results, SEARCH_TTL_SECONDS)
     return results
 
@@ -169,7 +177,7 @@ def _tavily_search(query, api_key, max_results, include_domains=None,
     ]
 
 
-def search_queries(queries):
+def search_queries(queries, *, include_domains=None, exclude_domains=None):
     """Run ``queries`` through ``web_search`` and report coverage.
 
     Returns ``(results_by_query, coverage)`` where ``results_by_query`` maps each
@@ -180,11 +188,18 @@ def search_queries(queries):
     rather than a trustworthy "you're clear" (DO2). An empty query list reports
     ``ratio == 1.0`` to match ``score_competition``'s default and avoid a
     division by zero.
+
+    ``include_domains`` / ``exclude_domains`` scope every query in the batch (an
+    allow-list / deny-list of hostnames) and are forwarded to ``web_search``.
+    ``None`` leaves each to ``web_search``'s own default; pass a list to override
+    for this batch, or ``[]`` to force open-web.
     """
     results_by_query = {}
     with_results = 0
     for query in queries:
-        results = web_search(query)
+        results = web_search(
+            query, include_domains=include_domains, exclude_domains=exclude_domains,
+        )
         results_by_query[query] = results
         if results:
             with_results += 1

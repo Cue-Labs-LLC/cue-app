@@ -76,18 +76,28 @@ event fields (name, talent, genre hints, city/state, date span, ±window)
         │
         ▼
 query_plan: build a FIXED list of search queries (DO3)
-   - one per derived genre hint
-   - "{city} events {date range}"
-   - one per named non-API platform (eventbrite/dice/see tickets/…)
+   WHEN genre hints present (every query carries the genre — P3 deviation):
+   - one per derived genre hint:  "{genre} events in {city} {event date}"
+   - one per named non-API platform, genre-scoped:
+       "{platform} {genres} events in {city} {event date}"
+     (no genre-less city query — a known genre is never dropped)
+   WHEN no confident genre (DO5-f density fallback):
+   - "{city} events {event date}"  +  one per platform, genre-less
+   NB: queries carry the event's OWN date, not a ±window-widened range —
+   the ±window tolerance lives only in the scorer (P3 deviation from DO5-b).
         │
         ▼
-search_client.web_search(q)  × N   (Tavily via requests; cached; fail-silent)
+search_client.web_search(q)  × N   (Tavily via requests; cached; fail-silent;
+   each query logged at INFO; optional per-run include/exclude domains)
         │   (messy, unstructured snippets)
         ▼
 LLM extraction (ONE structured call) → list[CompetitorEvent]:
+   snippets are sampled ROUND-ROBIN across queries up to a cap (P3: fair
+   representation so a low-volume platform query isn't starved) →
    normalizes each → {name, date|None, venue, metro_normalized (DO5-e),
-   genre, platform, source_url}; dedupes across platforms (DO5-c);
-   excludes the target event itself (DO5-a); records coverage (DO2)
+   genre, platform, source_url}; also emits target_metro_normalized (DO5-e);
+   dedupes across platforms (DO5-c); excludes the target event itself (DO5-a);
+   records coverage (DO2)
         │
         ▼
 scoring.score_competition(...) — PURE, deterministic:
@@ -181,8 +191,15 @@ multi-tenancy rule; new Event/Org fields are additive.)
     competitors: list[CompetitorEvent], undated: list[CompetitorEvent], counts:
     dict, coverage: dict, summary: str)`.
 - `query_plan.py` (DO3): `build_queries(event, genre_hints) -> list[str]` — pure,
-  fully testable: one query per genre hint, a `"{city} events {date range}"`
-  query, and one per configured non-API platform. No LLM, no I/O.
+  fully testable. **P3 deviation from the original plan:** when genre hints are
+  present, **every** query carries the genre — one per genre hint
+  (`"{genre} events in {city} {event date}"`) plus one genre-scoped query per
+  platform (`"{platform} {genres} events in {city} {event date}"`), and the
+  genre-less `"{city} events ..."` query is emitted **only** in the no-genre DO5-f
+  fallback (a known genre is never dropped from a search). Also, queries carry the
+  event's **own date** (`_event_date_label`), not a ±window-widened range — the
+  ±window proximity tolerance lives only in the scorer (P3 deviation from DO5-b's
+  "widen the search by ±window"). No LLM, no I/O.
 - `search_client.py`: `web_search(query, *, max_results) -> list[dict]` on
   `requests` exactly like `weather.py` — `HTTP_TIMEOUT_SECONDS`, custom UA,
   `django_cache` versioned key (`market_comp:search:v1:{hash(query)}`), ~6h TTL +
@@ -196,19 +213,31 @@ multi-tenancy rule; new Event/Org fields are additive.)
   the provider, part of the cache key), defaulting to the
   `MARKET_COMPETITION_INCLUDE_DOMAINS`/`..._EXCLUDE_DOMAINS` settings — a
   lightweight **search-layer proxy** for the deferred D4-D size tier (scope to
-  indie ticketing platforms / drop mega-promoter + resale domains).
-- `scanner.py`: `scan_competitors(organization, event, genre_hints) ->
-  (list[CompetitorEvent], coverage: dict, TokenUsage)`. Runs `build_queries`,
-  issues each via `web_search`, then a single `.with_structured_output(ExtractedEvents)`
-  LLM pass (pattern from `sms_strategist.py:451-466`, traced via
+  indie ticketing platforms / drop mega-promoter + resale domains). **P3
+  additions:** each query is logged at `INFO` (query + domains + result count,
+  incl. a `(cache hit)` variant) so the exact Tavily queries are visible in the
+  command/server logs; `search_queries(queries, *, include_domains,
+  exclude_domains)` forwards per-batch domain overrides.
+- `scanner.py`: `scan_competitors(organization, event, genre_hints, *,
+  include_domains=None, exclude_domains=None) -> ScanResult`. **P3 deviation from
+  the planned `(list, coverage, TokenUsage)` tuple:** returns a small `ScanResult`
+  dataclass `(competitors, target_metro_normalized, coverage, ok)` — it carries
+  `target_metro_normalized` (DO5-e), an `ok` flag so the calculator distinguishes
+  an extraction failure (→ `unavailable`, D2) from a genuine empty scan, and it
+  **records its own `extract`-stage token usage internally** (each call site owns
+  its metering, like `event_summary`) rather than handing a `TokenUsage` back. Runs
+  `build_queries`, issues each via `web_search`, **samples the pooled snippets
+  round-robin across queries up to `MAX_SNIPPETS`** (P3: fair representation so a
+  low-volume platform query isn't truncated out by earlier high-volume queries),
+  then a single `.with_structured_output(ExtractedEvents)` LLM pass (pattern from
+  `sms_strategist.py:451-466`, traced via
   `trace_config(name='market-competition-extract', ...)`) that for every found
   event emits `{name, date|None, venue, metro_normalized (DO5-e), genre, platform,
-  source_url}`, **dedupes** across platforms by fuzzy (name + date + venue) key
-  (DO5-c), and **excludes the target event itself** by (name + date + venue) match
-  (DO5-a). `metro_normalized` is the LLM's normalized metro for the event; the
-  target venue's city is normalized the same way once, so the scorer compares
-  normalized values (no hand-maintained map — DO5-e). Metro-normalization accuracy
-  is an eval target (§5 P6).
+  source_url}` plus `target_metro_normalized`, **dedupes** across platforms by
+  fuzzy (name + date + venue) key (DO5-c), and **excludes the target event itself**
+  by (name + date + venue) match (DO5-a) — both enforced deterministically in code
+  (not on LLM trust) so they are regression-tested. Metro-normalization accuracy is
+  an eval target (§5 P6).
 - `scoring.py`: `score_competition(target, competitors, undated, coverage, *,
   window_days) -> CompetitionResult` — **pure, deterministic, no I/O**. Filters to
   D4 matches: same `metro_normalized`; within `±window_days` of the event's **date
@@ -222,16 +251,24 @@ multi-tenancy rule; new Event/Org fields are additive.)
   below a threshold and the score would be ~0 (DO2), else `ready`. Returns the
   filtered list + `undated` + `counts` + `coverage`.
 - `calculator.py` / `__init__.py`:
-  `MarketCompetitionCalculator(organization).calculate(event) -> CompetitionResult`
-  (standard `__init__(self, organization)` + method pattern). Guard (venue+city+
-  start_date, else `status='unavailable'`); if `TAVILY_API_KEY` unset or all
-  searches fail → `status='unavailable'` (never a 0/Low — D2). Else derive genre
-  hints from `event.name` + `EventTalent` + `description` → `scanner.scan_competitors`
-  → `score_competition` → **narrative** via one `ChatOpenAI.invoke` wrapped so a
-  failure logs + returns empty summary with the score still persisting (D6,
-  `event_summary.py:192-194` style) → `record_ai_token_usage(feature=
-  FEATURE_MARKET_COMPETITION)` → return. `__init__.py` exposes
-  `calculate_event_competition(organization, event)` as the single public entry.
+  `MarketCompetitionCalculator(organization).calculate(event, genre_hints=None, *,
+  include_domains=None, exclude_domains=None) -> CompetitionResult` (standard
+  `__init__(self, organization)` + method pattern). Guard (venue+city+start_date,
+  else `status='unavailable'`); if `TAVILY_API_KEY` unset or all searches return
+  nothing / extraction fails → `status='unavailable'` (never a 0/Low — D2). Else
+  derive genre hints via the **deterministic keyword map** `derive_genre_hints`
+  (D1 — `GENRE_KEYWORDS` over `event.name` + `EventTalent` + `description`; empty →
+  DO5-f fallback) **or** use the explicit `genre_hints` override → `scanner.
+  scan_competitors` → `score_competition` → **narrative** via one
+  `ChatOpenAI.invoke` wrapped so a failure logs + returns empty summary with the
+  score still persisting (D6, `event_summary.py:192-194` style) →
+  `record_ai_token_usage(feature=FEATURE_MARKET_COMPETITION, stage='narrative')` →
+  return. **P3 additions:** `genre_hints` / `include_domains` / `exclude_domains`
+  are optional overrides (threaded from the `scan_event_competition` CLI flags —
+  per-run, organizer-facing, *not* global settings; the per-org config is a P5
+  home). `__init__.py` exposes `calculate_event_competition(organization, event,
+  genre_hints=None, *, include_domains=None, exclude_domains=None)` as the single
+  public entry.
 
 ### 4.3 Config (`ltv_updater/settings.py`, `os.environ.get` pattern @ 216-220)
 - `TAVILY_API_KEY` (**required to use the feature**; absent → `status='unavailable'`,
@@ -314,12 +351,19 @@ multi-tenancy rule; new Event/Org fields are additive.)
   event lacks venue/city/date OR key unset (D2); **narrative failure → score +
   list persist, empty summary** (D6); `record_ai_token_usage` called with
   `FEATURE_MARKET_COMPETITION` (stages `extract` + `narrative`).
-- **Build:** `scanner.py` (fixed-plan search + structured extraction/normalization/
-  dedupe/self-exclude), `calculator.py` + `__init__.py`, narrative (graceful),
-  tracing + metering. `scan_event_competition <event_id>` management command runs
-  the full pipeline synchronously.
+- **Build:** `scanner.py` (fixed-plan search + round-robin snippet sampling +
+  structured extraction/normalization/dedupe/self-exclude), `calculator.py` +
+  `__init__.py` (incl. `derive_genre_hints` keyword map, D1), narrative (graceful),
+  tracing + metering + `ai_tracing.flush_traces()` (one-shot processes flush
+  buffered Langfuse spans). `scan_event_competition <event_id>` management command
+  runs the full pipeline synchronously, with per-run `--genres`,
+  `--include-domains`, `--exclude-domains` overrides.
 - **Accept / demo:** CLI command against a real seeded event (with
-  `TAVILY_API_KEY`) prints list / count / coverage / (ungated) score / narrative.
+  `TAVILY_API_KEY`) prints genres / list / count / coverage / (ungated) score /
+  narrative. **Shipped beyond the original P3 plan (all tested):** the deterministic
+  keyword-map genre derivation (D1); per-run `--genres` / domain override flags;
+  genre-in-every-query + event-date query plan (deviations noted in §3/§4.2);
+  round-robin snippet sampling; per-query search logging; `flush_traces`.
 
 ### Phase 4 — Celery task + persistence + feature gate
 - **Tests first (eager Celery):** task persists to Event fields on success;
@@ -415,7 +459,7 @@ scan_event_competition <event_id>` (P3, needs `TAVILY_API_KEY` + `OPENAI_API_KEY
 - [ ] **P0** — Design doc committed + Event/Org fields (incl. `competition_status`) + `AITokenUsage` constant + migration
 - [ ] **P1** — Pure scoring + query plan (`types.py`, `scoring.py`, `query_plan.py`) — test-pinned (DO5-b/d/f, DO2, DO3)
 - [x] **P2** — Search client (mocked-requests tests) + coverage accounting + `market_search` command
-- [ ] **P3** — Scanner (fixed-plan + extraction/normalize/dedupe/self-exclude) + calculator + narrative (graceful) + metering + `scan_event_competition` command
+- [x] **P3** — Scanner (fixed-plan + round-robin sampling + extraction/normalize/dedupe/self-exclude) + calculator (keyword-map genre derivation, D1) + narrative (graceful) + metering + `scan_event_competition` command (with `--genres`/`--include-domains`/`--exclude-domains` overrides). Deviations from the approved plan (query carries genre in every query + event's own date; `ScanResult` return; `flush_traces`) noted in §3/§4.2.
 - [ ] **P4** — Celery task + persistence (success-only hash, TTL re-scan) + TTL'd lock + daily cap + feature gate
 - [ ] **P5** — Scan/poll endpoints + event-detail panel (list+count+coverage, bounded poll, honest failure states)
 - [ ] **P6** — Eval harness (GATES numeric score): extraction/date/metro precision + scoring sanity
