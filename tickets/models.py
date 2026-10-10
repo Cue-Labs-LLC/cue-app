@@ -298,6 +298,13 @@ class Organization(BaseModel):
         default=False,
         help_text='Enable the waitlist feature for this organization.',
     )
+    market_competition_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Enable the per-event Market Competition scan (ships dark; '
+            'turn on per org).'
+        ),
+    )
     ai_event_summary_enabled = models.BooleanField(
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
@@ -1504,6 +1511,17 @@ class Event(AuditBaseModel):
     # against this value to decide whether the underlying data changed and the
     # summary needs regenerating. Set on every generation (manual or automatic).
     ai_summary_input_hash = models.CharField(max_length=64, blank=True, default='')
+    # --- Market competition scan (per-event competitive-density signal) ---
+    competition_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    competition_label = models.CharField(max_length=20, blank=True, default='')
+    # One of: ready | unavailable | inconclusive (D2/DO2).
+    competition_status = models.CharField(max_length=20, blank=True, default='')
+    # Serialized competitor list + counts + coverage + narrative + undated list.
+    competition_data = models.JSONField(default=dict, blank=True)
+    competition_generated_at = models.DateTimeField(null=True, blank=True)
+    # sha256 of (name, talent, city, state, start_date, end_date, window). Written
+    # ONLY on a successful scan (D5); used to suppress re-scans within the TTL (DO4).
+    competition_input_hash = models.CharField(max_length=64, blank=True, default='')
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
@@ -3202,6 +3220,7 @@ class AITokenUsage(BaseModel):
     FEATURE_SMS_PLAN = 'sms_plan'
     FEATURE_BRAND_VOICE_EXAMPLE = 'brand_voice_example'
     FEATURE_IG_SUPPORT_AGENT = 'ig_support_agent'
+    FEATURE_MARKET_COMPETITION = 'market_competition'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -3214,6 +3233,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_SMS_PLAN, 'SMS campaign plan'),
         (FEATURE_BRAND_VOICE_EXAMPLE, 'Brand voice example'),
         (FEATURE_IG_SUPPORT_AGENT, 'Instagram support agent'),
+        (FEATURE_MARKET_COMPETITION, 'Market competition'),
     ]
 
     organization = models.ForeignKey(
