@@ -10,6 +10,7 @@ See ``docs/technical-design/market-competition-agent.md``.
 """
 from .query_plan import build_queries
 from .scoring import score_competition
+from .search_client import search_queries, web_search
 from .types import CompetitionResult, CompetitorEvent, TargetEvent
 
 __all__ = [
@@ -18,4 +19,6 @@ __all__ = [
     'CompetitionResult',
     'score_competition',
     'build_queries',
+    'web_search',
+    'search_queries',
 ]
