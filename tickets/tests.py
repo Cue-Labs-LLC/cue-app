@@ -23158,9 +23158,10 @@ class ConversionRateViewTests(TestCase):
         self.client.get(reverse('tickets:home'))
 
     def _direct_event_with_views(self, name='Live', views=100, orders=25):
+        # Dated in the current year so it falls inside the default "this year" window.
         event = Event.objects.create(
-            organization=self.org, name=name, start_date=date(2024, 6, 15), venue=self.venue,
-            ticketing_type=TICKETING_TYPE_DIRECT, public_buy_page_views=views,
+            organization=self.org, name=name, start_date=date(date.today().year, 6, 15),
+            venue=self.venue, ticketing_type=TICKETING_TYPE_DIRECT, public_buy_page_views=views,
         )
         customer = Customer.objects.create(
             organization=self.org, email=f'{name}@example.com', name=name,
@@ -23183,6 +23184,66 @@ class ConversionRateViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.context['has_data'])
         self.assertEqual(resp.context['summary']['overall_rate'], 25.0)
+        # Table rows carry every metric the row needs, including the scaled meter width.
+        rows = resp.context['events']
+        self.assertEqual(len(rows), 1)
+        for key in ('orders', 'views', 'conversion_rate', 'bar_pct'):
+            self.assertIn(key, rows[0])
+        # The over-time chart gets a per-event payload with the fields it plots.
+        chart = json.loads(resp.context['chart_json'])
+        self.assertEqual(len(chart), 1)
+        for key in ('name', 'start_date', 'conversion_rate', 'orders', 'views'):
+            self.assertIn(key, chart[0])
+        self.assertEqual(chart[0]['conversion_rate'], 25.0)
+
+    def test_chart_series_is_chronological_regardless_of_table_sort(self):
+        year = date.today().year
+        self._direct_event_with_views(name='Later', views=100, orders=40)   # higher rate
+        Event.objects.filter(name='Later').update(start_date=date(year, 8, 1))
+        self._direct_event_with_views(name='Earlier', views=100, orders=10)
+        Event.objects.filter(name='Earlier').update(start_date=date(year, 2, 1))
+
+        # Table sorted by rate desc puts 'Later' first; the chart stays by date.
+        resp = self.client.get(reverse('tickets:conversion_rate'), {'sort': '-rate'})
+        self.assertEqual([e['name'] for e in resp.context['events']], ['Later', 'Earlier'])
+        chart = json.loads(resp.context['chart_json'])
+        self.assertEqual([c['name'] for c in chart], ['Earlier', 'Later'])
+
+    def test_sort_param_orders_rows(self):
+        self._direct_event_with_views(name='Low', views=1000, orders=50)   # 5%
+        self._direct_event_with_views(name='High', views=100, orders=25)   # 25%
+
+        # Default sort is highest conversion rate first.
+        default_rows = self.client.get(reverse('tickets:conversion_rate')).context['events']
+        self.assertEqual([r['name'] for r in default_rows], ['High', 'Low'])
+
+        # ?sort=views ascending vs descending reverse the order.
+        asc = self.client.get(reverse('tickets:conversion_rate'), {'sort': 'views'}).context['events']
+        desc = self.client.get(reverse('tickets:conversion_rate'), {'sort': '-views'}).context['events']
+        self.assertEqual([r['name'] for r in asc], ['High', 'Low'])    # 100 < 1000
+        self.assertEqual([r['name'] for r in desc], ['Low', 'High'])
+
+        # An unknown sort key falls back to -rate (highest first).
+        bad = self.client.get(reverse('tickets:conversion_rate'), {'sort': 'bogus'})
+        self.assertEqual(bad.context['sort_by'], '-rate')
+        self.assertEqual([r['name'] for r in bad.context['events']], ['High', 'Low'])
+
+    def test_bar_pct_uses_default_scale_of_20(self):
+        # Full bar == 20% conversion by default, so a 20% event fills the bar and a
+        # 10% event fills half. (The organizer can rescale the ceiling client-side.)
+        self._direct_event_with_views(name='Twenty', views=100, orders=20)   # 20%
+        self._direct_event_with_views(name='Ten', views=100, orders=10)      # 10%
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertEqual(resp.context['bar_scale_default'], 20)
+        by_name = {r['name']: r for r in resp.context['events']}
+        self.assertEqual(by_name['Twenty']['bar_pct'], 100)
+        self.assertEqual(by_name['Ten']['bar_pct'], 50)
+
+    def test_bar_pct_caps_at_100(self):
+        # A rate above the scale ceiling (here >20%) must clamp the bar at 100%.
+        self._direct_event_with_views(name='Over', views=10, orders=20)      # 200%
+        rows = self.client.get(reverse('tickets:conversion_rate')).context['events']
+        self.assertEqual(rows[0]['bar_pct'], 100)
 
     def test_overview_gates_hub_card(self):
         resp = self.client.get(reverse('tickets:analytics_overview'))
