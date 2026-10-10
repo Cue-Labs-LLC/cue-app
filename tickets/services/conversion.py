@@ -17,9 +17,12 @@ manually). This is the "when pageview data is available" gate.
 Returns one row per qualifying event (chronological) plus an org-wide summary,
 suitable for a bar chart with one bar per event.
 """
-from django.db.models import Count
+from decimal import Decimal
 
-from tickets.models import Event, TICKETING_TYPE_DIRECT
+from django.db.models import Count, DecimalField, OuterRef, Subquery, Sum
+from django.db.models.functions import Coalesce
+
+from tickets.models import Event, EventExpense, TICKETING_TYPE_DIRECT
 
 
 class ConversionRateCalculator:
@@ -48,6 +51,9 @@ class ConversionRateCalculator:
                 'total_orders': 0,
                 'total_views': 0,
                 'event_count': 0,
+                'total_marketing_spend': Decimal('0.00'),
+                'overall_cost_per_view': None,
+                'overall_cost_per_order': None,
             },
         }
 
@@ -71,13 +77,36 @@ class ConversionRateCalculator:
         if self.end_date is not None:
             events = events.filter(start_date__lte=self.end_date)
 
-        # Single Count on one related table — no join inflation (the isolated
-        # Subquery rule only applies when mixing Count + Sum or multiple tables).
-        # views is read from the field directly, so no join at all.
+        # order_count is a single Count on one related table (no join inflation).
+        # Marketing spend is summed in an isolated Subquery so the Sum over the
+        # expenses table never multiplies rows against the ticket_orders join (the
+        # house rule for mixing Count + Sum). Covers manual + Meta Ads marketing
+        # line items (both stored with category='marketing'). views is read from
+        # the field directly, so no join at all.
+        marketing_subq = (
+            EventExpense.objects.filter(
+                event=OuterRef('pk'),
+                category='marketing',
+                deleted_at__isnull=True,
+            )
+            .values('event')
+            .annotate(total=Sum('amount'))
+            .values('total')
+        )
         rows = list(
-            events.annotate(order_count=Count('ticket_orders'))
+            events.annotate(
+                order_count=Count('ticket_orders'),
+                marketing_spend=Coalesce(
+                    Subquery(
+                        marketing_subq,
+                        output_field=DecimalField(max_digits=12, decimal_places=2),
+                    ),
+                    Decimal('0.00'),
+                ),
+            )
             .order_by('start_date')
-            .values('id', 'name', 'start_date', 'order_count', 'public_buy_page_views')
+            .values('id', 'name', 'start_date', 'order_count',
+                    'public_buy_page_views', 'marketing_spend')
         )
         if not rows:
             return self._empty()
@@ -85,11 +114,14 @@ class ConversionRateCalculator:
         event_data = []
         total_orders = 0
         total_views = 0
+        total_marketing_spend = Decimal('0.00')
         for row in rows:
             orders = row['order_count']
             views = row['public_buy_page_views']
+            spend = row['marketing_spend']
             total_orders += orders
             total_views += views
+            total_marketing_spend += spend
             event_data.append({
                 'event_id': str(row['id']),
                 'name': row['name'],
@@ -97,11 +129,25 @@ class ConversionRateCalculator:
                 'orders': orders,
                 'views': views,
                 'conversion_rate': round(orders / views * 100, 1) if views > 0 else 0.0,
+                'marketing_spend': spend,
+                # Cost per view is often sub-cent, so keep 4 dp; per order keeps 2 dp.
+                'cost_per_view': (spend / views).quantize(Decimal('0.0001')) if views > 0 else None,
+                'cost_per_order': (spend / orders).quantize(Decimal('0.01')) if orders > 0 else None,
             })
 
         # Overall rate is the aggregate ratio, not the average of per-event rates,
         # so events with more traffic weigh more (matches the point-in-time tile).
+        # The marketing cost ratios are aggregated the same way (total spend over
+        # total views / orders), not an average of per-event ratios.
         overall_rate = round(total_orders / total_views * 100, 1) if total_views > 0 else None
+        overall_cost_per_view = (
+            (total_marketing_spend / total_views).quantize(Decimal('0.0001'))
+            if total_views > 0 else None
+        )
+        overall_cost_per_order = (
+            (total_marketing_spend / total_orders).quantize(Decimal('0.01'))
+            if total_orders > 0 else None
+        )
 
         return {
             'events': event_data,
@@ -110,5 +156,8 @@ class ConversionRateCalculator:
                 'total_orders': total_orders,
                 'total_views': total_views,
                 'event_count': len(event_data),
+                'total_marketing_spend': total_marketing_spend,
+                'overall_cost_per_view': overall_cost_per_view,
+                'overall_cost_per_order': overall_cost_per_order,
             },
         }

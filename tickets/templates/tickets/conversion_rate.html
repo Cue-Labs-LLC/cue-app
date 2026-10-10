@@ -1,6 +1,7 @@
 {% extends 'tickets/base.html' %}
 
 {% load humanize %}
+{% load tickets_extras %}
 {% block title %}Conversion Rate{% endblock %}
 
 {% block extra_head %}
@@ -15,6 +16,12 @@
   .conv-table td.text-end, .conv-table th.text-end { text-align: right; }
   .conv-table thead th.text-end a { justify-content: flex-end; }
   .conv-table .conv-date { color: var(--text-secondary, #6c757d); white-space: nowrap; }
+  /* Marketing-spend columns/cards are hidden by default; the organizer opts in via
+     the toggle. Hiding in CSS (not JS) avoids a flash of the metrics on first paint. */
+  .conv-mktg { display: none !important; }
+  body.conv-show-mktg div.conv-mktg { display: block !important; }
+  body.conv-show-mktg th.conv-mktg,
+  body.conv-show-mktg td.conv-mktg { display: table-cell !important; }
 </style>
 {% endblock %}
 
@@ -71,29 +78,53 @@
 </div>
 
 {% if has_data %}
+<div class="d-flex justify-content-end mb-2">
+    <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" role="switch" id="toggleMktg">
+        <label class="form-check-label small text-muted" for="toggleMktg">Show marketing spend metrics</label>
+    </div>
+</div>
 <div class="row mb-4 g-3">
-    <div class="col-md-3 col-sm-6">
+    <div class="col-lg col-md-4 col-sm-6">
         <div class="stat-card">
             <div class="stat-label">Overall Conversion Rate</div>
             <div class="stat-value">{{ summary.overall_rate }}%</div>
         </div>
     </div>
-    <div class="col-md-3 col-sm-6">
+    <div class="col-lg col-md-4 col-sm-6">
         <div class="stat-card">
             <div class="stat-label">Total Orders</div>
             <div class="stat-value">{{ summary.total_orders|intcomma }}</div>
         </div>
     </div>
-    <div class="col-md-3 col-sm-6">
+    <div class="col-lg col-md-4 col-sm-6">
         <div class="stat-card">
             <div class="stat-label">Total Views</div>
             <div class="stat-value">{{ summary.total_views|intcomma }}</div>
         </div>
     </div>
-    <div class="col-md-3 col-sm-6">
+    <div class="col-lg col-md-4 col-sm-6">
         <div class="stat-card">
             <div class="stat-label">Events</div>
             <div class="stat-value">{{ summary.event_count|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-lg col-md-4 col-sm-6 conv-mktg">
+        <div class="stat-card">
+            <div class="stat-label">Total Marketing Spend</div>
+            <div class="stat-value">${{ summary.total_marketing_spend|currency }}</div>
+        </div>
+    </div>
+    <div class="col-lg col-md-4 col-sm-6 conv-mktg">
+        <div class="stat-card">
+            <div class="stat-label">Marketing $/View</div>
+            <div class="stat-value">{% if summary.overall_cost_per_view is not None %}${{ summary.overall_cost_per_view|floatformat:4 }}{% else %}&mdash;{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-lg col-md-4 col-sm-6 conv-mktg">
+        <div class="stat-card">
+            <div class="stat-label">Marketing $/Order</div>
+            <div class="stat-value">{% if summary.overall_cost_per_order is not None %}${{ summary.overall_cost_per_order|currency }}{% else %}&mdash;{% endif %}</div>
         </div>
     </div>
 </div>
@@ -251,6 +282,24 @@ document.addEventListener('DOMContentLoaded', function() {
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
                             {% endwith %}
                         </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='spend' desc='-spend' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing Spend
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='cpv' desc='-cpv' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/View
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='cpo' desc='-cpo' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/Order
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
@@ -266,6 +315,9 @@ document.addEventListener('DOMContentLoaded', function() {
                                 <span class="conv-meter-val">{{ e.conversion_rate|floatformat:1 }}%</span>
                             </div>
                         </td>
+                        <td class="text-end conv-mktg">${{ e.marketing_spend|currency }}</td>
+                        <td class="text-end conv-mktg">{% if e.cost_per_view is not None %}${{ e.cost_per_view|floatformat:4 }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end conv-mktg">{% if e.cost_per_order is not None %}${{ e.cost_per_order|currency }}{% else %}&mdash;{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -276,6 +328,23 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Marketing-spend metrics visibility toggle (persisted per browser, shown by default).
+    var mktgToggle = document.getElementById('toggleMktg');
+    if (mktgToggle) {
+        var MKTG_KEY = 'cue_conv_show_marketing';
+        function applyMktg(show) {
+            document.body.classList.toggle('conv-show-mktg', show);
+        }
+        var showMktg = false;  // hidden by default; opt in via the toggle (persisted per browser)
+        try { if (localStorage.getItem(MKTG_KEY) === '1') showMktg = true; } catch (e) {}
+        mktgToggle.checked = showMktg;
+        applyMktg(showMktg);
+        mktgToggle.addEventListener('change', function() {
+            try { localStorage.setItem(MKTG_KEY, mktgToggle.checked ? '1' : '0'); } catch (e) {}
+            applyMktg(mktgToggle.checked);
+        });
+    }
+
     var input = document.getElementById('barScale');
     if (!input) return;
     var fills = document.querySelectorAll('.conv-meter-fill');

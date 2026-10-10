@@ -23071,6 +23071,16 @@ class ConversionRateCalculatorTests(TestCase):
         from tickets.services.conversion import ConversionRateCalculator
         return ConversionRateCalculator(self.org, **kwargs).calculate()
 
+    def _expense(self, event, amount, category='marketing', source='manual', deleted=False):
+        exp = EventExpense.objects.create(
+            event=event, category=category, source=source,
+            description=f'{category} spend', amount=Decimal(str(amount)),
+        )
+        if deleted:
+            exp.deleted_at = timezone.now()
+            exp.save(update_fields=['deleted_at'])
+        return exp
+
     def test_per_event_conversion_rate(self):
         ev_a = self._event('A', 100, start=date(2024, 6, 15))
         ev_b = self._event('B', 50, start=date(2024, 7, 15))
@@ -23134,6 +23144,65 @@ class ConversionRateCalculatorTests(TestCase):
         result = self._calc(start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
 
         self.assertEqual([e['name'] for e in result['events']], ['New'])
+
+    def test_marketing_cost_per_view_and_order(self):
+        ev = self._event('A', 1000)
+        self._orders(ev, 40)
+        # Manual + Meta Ads marketing lines both count (both category='marketing').
+        self._expense(ev, '150.00', source='manual')
+        self._expense(ev, '50.00', source='meta_ads')
+
+        result = self._calc()
+        row = result['events'][0]
+
+        self.assertEqual(row['marketing_spend'], Decimal('200.00'))
+        self.assertEqual(row['cost_per_view'], Decimal('0.2000'))   # 200 / 1000
+        self.assertEqual(row['cost_per_order'], Decimal('5.00'))    # 200 / 40
+        self.assertEqual(result['summary']['total_marketing_spend'], Decimal('200.00'))
+        self.assertEqual(result['summary']['overall_cost_per_view'], Decimal('0.2000'))
+        self.assertEqual(result['summary']['overall_cost_per_order'], Decimal('5.00'))
+
+    def test_marketing_spend_excludes_deleted_and_other_categories(self):
+        ev = self._event('A', 100)
+        self._orders(ev, 10)
+        self._expense(ev, '30.00', source='manual')                       # counts
+        self._expense(ev, '99.00', source='manual', deleted=True)         # soft-deleted
+        self._expense(ev, '77.00', category='venue')                      # wrong category
+
+        row = self._calc()['events'][0]
+
+        self.assertEqual(row['marketing_spend'], Decimal('30.00'))
+        self.assertEqual(row['cost_per_order'], Decimal('3.00'))
+
+    def test_zero_orders_cost_per_order_is_none(self):
+        ev = self._event('A', 100)   # views but no orders
+        self._expense(ev, '40.00')
+
+        row = self._calc()['events'][0]
+
+        self.assertEqual(row['orders'], 0)
+        self.assertEqual(row['cost_per_view'], Decimal('0.4000'))
+        self.assertIsNone(row['cost_per_order'])
+        # No orders across the org -> overall per-order ratio is None, per-view still computes.
+        self.assertIsNone(self._calc()['summary']['overall_cost_per_order'])
+        self.assertEqual(self._calc()['summary']['overall_cost_per_view'], Decimal('0.4000'))
+
+    def test_event_without_marketing_spend_is_zero(self):
+        ev = self._event('A', 100)
+        self._orders(ev, 10)
+
+        row = self._calc()['events'][0]
+
+        self.assertEqual(row['marketing_spend'], Decimal('0.00'))
+        self.assertEqual(row['cost_per_view'], Decimal('0.0000'))
+        self.assertEqual(row['cost_per_order'], Decimal('0.00'))
+
+    def test_empty_summary_has_marketing_keys(self):
+        summary = self._calc()['summary']  # no events at all
+
+        self.assertEqual(summary['total_marketing_spend'], Decimal('0.00'))
+        self.assertIsNone(summary['overall_cost_per_view'])
+        self.assertIsNone(summary['overall_cost_per_order'])
 
 
 class ConversionRateViewTests(TestCase):
@@ -23227,6 +23296,17 @@ class ConversionRateViewTests(TestCase):
         bad = self.client.get(reverse('tickets:conversion_rate'), {'sort': 'bogus'})
         self.assertEqual(bad.context['sort_by'], '-rate')
         self.assertEqual([r['name'] for r in bad.context['events']], ['High', 'Low'])
+
+    def test_sort_by_cost_per_order_handles_none(self):
+        # An event with views but zero orders has cost_per_order=None; sorting by it
+        # must not raise (None is coalesced to 0 in the view's sort key).
+        self._direct_event_with_views(name='HasOrders', views=100, orders=25)
+        self._direct_event_with_views(name='NoOrders', views=100, orders=0)
+        resp = self.client.get(reverse('tickets:conversion_rate'), {'sort': 'cpo'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['sort_by'], 'cpo')
+        names = {r['name'] for r in resp.context['events']}
+        self.assertEqual(names, {'HasOrders', 'NoOrders'})
 
     def test_bar_pct_uses_default_scale_of_20(self):
         # Full bar == 20% conversion by default, so a 20% event fills the bar and a
