@@ -26,7 +26,7 @@ from .models import (
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
     PhoneSuppression, SMSConsentRecord,
     DeviceToken,
-    TICKETING_TYPE_DIRECT,
+    TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
 from .utils import extract_fee_from_display_cents
 
@@ -23033,3 +23033,223 @@ class SMSDeliverabilityTests(TestCase):
         statuses = {c.email: c.sms_delivery_status for c in resp.context['page_obj']}
         self.assertEqual(statuses['good@x.com'], 'deliverable')
         self.assertEqual(statuses['bad@x.com'], 'invalid')
+
+
+class ConversionRateCalculatorTests(TestCase):
+    """Tests for the per-event buy-page conversion rate calculator."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Conv Org', slug='conv-org')
+        self.market = Market.objects.create(
+            organization=self.org, name='Portland',
+            geography_level='city', geography_value='Portland',
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Conv Venue', city='Portland',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='c@example.com', name='C',
+        )
+
+    def _event(self, name, views, start=date(2024, 6, 15), market=None,
+               ticketing_type=TICKETING_TYPE_DIRECT):
+        return Event.objects.create(
+            organization=self.org, name=name, start_date=start, venue=self.venue,
+            ticketing_type=ticketing_type, public_buy_page_views=views, market=market,
+        )
+
+    def _orders(self, event, n):
+        for i in range(n):
+            TicketOrder.objects.create(
+                customer=self.customer, event=event,
+                order_number=f'{event.name}-{i}',
+                order_date='2024-06-01 10:00:00',
+                total_amount=Decimal('10.00'),
+            )
+
+    def _calc(self, **kwargs):
+        from tickets.services.conversion import ConversionRateCalculator
+        return ConversionRateCalculator(self.org, **kwargs).calculate()
+
+    def test_per_event_conversion_rate(self):
+        ev_a = self._event('A', 100, start=date(2024, 6, 15))
+        ev_b = self._event('B', 50, start=date(2024, 7, 15))
+        self._orders(ev_a, 20)
+        self._orders(ev_b, 5)
+
+        result = self._calc()
+
+        # Ordered chronologically by start_date.
+        self.assertEqual([e['name'] for e in result['events']], ['A', 'B'])
+        rates = {e['name']: e['conversion_rate'] for e in result['events']}
+        self.assertEqual(rates['A'], 20.0)   # 20 / 100
+        self.assertEqual(rates['B'], 10.0)   # 5 / 50
+        self.assertEqual(result['summary']['overall_rate'], 16.7)  # 25 / 150
+        self.assertEqual(result['summary']['total_orders'], 25)
+        self.assertEqual(result['summary']['total_views'], 150)
+        self.assertEqual(result['summary']['event_count'], 2)
+
+    def test_excludes_zero_views_and_external_by_default(self):
+        self._event('Zero', 0)                 # direct but no views recorded
+        ext = self._event('Ext', 200, ticketing_type=TICKETING_TYPE_EXTERNAL)
+        self._orders(ext, 10)
+
+        result = self._calc()
+
+        self.assertEqual(result['events'], [])
+        self.assertIsNone(result['summary']['overall_rate'])
+        self.assertEqual(result['summary']['event_count'], 0)
+
+    def test_includes_external_events_when_org_opts_in(self):
+        self.org.show_page_views_for_external_events = True
+        self.org.save(update_fields=['show_page_views_for_external_events'])
+        direct = self._event('Direct', 100)
+        ext = self._event('Ext', 200, ticketing_type=TICKETING_TYPE_EXTERNAL)
+        self._orders(direct, 20)
+        self._orders(ext, 10)
+
+        result = self._calc()
+
+        rates = {e['name']: e['conversion_rate'] for e in result['events']}
+        self.assertEqual(rates, {'Direct': 20.0, 'Ext': 5.0})  # 20/100, 10/200
+        self.assertEqual(result['summary']['event_count'], 2)
+
+    def test_market_filter(self):
+        in_market = self._event('InMarket', 100, market=self.market)
+        no_market = self._event('NoMarket', 100)
+        self._orders(in_market, 10)
+        self._orders(no_market, 50)
+
+        result = self._calc(market_id=str(self.market.id))
+
+        self.assertEqual([e['name'] for e in result['events']], ['InMarket'])
+        self.assertEqual(result['summary']['overall_rate'], 10.0)
+
+    def test_window_filter_by_event_date(self):
+        old = self._event('Old', 100, start=date(2023, 1, 1))
+        new = self._event('New', 100, start=date(2024, 1, 1))
+        self._orders(old, 10)
+        self._orders(new, 50)
+
+        result = self._calc(start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
+
+        self.assertEqual([e['name'] for e in result['events']], ['New'])
+
+
+class ConversionRateViewTests(TestCase):
+    """Tests for the conversion_rate analytics view and hub-card gating."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Conv View Org', slug='conv-view-org')
+        self.user = User.objects.create_user(
+            username='convview', email='convview@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Conv View Venue', city='Portland',
+        )
+        self.client.login(username='convview@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def _direct_event_with_views(self, name='Live', views=100, orders=25):
+        event = Event.objects.create(
+            organization=self.org, name=name, start_date=date(2024, 6, 15), venue=self.venue,
+            ticketing_type=TICKETING_TYPE_DIRECT, public_buy_page_views=views,
+        )
+        customer = Customer.objects.create(
+            organization=self.org, email=f'{name}@example.com', name=name,
+        )
+        for i in range(orders):
+            TicketOrder.objects.create(
+                customer=customer, event=event, order_number=f'{name}-{i}',
+                order_date='2024-06-01 10:00:00', total_amount=Decimal('10.00'),
+            )
+        return event
+
+    def test_empty_state_when_no_pageview_data(self):
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+
+    def test_renders_data(self):
+        self._direct_event_with_views(views=100, orders=25)
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['has_data'])
+        self.assertEqual(resp.context['summary']['overall_rate'], 25.0)
+
+    def test_overview_gates_hub_card(self):
+        resp = self.client.get(reverse('tickets:analytics_overview'))
+        self.assertFalse(resp.context['has_conversion_data'])
+
+        self._direct_event_with_views()
+        resp = self.client.get(reverse('tickets:analytics_overview'))
+        self.assertTrue(resp.context['has_conversion_data'])
+
+    def test_overview_gate_honors_external_opt_in(self):
+        # An external event with views does not count unless the org opts in.
+        ext = Event.objects.create(
+            organization=self.org, name='CSV', start_date=date(2024, 6, 15), venue=self.venue,
+            ticketing_type=TICKETING_TYPE_EXTERNAL, public_buy_page_views=100,
+        )
+        resp = self.client.get(reverse('tickets:analytics_overview'))
+        self.assertFalse(resp.context['has_conversion_data'])
+
+        self.org.show_page_views_for_external_events = True
+        self.org.save(update_fields=['show_page_views_for_external_events'])
+        resp = self.client.get(reverse('tickets:analytics_overview'))
+        self.assertTrue(resp.context['has_conversion_data'])
+
+
+class WindowParsingTests(TestCase):
+    """_parse_window: full-period "this_*" vs capped "*_to_date" variants."""
+
+    def setUp(self):
+        self.rf = RequestFactory()
+
+    def _parse(self, window):
+        from tickets.views import _parse_window
+        return _parse_window(self.rf.get('/', {'window': window}))
+
+    def test_this_year_spans_full_calendar_year(self):
+        today = date.today()
+        start, end, active = self._parse('this_year')
+        self.assertEqual(start, date(today.year, 1, 1))
+        self.assertEqual(end, date(today.year, 12, 31))
+        self.assertEqual(active, 'this_year')
+
+    def test_year_to_date_ends_today(self):
+        today = date.today()
+        start, end, active = self._parse('year_to_date')
+        self.assertEqual(start, date(today.year, 1, 1))
+        self.assertEqual(end, today)
+        self.assertEqual(active, 'year_to_date')
+
+    def test_this_quarter_vs_quarter_to_date(self):
+        from tickets.views import _quarter_bounds
+        today = date.today()
+        q = (today.month - 1) // 3 + 1
+        q_start, q_end = _quarter_bounds(today.year, q)
+        self.assertEqual(self._parse('this_quarter'), (q_start, q_end, 'this_quarter'))
+        self.assertEqual(self._parse('quarter_to_date'), (q_start, today, 'quarter_to_date'))
+
+    def test_this_month_vs_month_to_date(self):
+        from tickets.views import _month_end
+        today = date.today()
+        m_start = date(today.year, today.month, 1)
+        self.assertEqual(self._parse('this_month'), (m_start, _month_end(today), 'this_month'))
+        self.assertEqual(self._parse('month_to_date'), (m_start, today, 'month_to_date'))
+
+    def test_full_period_end_is_on_or_after_to_date_end(self):
+        # The whole point: "this_*" reaches the period end (>= today), so an
+        # upcoming in-period event stays visible; "*_to_date" stops at today.
+        for full, ytd in [('this_year', 'year_to_date'),
+                           ('this_quarter', 'quarter_to_date'),
+                           ('this_month', 'month_to_date')]:
+            self.assertGreaterEqual(self._parse(full)[1], self._parse(ytd)[1])

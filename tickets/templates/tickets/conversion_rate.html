@@ -1,0 +1,214 @@
+{% extends 'tickets/base.html' %}
+
+{% load humanize %}
+{% block title %}Conversion Rate{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Conversion Rate</h1>
+        <p class="page-header-subtitle">Buy-page orders per view for each event with page-view data.</p>
+    </div>
+    <form method="get" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="window" value="{{ active_window }}">
+        {% if active_window == 'custom' %}
+        <input type="hidden" name="start" value="{{ window_start }}">
+        <input type="hidden" name="end" value="{{ window_end }}">
+        {% endif %}
+        <label for="market" class="text-muted small mb-0">Market</label>
+        <select name="market" id="market" class="form-select form-select-sm" style="width:auto"
+                onchange="this.form.submit()">
+            <option value="">All markets</option>
+            {% for m in markets %}
+            <option value="{{ m.id }}"{% if selected_market == m.id|stringformat:'s' %} selected{% endif %}>{{ m.name }}</option>
+            {% endfor %}
+            {% if has_no_market %}
+            <option value="none"{% if selected_market == 'none' %} selected{% endif %}>No market</option>
+            {% endif %}
+        </select>
+    </form>
+</div>
+
+<div class="window-selector mb-3">
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-calendar3"></i>
+      {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+    </button>
+    <ul class="dropdown-menu">
+      {% for label, key in window_choices %}
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if active_window == 'custom' %}
+  <form class="d-flex flex-wrap align-items-center gap-2" method="get">
+    <input type="hidden" name="window" value="custom">
+    {% if selected_market %}<input type="hidden" name="market" value="{{ selected_market }}">{% endif %}
+    <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
+    <span class="text-muted small">to</span>
+    <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
+    <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if has_data %}
+<script type="application/json" id="series-data">{{ series_json|safe }}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Overall Conversion Rate</div>
+            <div class="stat-value">{{ summary.overall_rate }}%</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Total Orders</div>
+            <div class="stat-value">{{ summary.total_orders|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Total Views</div>
+            <div class="stat-value">{{ summary.total_views|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+            <div class="stat-label">Events</div>
+            <div class="stat-value">{{ summary.event_count|intcomma }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Conversion Rate by Event</h5>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Chart type">
+            <button type="button" class="btn btn-outline-secondary active" data-chart-type="bar"><i class="bi bi-bar-chart"></i> Bar</button>
+            <button type="button" class="btn btn-outline-secondary" data-chart-type="line"><i class="bi bi-graph-up"></i> Line</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 360px;">
+            <canvas id="conversionChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('series-data');
+    if (!el || typeof Chart === 'undefined') return;
+    var data = JSON.parse(el.textContent);
+    if (!data.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var PRIMARY = '#0d6efd';
+    var BAR = isDark ? 'rgba(13,110,253,0.55)' : 'rgba(13,110,253,0.75)';
+    var FILL = isDark ? 'rgba(13,110,253,0.20)' : 'rgba(13,110,253,0.12)';
+
+    var ctx = document.getElementById('conversionChart').getContext('2d');
+    var labels = data.map(function(d) { return d.name; });
+    var values = data.map(function(d) { return d.conversion_rate; });
+
+    var options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                callbacks: {
+                    label: function(ctx) {
+                        var d = data[ctx.dataIndex];
+                        return d.conversion_rate + '%  (' + d.orders.toLocaleString() +
+                            ' orders / ' + d.views.toLocaleString() + ' views)';
+                    }
+                }
+            }
+        },
+        scales: {
+            x: {
+                ticks: { color: textColor, maxRotation: 0, autoSkip: true },
+                grid: { color: gridColor }
+            },
+            y: {
+                beginAtZero: true,
+                title: { display: true, text: 'Conversion rate (%)', color: textColor },
+                ticks: { color: textColor, callback: function(v) { return v + '%'; } },
+                grid: { color: gridColor }
+            }
+        }
+    };
+
+    function dataset(type) {
+        if (type === 'line') {
+            return {
+                label: 'Conversion rate',
+                data: values,
+                borderColor: PRIMARY,
+                backgroundColor: FILL,
+                borderWidth: 2,
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: PRIMARY,
+                fill: true,
+            };
+        }
+        return {
+            label: 'Conversion rate',
+            data: values,
+            backgroundColor: BAR,
+            borderColor: PRIMARY,
+            borderWidth: 1,
+        };
+    }
+
+    // Chart.js can't reliably mutate a chart's type in place, so rebuild on toggle.
+    var chart = null;
+    function render(type) {
+        if (chart) chart.destroy();
+        chart = new Chart(ctx, {
+            type: type,
+            data: { labels: labels, datasets: [dataset(type)] },
+            options: options,
+        });
+    }
+    render('bar');
+
+    document.querySelectorAll('[data-chart-type]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            render(btn.getAttribute('data-chart-type'));
+            document.querySelectorAll('[data-chart-type]').forEach(function(b) {
+                b.classList.toggle('active', b === btn);
+            });
+        });
+    });
+});
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-percent d-block"></i>
+            {% if summary.event_count or selected_market or active_window != 'all' %}
+            <p>No events with buy-page views in the selected window{% if selected_market %} for this market{% endif %}. Try a wider range.</p>
+            <a href="?{% if selected_market %}market={{ selected_market }}&amp;{% endif %}window=all" class="btn btn-primary"><i class="bi bi-calendar3"></i> View all time</a>
+            {% else %}
+            <p>No buy-page view data yet. Conversion rate appears once your events record page views &mdash; tracked automatically for events sold on Cue, or entered manually for CSV events when page views are enabled in display settings.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
