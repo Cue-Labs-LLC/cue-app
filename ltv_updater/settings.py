@@ -440,6 +440,21 @@ IG_AGENT_ANSWER_TEMPERATURE = float(
     os.environ.get('IG_AGENT_ANSWER_TEMPERATURE', '0.3')
 )
 
+# Market Competition Agent (per-event competitive-density signal). Phase 1
+# consumes only the two settings below (the fixed query plan). The remaining
+# config (TAVILY_API_KEY, MAX_RESULTS, SEARCH_PROVIDER, RESULT_TTL_DAYS,
+# DAILY_SCAN_CAP) lands with the phases that use it (P2-P4). See
+# docs/technical-design/market-competition-agent.md §4.3.
+# Date-span ±window (days) used to widen the search date range and, as the
+# scorer's default window, to decide date proximity (D4/DO5-b).
+MARKET_COMPETITION_DATE_WINDOW_DAYS = int(
+    os.environ.get('MARKET_COMPETITION_DATE_WINDOW_DAYS', '3')
+)
+# Comma-separated non-API platform names seeded into the fixed query plan (DO3).
+MARKET_COMPETITION_PLATFORMS = os.environ.get(
+    'MARKET_COMPETITION_PLATFORMS', 'eventbrite,dice,seetickets'
+)
+
 # Mailchimp integration
 MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')
 MAILCHIMP_CLIENT_SECRET = os.environ.get('MAILCHIMP_CLIENT_SECRET', '')
