@@ -1,5 +1,33 @@
 # TODOS
 
+## IG DM Agent (D13): Instagram token refresh job + expiry alert
+
+**What:** Add a `refresh_instagram_tokens` management command (Render cron entry in `render.yaml`) that refreshes the ~60-day Instagram Login token before `Organization.instagram_token_expires_at`, plus an admin inbox/email alert on near-expiry or lapse.
+
+**Why:** The connect flow stores a long-lived token but nothing refreshes it. After ~60 days a connected org's token silently expires and auto-answers/sends start failing (`status='failed'`, D10), with no warning to the organizer to reconnect.
+
+**Pros:** Keeps connected orgs working without manual reconnect; proactive expiry warning.
+
+**Cons:** Must handle Meta's `ig_refresh_token` constraints (token valid + >24h old); refresh failure needs a clear reconnect path.
+
+**Context:** Fast-follow to #517 (Phase 7). Transport/creds in `tickets/services/instagram/graph_client.py`; connect flow in `tickets/integrations/instagram.py`. Periodic jobs here run as management commands via Render cron (e.g. `reconcile_sms_opt_outs`), not Celery beat. Reuse the escalation notification path for the alert. Tracked: https://github.com/Cue-Labs-LLC/cue-app/issues/518.
+
+**Depends on:** #517 merged.
+
+## IG DM Agent (D9): 24h messaging-window indicator in the inbox
+
+**What:** Show the Meta 24h-window state in the Instagram conversation detail view (computed from the last inbound message time): "in window — replies send normally" vs "outside 24h window — reply may fail until App Review approves Human Agent." Optionally annotate/disable the "Reply as yourself" box when out-of-window.
+
+**Why:** Organizers can't tell before typing whether a thread is still repliable. The send *behavior* already handles this (RESPONSE first, HUMAN_AGENT fallback, shipped in #517), but a late reply can still fail silently-to-the-eye until it errors.
+
+**Pros:** Sets expectations before the organizer invests in a reply; fewer surprise "Failed" sends.
+
+**Cons:** Full value of the out-of-window path depends on Meta App Review approving the Human Agent feature.
+
+**Context:** Fast-follow to #517 (Phase 7). Window/tag logic in `GraphAPISender.send_text` (`tickets/services/instagram/graph_client.py`); view + template in `tickets/integrations/instagram.py` (`instagram_conversation_detail`). Tracked: https://github.com/Cue-Labs-LLC/cue-app/issues/519.
+
+**Depends on:** #517 merged.
+
 ## SMS Split: Stale open "Schedule both batches" modal after edits
 
 **What:** In the SMS composer, after the split modal (`#splitBatchModal`) is opened, editing the audience or message body removes the trigger panel (via `invalidateConfirm()`) but leaves an already-open modal showing stale today/next-day counts.

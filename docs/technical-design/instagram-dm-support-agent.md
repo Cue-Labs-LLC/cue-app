@@ -143,7 +143,7 @@ the `evals/ig_support_agent/cases.jsonl` corpus, syncing to a Langfuse dataset
 - **New settings:** `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` (distinct from `FACEBOOK_APP_*`; the IG secret also signs webhooks — `verify_meta_signature` prefers it), and `INSTAGRAM_GRAPH_API_VERSION` (default `v23.0`; `FACEBOOK_GRAPH_API_VERSION` v21.0 is too old for `graph.instagram.com`).
 - **Token endpoints require POST** (not GET, despite the docs' GET example); the long-lived exchange is non-fatal (falls back to the ~1h short-lived token — durable refresh is the D13 fast-follow).
 - **D2 refinement:** human replies send a normal in-window `RESPONSE` first and only fall back to the `HUMAN_AGENT` tag when Meta rejects them as outside the 24h window — because the `HUMAN_AGENT` feature itself requires App Review. So in-window manual replies work pre-approval; stale (>24h) replies need the approved feature.
-- **Deferred:** D13 (token-refresh cron), D9 (24h-window inbox indicator), App Review (required before non-tester / other orgs' DMs deliver — dev-mode delivery works for the connected tester account).
+- **Deferred:** D13 (token-refresh cron — [#518](https://github.com/Cue-Labs-LLC/cue-app/issues/518)), D9 (24h-window inbox indicator — [#519](https://github.com/Cue-Labs-LLC/cue-app/issues/519)), App Review (required before non-tester / other orgs' DMs deliver — dev-mode delivery works for the connected tester account).
 
 **Demo milestones:** Phases 1–6 are fully demoable on the stub backend pre-App-Review; Phase 7's core is demoable end-to-end against a dev-mode tester account; full production delivery is the only thing blocked on Meta App Review.
 
@@ -183,11 +183,11 @@ Decisions from the engineering review, mapped to where they land. P0 items are a
 | D5 | Partial-unique `provider_message_id` for retry-safe idempotency | **P0** | **done** |
 | D6 | `InstagramMessage.save()` coerces org from conversation (tenancy invariant) | **P0** | **done** |
 | D7 | Adversarial prompt-injection cases in the IG-agent eval | P2 | planned |
-| D9 | `HUMAN_AGENT` tag + permission for escalated/human replies; inbox window indicator | P4 + P7 | **inbox done** (P4: admin-only review inbox, approve/edit/discard, human reply); 24h-window indicator + `human_agent` tag deferred to P7 (needs real Graph send) |
+| D9 | `HUMAN_AGENT` tag + permission for escalated/human replies; inbox window indicator | P4 + P7 | **inbox + `HUMAN_AGENT` tag done** (P4 inbox; P7 #517 sends human replies as in-window `RESPONSE`, falling back to the `HUMAN_AGENT` tag when out-of-window). 24h-window **UI indicator** deferred → [#519](https://github.com/Cue-Labs-LLC/cue-app/issues/519) |
 | D10 | `get_sender()` selects by `INSTAGRAM_SENDER_BACKEND`, never stub-send in prod; missing token → loud `failed` | P3 | **done** |
 | D11 | Partial-unique `Organization.instagram_business_account_id` + already-claimed connect handling | **P0** (constraint) + P7 (connect) | **constraint done**, connect planned |
 | D12 | Load conversation history into the agent + debounce/coalesce fragmented inbound DMs | P2 (history) + P3 (coalesce) | **history done**; coalesce deferred to a committed fast-follow — P3 ships a cheap latest-inbound-wins staleness guard as a partial mitigation |
-| D13 | Celery beat token-refresh job + expiry alert (inbox/email) | P7 | planned |
+| D13 | Celery beat token-refresh job + expiry alert (inbox/email) | P7 | planned → tracked in [#518](https://github.com/Cue-Labs-LLC/cue-app/issues/518) (Render cron management command, not Celery beat — matches repo convention) |
 | D14 | Groundedness gate: auto-send only when a FAQ/event tool actually fired (no tool hit → queue) | P2/P3 | **done** (enforced in `decide_autosend` + P3 task gate) |
 | #6 | Verify current Instagram-Login permission model; add **Business Verification** + IG Professional account + per-org "allow message access" as explicit P7 pre-reqs | P7 | planned |
 
