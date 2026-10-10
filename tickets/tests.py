@@ -21750,7 +21750,7 @@ class BrandVoiceSettingsTests(TestCase):
 
         captured = {}
 
-        def fake_invoke(messages):
+        def fake_invoke(messages, **kwargs):
             captured['messages'] = messages
             return {'raw': MagicMock(), 'parsed': plan, 'parsing_error': None}
 
@@ -21773,7 +21773,7 @@ class BrandVoiceSettingsTests(TestCase):
         example = VoiceExample(message=message)
         captured = {}
 
-        def fake_invoke(messages):
+        def fake_invoke(messages, **kwargs):
             captured['messages'] = messages
             return {'raw': MagicMock(), 'parsed': example, 'parsing_error': None}
 

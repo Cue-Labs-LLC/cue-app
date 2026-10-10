@@ -19,17 +19,21 @@ import requests
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from .models import AITokenUsage, Event, Organization, Venue
+from .models import AITokenUsage, Event, EventTalent, Organization, Venue
 from .services.market_competition import (
     CompetitionResult,
     CompetitorEvent,
     TargetEvent,
     build_queries,
+    calculate_event_competition,
+    derive_genre_hints,
+    scan_competitors,
     score_competition,
     search_queries,
     web_search,
 )
-from .services.market_competition import scoring, search_client
+from .services.market_competition import calculator, scanner, scoring, search_client
+from .services.market_competition.scanner import ExtractedEvent, ExtractedEvents, ScanResult
 
 LOCMEM_CACHE = {
     'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
@@ -230,36 +234,51 @@ class BuildQueriesTests(TestCase):
         )
 
     def test_exact_query_set(self):
+        # With genres provided, EVERY query carries the genre(s) and the event's
+        # own date: per-genre queries plus genre-scoped platform queries, and no
+        # bare city-density query.
         queries = build_queries(self.event, ['hip-hop', 'rap'])
         self.assertEqual(queries, [
-            'hip-hop events in Test City June 12-18, 2024',
-            'rap events in Test City June 12-18, 2024',
-            'Test City events June 12-18, 2024',
-            'eventbrite Test City events June 12-18, 2024',
-            'dice Test City events June 12-18, 2024',
-            'seetickets Test City events June 12-18, 2024',
+            'hip-hop events in Test City June 15, 2024',
+            'rap events in Test City June 15, 2024',
+            'eventbrite hip-hop rap events in Test City June 15, 2024',
+            'dice hip-hop rap events in Test City June 15, 2024',
+            'seetickets hip-hop rap events in Test City June 15, 2024',
+        ])
+
+    def test_single_genre_scopes_every_query(self):
+        queries = build_queries(self.event, ['R&B'])
+        self.assertEqual(queries, [
+            'R&B events in Test City June 15, 2024',
+            'eventbrite R&B events in Test City June 15, 2024',
+            'dice R&B events in Test City June 15, 2024',
+            'seetickets R&B events in Test City June 15, 2024',
         ])
 
     def test_no_genre_hints_omits_genre_queries(self):
         queries = build_queries(self.event, [])
         self.assertEqual(queries, [
-            'Test City events June 12-18, 2024',
-            'eventbrite Test City events June 12-18, 2024',
-            'dice Test City events June 12-18, 2024',
-            'seetickets Test City events June 12-18, 2024',
+            'Test City events June 15, 2024',
+            'eventbrite Test City events June 15, 2024',
+            'dice Test City events June 15, 2024',
+            'seetickets Test City events June 15, 2024',
         ])
+
+    def test_every_query_includes_the_event_date(self):
+        for q in build_queries(self.event, ['R&B']):
+            self.assertIn('June 15, 2024', q)
 
     def test_blank_city_yields_no_queries(self):
         self.venue.city = ''
         self.venue.save(update_fields=['city'])
         self.assertEqual(build_queries(self.event, ['hip-hop']), [])
 
-    def test_multi_day_span_widens_date_range(self):
+    def test_multi_day_span_uses_full_span(self):
         self.event.end_date = date(2024, 6, 20)
         self.event.save(update_fields=['end_date'])
         queries = build_queries(self.event, [])
-        # start-3 = June 12, end+3 = June 23
-        self.assertIn('Test City events June 12-23, 2024', queries)
+        # The event's own span (not window-widened): June 15-20.
+        self.assertIn('Test City events June 15-20, 2024', queries)
 
 
 def _tavily_response(results):
@@ -297,6 +316,16 @@ class WebSearchTests(TestCase):
             {'title': 'Show A', 'url': 'https://e/a', 'content': 'snippet a'},
             {'title': 'Show B', 'url': 'https://e/b', 'content': 'snippet b'},
         ])
+
+    def test_success_logs_the_query(self):
+        payload = [{'title': 'Show A', 'url': 'https://e/a', 'content': 'snippet a'}]
+        with patch.object(search_client.requests, 'post',
+                          return_value=_tavily_response(payload)):
+            with self.assertLogs('tickets.services.market_competition.search_client',
+                                 level='INFO') as cm:
+                web_search('hip-hop events in LA')
+        self.assertTrue(any("query='hip-hop events in LA'" in m for m in cm.output))
+        self.assertTrue(any('1 result(s)' in m for m in cm.output))
 
     def test_timeout_returns_empty_and_warns(self):
         with patch.object(search_client.requests, 'post',
@@ -467,6 +496,14 @@ class SearchQueriesCoverageTests(TestCase):
         self.assertEqual(coverage['queries_total'], 0)
         self.assertEqual(coverage['ratio'], 1.0)
 
+    def test_forwards_domains_to_web_search(self):
+        with patch.object(search_client, 'web_search', return_value=[]) as ws:
+            search_queries(['q1'], include_domains=['eventbrite.com'],
+                           exclude_domains=['ticketmaster.com'])
+        _, kwargs = ws.call_args
+        self.assertEqual(kwargs.get('include_domains'), ['eventbrite.com'])
+        self.assertEqual(kwargs.get('exclude_domains'), ['ticketmaster.com'])
+
 
 @override_settings(CACHES=LOCMEM_CACHE, TAVILY_API_KEY='test-key')
 class MarketSearchCommandTests(TestCase):
@@ -496,3 +533,466 @@ class MarketSearchCommandTests(TestCase):
             call_command('market_search', 'q', stdout=out)
         post.assert_not_called()
         self.assertIn('TAVILY_API_KEY is not set', out.getvalue())
+
+
+# --- Phase 3 — scanner + calculator (LLM mocked) -------------------------------
+
+def _extract_llm(parsed, *, extract_tokens=(10, 5, 15),
+                 narrative='The weekend looks crowded; consider a different date.',
+                 narrative_tokens=(8, 4, 12), parsing_error=None):
+    """A MagicMock ChatOpenAI usable for BOTH the extraction and narrative calls.
+
+    ``with_structured_output(...).invoke`` returns the ``include_raw`` envelope
+    (extraction); ``.invoke`` returns a narrative response with ``.content``.
+    """
+    raw = MagicMock()
+    raw.usage_metadata = {
+        'input_tokens': extract_tokens[0],
+        'output_tokens': extract_tokens[1],
+        'total_tokens': extract_tokens[2],
+    }
+    structured = MagicMock()
+    structured.invoke.return_value = {
+        'raw': raw, 'parsed': parsed, 'parsing_error': parsing_error,
+    }
+
+    narr = MagicMock()
+    narr.content = narrative
+    narr.usage_metadata = {
+        'input_tokens': narrative_tokens[0],
+        'output_tokens': narrative_tokens[1],
+        'total_tokens': narrative_tokens[2],
+    }
+
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    llm.invoke.return_value = narr
+    return llm
+
+
+def _results_by_query(n=6):
+    """A canned (results_by_query, coverage) pair, as `search_queries` would return."""
+    results = [{'title': 'A show', 'url': 'https://e/a', 'content': 'some event listing'}]
+    rbq = {f'q{i}': results for i in range(n)}
+    coverage = {'queries_total': n, 'queries_with_results': n, 'ratio': 1.0}
+    return rbq, coverage
+
+
+@override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
+                   OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3)
+class DeriveGenreHintsTests(TestCase):
+    """D1 — the deterministic keyword-map genre derivation (pure, no LLM)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org G', slug='org-g')
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='LA')
+
+    def _event(self, name='Show', description=''):
+        return Event.objects.create(
+            organization=self.org, venue=self.venue, name=name,
+            description=description, start_date=date(2026, 6, 15),
+        )
+
+    def test_matches_from_name(self):
+        event = self._event(name='Techno Warehouse Party')
+        self.assertEqual(derive_genre_hints(event), ['techno'])
+
+    def test_matches_from_description(self):
+        event = self._event(name='Friday Night', description='A night of hip-hop and rap.')
+        self.assertIn('hip-hop', derive_genre_hints(event))
+
+    def test_matches_from_talent_lineup(self):
+        event = self._event(name='Live at the Hall')
+        EventTalent.objects.create(event=event, name='DJ Comedy Standup', order=0)
+        self.assertIn('comedy', derive_genre_hints(event))
+
+    def test_no_match_returns_empty(self):
+        event = self._event(name='Annual Gala', description='An evening affair.')
+        self.assertEqual(derive_genre_hints(event), [])
+
+    def test_hints_are_deduped_and_stable(self):
+        event = self._event(name='Hip-Hop & Rap Night', description='rap trap hip hop')
+        self.assertEqual(derive_genre_hints(event), ['hip-hop'])
+
+
+@override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
+                   OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
+                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets')
+class ScanCompetitorsTests(TestCase):
+    """P3 — the LLM scanner: extraction, normalization, dedupe, self-exclusion."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org S', slug='org-s')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Home Venue', city='Los Angeles', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Target Show',
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 15),
+        )
+
+    def _extracted(self, *events, target_metro='Los Angeles, CA'):
+        return ExtractedEvents(target_metro_normalized=target_metro, events=list(events))
+
+    def test_returns_normalized_rows(self):
+        parsed = self._extracted(
+            ExtractedEvent(name='Rival A', date='2026-06-16', venue_name='Club X',
+                           metro_normalized='Los Angeles, CA', genre='techno',
+                           platform='dice', source_url='https://dice/a'),
+            ExtractedEvent(name='Rival B', date='2026-06-14', venue_name='Hall Y',
+                           metro_normalized='Los Angeles, CA', genre='house',
+                           platform='eventbrite', source_url='https://eb/b'),
+        )
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.competitors), 2)
+        a = result.competitors[0]
+        self.assertEqual(a.name, 'Rival A')
+        self.assertEqual(a.date, date(2026, 6, 16))
+        self.assertEqual(a.metro_normalized, 'los angeles, ca')  # lowercased
+
+    def test_target_metro_normalized_emitted(self):
+        parsed = self._extracted(target_metro='Los Angeles, CA')
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertEqual(result.target_metro_normalized, 'los angeles, ca')  # DO5-e
+
+    def test_dedupe_across_platforms(self):
+        # Same show on three sites => one row (DO5-c).
+        same = dict(name='Big Rival', date='2026-06-16', venue_name='Club X',
+                    metro_normalized='Los Angeles, CA', genre='techno')
+        parsed = self._extracted(
+            ExtractedEvent(platform='eventbrite', source_url='https://eb/x', **same),
+            ExtractedEvent(platform='dice', source_url='https://dice/x', **same),
+            ExtractedEvent(platform='seetickets', source_url='https://st/x', **same),
+        )
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertEqual(len(result.competitors), 1)
+
+    def test_self_exclusion(self):
+        # The LLM echoing the target back must never become its own competitor (DO5-a).
+        parsed = self._extracted(
+            ExtractedEvent(name='Target Show', date='2026-06-15', venue_name='Home Venue',
+                           metro_normalized='Los Angeles, CA', genre='techno',
+                           platform='eventbrite', source_url='https://eb/self'),
+            ExtractedEvent(name='Rival A', date='2026-06-16', venue_name='Club X',
+                           metro_normalized='Los Angeles, CA', genre='techno',
+                           platform='dice', source_url='https://dice/a'),
+        )
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        names = [c.name for c in result.competitors]
+        self.assertEqual(names, ['Rival A'])
+
+    def test_blank_date_becomes_none(self):
+        # DO5-d — an unconfident date is None, not a guess.
+        parsed = self._extracted(
+            ExtractedEvent(name='Undated Rival', date=None, venue_name='Club Z',
+                           metro_normalized='Los Angeles, CA', genre='techno',
+                           platform='dice', source_url='https://dice/z'),
+        )
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertIsNone(result.competitors[0].date)
+
+    def test_extraction_exception_yields_not_ok(self):
+        llm = MagicMock()
+        llm.with_structured_output.return_value.invoke.side_effect = RuntimeError('boom')
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=llm):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.competitors, [])
+
+    def test_parsing_error_yields_not_ok(self):
+        parsed = self._extracted()
+        llm = _extract_llm(parsed, parsing_error='bad')
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=llm):
+            result = scan_competitors(self.org, self.event, ['techno'])
+        self.assertFalse(result.ok)
+
+    def test_meters_extract_stage(self):
+        parsed = self._extracted(
+            ExtractedEvent(name='Rival A', date='2026-06-16', venue_name='Club X',
+                           metro_normalized='Los Angeles, CA', genre='techno',
+                           platform='dice', source_url='https://dice/a'),
+        )
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            scan_competitors(self.org, self.event, ['techno'])
+        usage = AITokenUsage.objects.get(organization=self.org)
+        self.assertEqual(usage.feature, AITokenUsage.FEATURE_MARKET_COMPETITION)
+        self.assertEqual(usage.metadata.get('stage'), 'extract')
+        self.assertEqual(usage.total_tokens, 15)
+
+    def test_no_city_skips_llm(self):
+        self.venue.city = ''
+        self.venue.save()
+        with patch('langchain_openai.ChatOpenAI') as mock_llm:
+            result = scan_competitors(self.org, self.event, ['techno'])
+        mock_llm.assert_not_called()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.competitors, [])
+
+    def test_interleaving_keeps_late_query_results_within_cap(self):
+        # A sequential fill would drain the first query (which alone overflows the
+        # MAX_SNIPPETS cap) and starve the later one. Round-robin must keep the
+        # late query's result in the payload the LLM sees.
+        from tickets.services.market_competition import scanner as scanner_mod
+        big = [{'title': f'A{i}', 'url': f'https://a/{i}', 'content': 'x'}
+               for i in range(scanner_mod.MAX_SNIPPETS + 20)]
+        late = [{'title': 'LATE', 'url': 'https://late/1', 'content': 'the rival'}]
+        results_by_query = {'q_first': big, 'q_last': late}
+
+        captured = {}
+
+        def _fake_structured(schema, include_raw=False):
+            m = MagicMock()
+
+            def _invoke(messages, **kwargs):
+                captured['user'] = messages[1]['content']
+                raw = MagicMock()
+                raw.usage_metadata = {'input_tokens': 1, 'output_tokens': 1,
+                                      'total_tokens': 2}
+                return {'raw': raw, 'parsed': ExtractedEvents(), 'parsing_error': None}
+
+            m.invoke.side_effect = _invoke
+            return m
+
+        llm = MagicMock()
+        llm.with_structured_output.side_effect = _fake_structured
+        with patch.object(scanner, 'search_queries',
+                          return_value=(results_by_query,
+                                        {'queries_total': 2, 'queries_with_results': 2,
+                                         'ratio': 1.0})), \
+                patch('langchain_openai.ChatOpenAI', return_value=llm):
+            scan_competitors(self.org, self.event, ['techno'])
+        self.assertIn('https://late/1', captured['user'])
+
+    def test_domains_forwarded_to_search(self):
+        parsed = self._extracted()
+        with patch.object(scanner, 'search_queries',
+                          return_value=_results_by_query()) as sq, \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            scan_competitors(self.org, self.event, ['techno'],
+                             include_domains=['eventbrite.com'],
+                             exclude_domains=['ticketmaster.com'])
+        _, kwargs = sq.call_args
+        self.assertEqual(kwargs.get('include_domains'), ['eventbrite.com'])
+        self.assertEqual(kwargs.get('exclude_domains'), ['ticketmaster.com'])
+
+
+@override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
+                   OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
+                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets')
+class CalculateCompetitionTests(TestCase):
+    """P3 — the calculator orchestration end to end (search + LLM mocked)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org C', slug='org-c')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Home Venue', city='Los Angeles', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Techno Warehouse Party',
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 15),
+        )
+
+    def _parsed(self):
+        return ExtractedEvents(
+            target_metro_normalized='Los Angeles, CA',
+            events=[
+                ExtractedEvent(name='Rival Techno Night', date='2026-06-16',
+                               venue_name='Club X', metro_normalized='Los Angeles, CA',
+                               genre='techno', platform='dice', source_url='https://dice/x'),
+            ],
+        )
+
+    def test_happy_path_returns_ready_result(self):
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(self._parsed())):
+            result = calculate_event_competition(self.org, self.event)
+        self.assertEqual(result.status, 'ready')
+        self.assertEqual(len(result.competitors), 1)
+        self.assertGreater(result.score, 0)
+        self.assertTrue(result.summary)
+
+    def test_meters_both_stages(self):
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(self._parsed())):
+            calculate_event_competition(self.org, self.event)
+        stages = sorted(
+            u.metadata.get('stage')
+            for u in AITokenUsage.objects.filter(
+                organization=self.org,
+                feature=AITokenUsage.FEATURE_MARKET_COMPETITION,
+            )
+        )
+        self.assertEqual(stages, ['extract', 'narrative'])
+
+    def test_unavailable_when_no_city(self):
+        self.venue.city = ''
+        self.venue.save()
+        with patch('langchain_openai.ChatOpenAI') as mock_llm:
+            result = calculate_event_competition(self.org, self.event)
+        mock_llm.assert_not_called()
+        self.assertEqual(result.status, 'unavailable')
+
+    @override_settings(TAVILY_API_KEY='')
+    def test_unavailable_when_key_unset(self):
+        with patch.object(scanner, 'scan_competitors') as mock_scan:
+            result = calculate_event_competition(self.org, self.event)
+        mock_scan.assert_not_called()
+        self.assertEqual(result.status, 'unavailable')
+
+    def test_unavailable_when_all_searches_empty(self):
+        empty = ScanResult(competitors=[], target_metro_normalized='',
+                           coverage={'queries_total': 6, 'queries_with_results': 0,
+                                     'ratio': 0.0}, ok=True)
+        with patch.object(scanner, 'scan_competitors', return_value=empty):
+            result = calculate_event_competition(self.org, self.event)
+        self.assertEqual(result.status, 'unavailable')
+
+    def test_unavailable_when_extraction_failed(self):
+        failed = ScanResult(competitors=[], target_metro_normalized='',
+                            coverage={'queries_total': 6, 'queries_with_results': 6,
+                                      'ratio': 1.0}, ok=False)
+        with patch.object(scanner, 'scan_competitors', return_value=failed):
+            result = calculate_event_competition(self.org, self.event)
+        self.assertEqual(result.status, 'unavailable')
+
+    def test_explicit_genre_hints_override_derivation(self):
+        # The event name derives ['techno']; passing ['jazz'] must override that so
+        # only the jazz competitor matches (proves the override reaches the scorer).
+        good = ScanResult(
+            competitors=[
+                CompetitorEvent(name='Techno Night', date=date(2026, 6, 16),
+                                venue_name='X', metro_normalized='los angeles, ca',
+                                genre='techno', platform='dice', source_url='u1'),
+                CompetitorEvent(name='Jazz Eve', date=date(2026, 6, 16),
+                                venue_name='Y', metro_normalized='los angeles, ca',
+                                genre='jazz', platform='dice', source_url='u2'),
+            ],
+            target_metro_normalized='los angeles, ca',
+            coverage={'queries_total': 6, 'queries_with_results': 6, 'ratio': 1.0},
+            ok=True,
+        )
+        narr = MagicMock(content='n',
+                         usage_metadata={'input_tokens': 1, 'output_tokens': 1,
+                                         'total_tokens': 2})
+        llm = MagicMock()
+        llm.invoke.return_value = narr
+        with patch.object(scanner, 'scan_competitors', return_value=good), \
+                patch('langchain_openai.ChatOpenAI', return_value=llm):
+            result = calculate_event_competition(
+                self.org, self.event, genre_hints=['jazz'])
+        self.assertEqual([c.name for c in result.competitors], ['Jazz Eve'])
+
+    def test_narrative_failure_keeps_score(self):
+        # D6 — narrative LLM failure must not drop the score/label/status.
+        good = ScanResult(
+            competitors=[CompetitorEvent(
+                name='Rival Techno Night', date=date(2026, 6, 16), venue_name='Club X',
+                metro_normalized='los angeles, ca', genre='techno', platform='dice',
+                source_url='https://dice/x')],
+            target_metro_normalized='los angeles, ca',
+            coverage={'queries_total': 6, 'queries_with_results': 6, 'ratio': 1.0},
+            ok=True,
+        )
+        llm = MagicMock()
+        llm.invoke.side_effect = RuntimeError('narrative down')
+        with patch.object(scanner, 'scan_competitors', return_value=good), \
+                patch('langchain_openai.ChatOpenAI', return_value=llm):
+            result = calculate_event_competition(self.org, self.event)
+        self.assertEqual(result.status, 'ready')
+        self.assertGreater(result.score, 0)
+        self.assertEqual(result.summary, '')
+
+
+@override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
+                   OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
+                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets')
+class ScanEventCompetitionCommandTests(TestCase):
+    """P3 — the `scan_event_competition` management command (demo surface)."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org CMD', slug='org-cmd')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Home Venue', city='Los Angeles', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Techno Warehouse Party',
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 15),
+        )
+
+    def test_prints_report(self):
+        from io import StringIO
+        parsed = ExtractedEvents(
+            target_metro_normalized='Los Angeles, CA',
+            events=[ExtractedEvent(name='Rival Techno Night', date='2026-06-16',
+                                   venue_name='Club X', metro_normalized='Los Angeles, CA',
+                                   genre='techno', platform='dice',
+                                   source_url='https://dice/x')],
+        )
+        out = StringIO()
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            call_command('scan_event_competition', str(self.event.id), stdout=out)
+        output = out.getvalue()
+        self.assertIn('status:', output)
+        self.assertIn('Rival Techno Night', output)
+
+    @override_settings(TAVILY_API_KEY='')
+    def test_no_key_prints_notice(self):
+        from io import StringIO
+        out = StringIO()
+        call_command('scan_event_competition', str(self.event.id), stdout=out)
+        self.assertIn('TAVILY_API_KEY is not set', out.getvalue())
+
+    def test_bad_event_id_raises_command_error(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('scan_event_competition', 'not-a-real-id')
+
+    def test_genres_flag_overrides_and_is_reported(self):
+        from io import StringIO
+        parsed = ExtractedEvents(
+            target_metro_normalized='Los Angeles, CA',
+            events=[ExtractedEvent(name='Jazz Eve', date='2026-06-16',
+                                   venue_name='Y', metro_normalized='Los Angeles, CA',
+                                   genre='jazz', platform='dice',
+                                   source_url='https://dice/y')],
+        )
+        out = StringIO()
+        with patch.object(scanner, 'search_queries', return_value=_results_by_query()), \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            call_command('scan_event_competition', str(self.event.id),
+                         '--genres', 'jazz,soul', stdout=out)
+        output = out.getvalue()
+        self.assertIn('genres:   jazz, soul', output)
+        self.assertIn('Jazz Eve', output)
+
+    def test_domain_flags_forwarded_and_reported(self):
+        from io import StringIO
+        parsed = ExtractedEvents(target_metro_normalized='Los Angeles, CA', events=[])
+        out = StringIO()
+        with patch.object(scanner, 'search_queries',
+                          return_value=_results_by_query()) as sq, \
+                patch('langchain_openai.ChatOpenAI', return_value=_extract_llm(parsed)):
+            call_command('scan_event_competition', str(self.event.id),
+                         '--include-domains', 'eventbrite.com,dice.fm',
+                         '--exclude-domains', 'ticketmaster.com', stdout=out)
+        _, kwargs = sq.call_args
+        self.assertEqual(kwargs.get('include_domains'), ['eventbrite.com', 'dice.fm'])
+        self.assertEqual(kwargs.get('exclude_domains'), ['ticketmaster.com'])
+        output = out.getvalue()
+        self.assertIn('include:  eventbrite.com, dice.fm', output)
+        self.assertIn('exclude:  ticketmaster.com', output)
