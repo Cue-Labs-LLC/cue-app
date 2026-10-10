@@ -190,6 +190,13 @@ multi-tenancy rule; new Event/Org fields are additive.)
   → log + return `[]`. POC provider Tavily (`POST https://api.tavily.com/search`,
   key in body), selected by `settings.MARKET_COMPETITION_SEARCH_PROVIDER`. Tracks,
   per scan, how many queries returned usable results → feeds `coverage` (DO2).
+  Runs at `search_depth='advanced'` (`MARKET_COMPETITION_SEARCH_DEPTH`) — Tavily's
+  `basic` keyword mode mis-ranks noisy queries (e.g. "hip-hop …" → "hip" anatomy
+  pages). Accepts optional `include_domains`/`exclude_domains` (passed through to
+  the provider, part of the cache key), defaulting to the
+  `MARKET_COMPETITION_INCLUDE_DOMAINS`/`..._EXCLUDE_DOMAINS` settings — a
+  lightweight **search-layer proxy** for the deferred D4-D size tier (scope to
+  indie ticketing platforms / drop mega-promoter + resale domains).
 - `scanner.py`: `scan_competitors(organization, event, genre_hints) ->
   (list[CompetitorEvent], coverage: dict, TokenUsage)`. Runs `build_queries`,
   issues each via `web_search`, then a single `.with_structured_output(ExtractedEvents)`
@@ -232,6 +239,18 @@ multi-tenancy rule; new Event/Org fields are additive.)
 - `MARKET_COMPETITION_SEARCH_PROVIDER` (default `'tavily'`).
 - `MARKET_COMPETITION_DATE_WINDOW_DAYS` (default `3`).
 - `MARKET_COMPETITION_MAX_RESULTS` (default `25`).
+- `MARKET_COMPETITION_SEARCH_DEPTH` (default `advanced`; `basic` is cheaper — 1
+  credit vs 2 — but keyword-ranks poorly on noisy event queries).
+- `MARKET_COMPETITION_INCLUDE_DOMAINS` / `MARKET_COMPETITION_EXCLUDE_DOMAINS`
+  (comma-separated hostnames, default empty = open web). Default domain scoping
+  applied to every search — the POC's lightweight **search-layer proxy for the
+  deferred D4-D price/size tier** (DO4-adjacent): INCLUDE restricts to indie
+  ticketing platforms (`eventbrite.com,dice.fm,seetickets.com`); EXCLUDE drops
+  mega-promoter/resale domains (`ticketmaster.com,livenation.com,axs.com,…`).
+  Per-call args to `web_search()` override; the `market_search` command exposes
+  `--include-domains`/`--exclude-domains` for ad-hoc tuning. Not a substitute for
+  D4-D (filters by platform, not by the event's actual wallet/size) — a coarse
+  stand-in until the structured-API phase adds true price/size scoring.
 - `MARKET_COMPETITION_RESULT_TTL_DAYS` (freshness; a result older than this forces
   a re-scan regardless of input hash — DO4; default `7`).
 - `MARKET_COMPETITION_DAILY_SCAN_CAP` (per-org scans/day; past it the trigger
@@ -350,8 +369,12 @@ hidden in the UI until this eval demonstrates extraction is trustworthy.
 ### Future phase — Structured events-API source + radius + agent (OUT OF SCOPE)
 - A second source (Ticketmaster/SeatGeek/PredictHQ); **this is when the
   `CompetitorEventSource` ABC is extracted** (D1=B). D3=A radius via lat/lng
-  (extend `address_utils.py` to keep coordinates it currently discards); D4-D
-  price/size dimension; an adaptive agent if multi-step search ever earns it (DO3).
+  (extend `address_utils.py` to keep coordinates it currently discards); **D4-D
+  price/size ("same-wallet") dimension** — scores competitors by actual price/
+  capacity tier against the target, superseding the POC's coarse domain-scoping
+  proxy (`MARKET_COMPETITION_INCLUDE/EXCLUDE_DOMAINS`, §4.3), which filters by
+  hosting platform rather than event size and remains useful as a complementary
+  "where to look" control; an adaptive agent if multi-step search ever earns it (DO3).
 
 **Demo milestones:** Phase 3 (CLI) and Phase 5 (in-app) demo on the web-search
 source with no structured API and no Redis; the numeric score lights up after P6.
@@ -391,7 +414,7 @@ scan_event_competition <event_id>` (P3, needs `TAVILY_API_KEY` + `OPENAI_API_KEY
 ## 8. Progress tracker
 - [ ] **P0** — Design doc committed + Event/Org fields (incl. `competition_status`) + `AITokenUsage` constant + migration
 - [ ] **P1** — Pure scoring + query plan (`types.py`, `scoring.py`, `query_plan.py`) — test-pinned (DO5-b/d/f, DO2, DO3)
-- [ ] **P2** — Search client (mocked-requests tests) + coverage accounting + `market_search` command
+- [x] **P2** — Search client (mocked-requests tests) + coverage accounting + `market_search` command
 - [ ] **P3** — Scanner (fixed-plan + extraction/normalize/dedupe/self-exclude) + calculator + narrative (graceful) + metering + `scan_event_competition` command
 - [ ] **P4** — Celery task + persistence (success-only hash, TTL re-scan) + TTL'd lock + daily cap + feature gate
 - [ ] **P5** — Scan/poll endpoints + event-detail panel (list+count+coverage, bounded poll, honest failure states)

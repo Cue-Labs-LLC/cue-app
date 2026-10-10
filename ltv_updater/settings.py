@@ -440,11 +440,10 @@ IG_AGENT_ANSWER_TEMPERATURE = float(
     os.environ.get('IG_AGENT_ANSWER_TEMPERATURE', '0.3')
 )
 
-# Market Competition Agent (per-event competitive-density signal). Phase 1
-# consumes only the two settings below (the fixed query plan). The remaining
-# config (TAVILY_API_KEY, MAX_RESULTS, SEARCH_PROVIDER, RESULT_TTL_DAYS,
-# DAILY_SCAN_CAP) lands with the phases that use it (P2-P4). See
-# docs/technical-design/market-competition-agent.md §4.3.
+# Market Competition Agent (per-event competitive-density signal). Phases 1-2
+# consume the settings below (the fixed query plan + the web-search client). The
+# remaining config (RESULT_TTL_DAYS, DAILY_SCAN_CAP) lands with the phases that
+# use it (P4). See docs/technical-design/market-competition-agent.md §4.3.
 # Date-span ±window (days) used to widen the search date range and, as the
 # scorer's default window, to decide date proximity (D4/DO5-b).
 MARKET_COMPETITION_DATE_WINDOW_DAYS = int(
@@ -453,6 +452,35 @@ MARKET_COMPETITION_DATE_WINDOW_DAYS = int(
 # Comma-separated non-API platform names seeded into the fixed query plan (DO3).
 MARKET_COMPETITION_PLATFORMS = os.environ.get(
     'MARKET_COMPETITION_PLATFORMS', 'eventbrite,dice,seetickets'
+)
+# Web-search layer (P2). TAVILY_API_KEY required to use the feature — absent =>
+# web_search returns [] and the scan reports `unavailable`, never a silent 0 (D2).
+TAVILY_API_KEY = os.environ.get('TAVILY_API_KEY', '')
+# Provider name, so the single search source is swappable later (D1/D5).
+MARKET_COMPETITION_SEARCH_PROVIDER = os.environ.get(
+    'MARKET_COMPETITION_SEARCH_PROVIDER', 'tavily'
+)
+# Max results requested per search query.
+MARKET_COMPETITION_MAX_RESULTS = int(
+    os.environ.get('MARKET_COMPETITION_MAX_RESULTS', '25')
+)
+# Tavily search depth: 'advanced' uses semantic ranking (far better relevance for
+# noisy queries like "hip-hop events ..." where 'basic' keyword-matches "hip");
+# 'basic' is cheaper (1 credit vs 2). See docs/technical-design/market-competition-agent.md §4.2.
+MARKET_COMPETITION_SEARCH_DEPTH = os.environ.get(
+    'MARKET_COMPETITION_SEARCH_DEPTH', 'advanced'
+)
+# Default domain scoping applied to every search (comma-separated hostnames;
+# empty = open web). A lightweight, search-layer proxy for the deferred D4-D
+# price/size tier: INCLUDE restricts to indie ticketing platforms
+# (e.g. eventbrite.com,dice.fm,seetickets.com); EXCLUDE drops mega-promoter /
+# resale domains (e.g. ticketmaster.com,livenation.com,axs.com). Per-call args
+# to web_search() override these. See market-competition-agent.md §4.3, D4-D.
+MARKET_COMPETITION_INCLUDE_DOMAINS = os.environ.get(
+    'MARKET_COMPETITION_INCLUDE_DOMAINS', ''
+)
+MARKET_COMPETITION_EXCLUDE_DOMAINS = os.environ.get(
+    'MARKET_COMPETITION_EXCLUDE_DOMAINS', ''
 )
 
 # Mailchimp integration
