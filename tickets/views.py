@@ -163,14 +163,17 @@ logger = logging.getLogger(__name__)
 
 
 WINDOW_CHOICES = [
-    ('This Month',   'this_month'),
-    ('Last Month',   'last_month'),
-    ('This Quarter', 'this_quarter'),
-    ('Last Quarter', 'last_quarter'),
-    ('This Year',    'this_year'),
-    ('Last Year',    'last_year'),
-    ('All',          'all'),
-    ('Custom',       'custom'),
+    ('This Month',      'this_month'),
+    ('Month-To-Date',   'month_to_date'),
+    ('Last Month',      'last_month'),
+    ('This Quarter',    'this_quarter'),
+    ('Quarter-To-Date', 'quarter_to_date'),
+    ('Last Quarter',    'last_quarter'),
+    ('This Year',       'this_year'),
+    ('Year-To-Date',    'year_to_date'),
+    ('Last Year',       'last_year'),
+    ('All',             'all'),
+    ('Custom',          'custom'),
 ]
 
 
@@ -256,21 +259,42 @@ def _quarter_bounds(year, q):
     return start, end
 
 
+def _month_end(d):
+    """Return the last calendar day of the month containing date ``d``."""
+    if d.month == 12:
+        return date(d.year, 12, 31)
+    return date(d.year, d.month + 1, 1) - timedelta(days=1)
+
+
 def _parse_window(request):
-    """Return (start_date, end_date, active_window) from ?window= query params."""
+    """Return (start_date, end_date, active_window) from ?window= query params.
+
+    "This month/quarter/year" span the full calendar period (end on the last day
+    of the period, which may be in the future), so an upcoming event dated later
+    in the current period still falls inside the window. The "*-to-date" variants
+    end at today instead, for the running total so far.
+    """
     today = date.today()
     window = request.GET.get('window', 'this_year')
     if window == 'this_month':
+        return date(today.year, today.month, 1), _month_end(today), window
+    if window == 'month_to_date':
         return date(today.year, today.month, 1), today, window
     if window == 'last_month':
         first_this = date(today.year, today.month, 1)
         last_prev = first_this - timedelta(days=1)
         return date(last_prev.year, last_prev.month, 1), last_prev, window
     if window == 'this_year':
+        return date(today.year, 1, 1), date(today.year, 12, 31), window
+    if window == 'year_to_date':
         return date(today.year, 1, 1), today, window
     if window == 'last_year':
         return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31), window
     if window == 'this_quarter':
+        q = (today.month - 1) // 3 + 1
+        start, end = _quarter_bounds(today.year, q)
+        return start, end, window
+    if window == 'quarter_to_date':
         q = (today.month - 1) // 3 + 1
         start, _ = _quarter_bounds(today.year, q)
         return start, today, window
@@ -3502,8 +3526,16 @@ def _market_segment_breakdown(org, ordered_labels, badge_colors):
 @require_host
 def analytics_overview(request):
     """Hub for organizer analytics destinations."""
-    get_organization(request)
-    return render(request, 'tickets/analytics_overview.html')
+    org = get_organization(request)
+    # Gate the Conversion Rate card on buy-page view data existing. Direct events
+    # always qualify; external events only when the org shows their page views.
+    conv_events = Event.objects.filter(organization=org, public_buy_page_views__gt=0)
+    if not org.show_page_views_for_external_events:
+        conv_events = conv_events.filter(ticketing_type=TICKETING_TYPE_DIRECT)
+    has_conversion_data = conv_events.exists()
+    return render(request, 'tickets/analytics_overview.html', {
+        'has_conversion_data': has_conversion_data,
+    })
 
 
 def _marketing_cache_key(org_id, window):
@@ -4170,6 +4202,49 @@ def audience_analytics(request):
         'series_json': json.dumps(result['series'], default=str),
         'summary': result['summary'],
         'has_data': bool(result['series']),
+        'markets': markets,
+        'has_no_market': has_no_market,
+        'selected_market': selected,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def conversion_rate(request):
+    """Analytics page: buy-page conversion rate per direct-ticketing event."""
+    org = get_organization(request)
+    markets, has_no_market = market_filter_options(org)
+
+    selected = request.GET.get('market', '')
+    market_id, no_market = None, False
+    if selected == 'none' and has_no_market:
+        no_market = True
+    elif selected and any(str(m.id) == selected for m in markets):
+        market_id = selected
+    else:
+        selected = ''  # ignore stale/invalid ids, fall back to all markets
+
+    # Default to the all-time view so every event with view data shows on first load.
+    if 'window' in request.GET:
+        start_date, end_date, active_window = _parse_window(request)
+    else:
+        start_date, end_date, active_window = None, None, 'all'
+
+    from tickets.services.conversion import ConversionRateCalculator
+    result = ConversionRateCalculator(
+        org, market_id=market_id, no_market=no_market,
+        start_date=start_date, end_date=end_date,
+    ).calculate()
+
+    return render(request, 'tickets/conversion_rate.html', {
+        'series_json': json.dumps(result['events'], default=str),
+        'summary': result['summary'],
+        'has_data': bool(result['events']),
         'markets': markets,
         'has_no_market': has_no_market,
         'selected_market': selected,

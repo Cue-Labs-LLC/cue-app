@@ -352,14 +352,16 @@ class Command(BaseCommand):
             tags = self._create_tags(org)
             customers = self._create_customers(org, tags, rng)
             events = self._create_events(org, venues, markets, owner, today, rng)
-            self._create_page_views(events, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
             # Direct-ticketing catalog must exist before orders so direct events
             # sell against their real SaleableTicketTypes (keeps quantity_sold and
             # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
             self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
-            self._create_market_trend_history(org, markets, owner, today, rng)
+            trend_events = self._create_market_trend_history(org, markets, owner, today, rng)
+            # Page views for every selling event (main + market-trend history), so
+            # direct and opted-in CSV events alike populate the Conversion Rate chart.
+            self._create_page_views(events + trend_events, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
@@ -441,6 +443,9 @@ class Command(BaseCommand):
             # runtime so the seeded FAQs + simulate_instagram_dm work out of the box.
             instagram_feature_enabled=True,
             instagram_support_agent_enabled=True,
+            # Show (manually-entered) page views for CSV/external events so they
+            # join direct events in the Conversion Rate analytics chart.
+            show_page_views_for_external_events=True,
         )
         # Seed a prepaid SMS credit balance via the wallet service so the ledger
         # invariant holds (every balance change writes an SMSCreditTransaction).
@@ -782,22 +787,23 @@ class Command(BaseCommand):
         return events
 
     def _create_page_views(self, events, today, rng):
-        """Daily public buy-page view rows for direct events.
+        """Daily public buy-page view rows for every selling event.
 
-        Feeds the Overview "Views" series and the Analytics tab's Page Views
-        comparison chart. Only direct-ticketing events have a public buy page, so
-        only they get rows. Traffic ramps toward the event date (a slow early
-        trickle building as the show approaches) over a 90-day pre-sale window,
-        capped at ``today`` so upcoming events only have views up to now. The
-        event's cumulative ``public_buy_page_views`` counter is set to the row sum
-        so the counter, the conversion rate, and the daily chart stay consistent.
+        Feeds the Overview "Views" series, the Analytics tab's Page Views
+        comparison chart, and the org-wide Conversion Rate chart. Direct events
+        track these natively; CSV/external events carry manually-entered counts and
+        only surface when the org opts in (``show_page_views_for_external_events``,
+        enabled on the seed org) — so both types get rows here. Traffic ramps toward
+        the event date (a slow early trickle building as the show approaches) over a
+        90-day pre-sale window, capped at ``today`` so upcoming events only have
+        views up to now. The event's cumulative ``public_buy_page_views`` counter is
+        set to the row sum so the counter, the conversion rate, and the daily chart
+        stay consistent.
         """
         horizon = 90
         total_rows = 0
         seeded_events = 0
         for event in events:
-            if event.ticketing_type != TICKETING_TYPE_DIRECT:
-                continue
             if event.status not in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED):
                 continue
             if not event.start_date:
@@ -828,7 +834,7 @@ class Command(BaseCommand):
             total_rows += len(rows)
             seeded_events += 1
         self.stdout.write(self.style.SUCCESS(
-            f"Page views: {total_rows} daily rows across {seeded_events} direct events"
+            f"Page views: {total_rows} daily rows across {seeded_events} events"
         ))
 
     def _create_promo_codes(self, org, events, now):
@@ -1074,6 +1080,7 @@ class Command(BaseCommand):
         )
 
         markets_made = events_made = orders_made = expenses_made = nps_made = 0
+        trend_events = []   # collected so the caller can seed their page views too
         # Running counter for unique trend-buyer phone numbers (415 area, distinct
         # from the main pool's 213 numbers) so each market has an SMS-reachable
         # audience — lets an AI campaign plan default to the venue's market instead
@@ -1122,6 +1129,7 @@ class Command(BaseCommand):
                         created_by=owner,
                     ))
                 events_made += len(q_events)
+                trend_events.extend(q_events)
 
                 total = tickets_per_event * len(q_events)
                 returning_target = min(round(ret_pct / 100 * total), len(seen))
@@ -1236,6 +1244,7 @@ class Command(BaseCommand):
             f"{events_made} events, {orders_made} orders, {expenses_made} expenses, "
             f"{nps_made} NPS responses"
         ))
+        return trend_events
 
     def _create_direct_ticketing(self, events, now, rng):
         direct_events = [

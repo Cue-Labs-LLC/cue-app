@@ -130,6 +130,7 @@ urlpatterns = [
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/audience/', views.audience_analytics, name='audience_analytics'),
+    path('analytics/conversion/', views.conversion_rate, name='conversion_rate'),
     path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     # Loyalty programs
