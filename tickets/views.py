@@ -4233,10 +4233,14 @@ def conversion_rate(request):
     start_date, end_date, active_window = _parse_window(request)
 
     from tickets.services.conversion import ConversionRateCalculator
-    result = ConversionRateCalculator(
+    calculator = ConversionRateCalculator(
         org, market_id=market_id, no_market=no_market,
         start_date=start_date, end_date=end_date,
-    ).calculate()
+    )
+    result = calculator.calculate()
+    # Cross-market comparison spans ALL markets in the window (ignores the single-market
+    # filter above); needs >=2 market buckets to be a comparison worth showing.
+    market_comparison = calculator.market_comparison()
 
     # Sort the per-event rows for the table (default: best-converting first, so the
     # table reads as a leaderboard). Maps a ?sort= column key to an event-dict field.
@@ -4274,6 +4278,8 @@ def conversion_rate(request):
         'bar_scale_default': bar_scale_default,
         'summary': result['summary'],
         'has_data': bool(events),
+        'market_comparison_json': json.dumps(market_comparison),
+        'has_market_comparison': len(market_comparison) >= 2,
         'markets': markets,
         'has_no_market': has_no_market,
         'selected_market': selected,
