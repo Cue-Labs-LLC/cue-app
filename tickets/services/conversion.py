@@ -16,13 +16,55 @@ manually). This is the "when pageview data is available" gate.
 
 Returns one row per qualifying event (chronological) plus an org-wide summary,
 suitable for a bar chart with one bar per event.
+
+``market_comparison()`` reduces the same qualifying events to one row per market
+(average / median of the per-event conversion rate and marketing cost ratios),
+for a cross-market comparison card.
 """
 from decimal import Decimal
 
+import numpy as np
 from django.db.models import Count, DecimalField, OuterRef, Subquery, Sum
 from django.db.models.functions import Coalesce
 
 from tickets.models import Event, EventExpense, TICKETING_TYPE_DIRECT
+from tickets.services.markets import NO_MARKET_LABEL
+
+
+def _marketing_spend_expr():
+    """Per-event marketing spend as an isolated Subquery.
+
+    Summed in its own Subquery so the Sum over the expenses table never multiplies
+    rows against a ticket_orders join (the house rule for mixing Count + Sum).
+    Covers manual + Meta Ads marketing line items (both stored category='marketing').
+    """
+    marketing_subq = (
+        EventExpense.objects.filter(
+            event=OuterRef('pk'),
+            category='marketing',
+            deleted_at__isnull=True,
+        )
+        .values('event')
+        .annotate(total=Sum('amount'))
+        .values('total')
+    )
+    return Coalesce(
+        Subquery(marketing_subq, output_field=DecimalField(max_digits=12, decimal_places=2)),
+        Decimal('0.00'),
+    )
+
+
+def _stats(values, ndigits):
+    """Average + median of a list of numbers, rounded to ndigits (floats, JSON-safe).
+
+    Returns {'avg': None, 'median': None} for an empty list.
+    """
+    if not values:
+        return {'avg': None, 'median': None}
+    return {
+        'avg': round(float(np.mean(values)), ndigits),
+        'median': round(float(np.median(values)), ndigits),
+    }
 
 
 class ConversionRateCalculator:
@@ -57,52 +99,41 @@ class ConversionRateCalculator:
             },
         }
 
-    def calculate(self):
-        # Gate: events with recorded buy-page views whose views are shown at all —
-        # direct always, external only when the org has opted in.
+    def _base_queryset(self):
+        """Qualifying events for this org + date window, across ALL markets.
+
+        Gate: events with recorded buy-page views whose views are shown at all —
+        direct always, external only when the org has opted in. The window trims
+        which events appear, by the event's own start_date. The single-market
+        filter is intentionally NOT applied here (``calculate`` adds it;
+        ``market_comparison`` spans all markets).
+        """
         events = Event.objects.filter(
             organization=self.organization,
             public_buy_page_views__gt=0,
         )
         if not self.organization.show_page_views_for_external_events:
             events = events.filter(ticketing_type=TICKETING_TYPE_DIRECT)
+        if self.start_date is not None:
+            events = events.filter(start_date__gte=self.start_date)
+        if self.end_date is not None:
+            events = events.filter(start_date__lte=self.end_date)
+        return events
+
+    def calculate(self):
+        events = self._base_queryset()
         if self.no_market:
             events = events.filter(market__isnull=True)
         elif self.market_id:
             events = events.filter(market_id=self.market_id)
 
-        # Window trims which events appear, by the event's own date.
-        if self.start_date is not None:
-            events = events.filter(start_date__gte=self.start_date)
-        if self.end_date is not None:
-            events = events.filter(start_date__lte=self.end_date)
-
-        # order_count is a single Count on one related table (no join inflation).
-        # Marketing spend is summed in an isolated Subquery so the Sum over the
-        # expenses table never multiplies rows against the ticket_orders join (the
-        # house rule for mixing Count + Sum). Covers manual + Meta Ads marketing
-        # line items (both stored with category='marketing'). views is read from
-        # the field directly, so no join at all.
-        marketing_subq = (
-            EventExpense.objects.filter(
-                event=OuterRef('pk'),
-                category='marketing',
-                deleted_at__isnull=True,
-            )
-            .values('event')
-            .annotate(total=Sum('amount'))
-            .values('total')
-        )
+        # order_count is a single Count on one related table (no join inflation);
+        # marketing spend is an isolated Subquery (see _marketing_spend_expr). views
+        # is read from the field directly, so no join at all.
         rows = list(
             events.annotate(
                 order_count=Count('ticket_orders'),
-                marketing_spend=Coalesce(
-                    Subquery(
-                        marketing_subq,
-                        output_field=DecimalField(max_digits=12, decimal_places=2),
-                    ),
-                    Decimal('0.00'),
-                ),
+                marketing_spend=_marketing_spend_expr(),
             )
             .order_by('start_date')
             .values('id', 'name', 'start_date', 'order_count',
@@ -161,3 +192,57 @@ class ConversionRateCalculator:
                 'overall_cost_per_order': overall_cost_per_order,
             },
         }
+
+    def market_comparison(self):
+        """One row per market comparing the central tendency of its events.
+
+        Spans ALL markets in the window (the instance's single-market filter is
+        intentionally ignored — this is a cross-market comparison). For each market
+        returns the average AND median of its events' per-event conversion rate and
+        marketing cost ratios, so the UI can toggle avg/median client-side without a
+        round-trip. Unlike the ``summary`` tiles (traffic-weighted overall ratios),
+        these are the unweighted central tendency of the per-event values.
+
+        Cost per order excludes events with no orders; a market whose events all have
+        zero orders reports ``cpo = {'avg': None, 'median': None}`` (and drops out of
+        the $/Order view client-side).
+        """
+        rows = list(
+            self._base_queryset()
+            .annotate(
+                order_count=Count('ticket_orders'),
+                marketing_spend=_marketing_spend_expr(),
+            )
+            .values('order_count', 'public_buy_page_views', 'marketing_spend',
+                    'market_id', 'market__name')
+        )
+
+        # Group per-event values by market (None market_id -> the "No market" bucket).
+        groups = {}
+        for row in rows:
+            views = row['public_buy_page_views']
+            orders = row['order_count']
+            spend = float(row['marketing_spend'])
+            key = row['market_id']
+            label = (row['market__name'] or '').strip() or NO_MARKET_LABEL
+            g = groups.setdefault(key, {'label': label, 'rates': [], 'cpvs': [], 'cpos': []})
+            # views > 0 for every qualifying event (gate), so rate/cpv are always defined.
+            g['rates'].append(orders / views * 100 if views > 0 else 0.0)
+            if views > 0:
+                g['cpvs'].append(spend / views)
+            if orders > 0:
+                g['cpos'].append(spend / orders)
+
+        markets = [
+            {
+                'label': g['label'],
+                'event_count': len(g['rates']),
+                'rate': _stats(g['rates'], 1),
+                'cpv': _stats(g['cpvs'], 4),
+                'cpo': _stats(g['cpos'], 2),
+            }
+            for g in groups.values()
+        ]
+        # Stable server order by label; the client re-sorts by the selected metric.
+        markets.sort(key=lambda m: m['label'])
+        return markets

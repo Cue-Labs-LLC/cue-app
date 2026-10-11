@@ -23044,6 +23044,10 @@ class ConversionRateCalculatorTests(TestCase):
             organization=self.org, name='Portland',
             geography_level='city', geography_value='Portland',
         )
+        self.market2 = Market.objects.create(
+            organization=self.org, name='Seattle',
+            geography_level='city', geography_value='Seattle',
+        )
         self.venue = Venue.objects.create(
             organization=self.org, name='Conv Venue', city='Portland',
         )
@@ -23070,6 +23074,10 @@ class ConversionRateCalculatorTests(TestCase):
     def _calc(self, **kwargs):
         from tickets.services.conversion import ConversionRateCalculator
         return ConversionRateCalculator(self.org, **kwargs).calculate()
+
+    def _market_comparison(self, **kwargs):
+        from tickets.services.conversion import ConversionRateCalculator
+        return ConversionRateCalculator(self.org, **kwargs).market_comparison()
 
     def _expense(self, event, amount, category='marketing', source='manual', deleted=False):
         exp = EventExpense.objects.create(
@@ -23204,6 +23212,66 @@ class ConversionRateCalculatorTests(TestCase):
         self.assertIsNone(summary['overall_cost_per_view'])
         self.assertIsNone(summary['overall_cost_per_order'])
 
+    # --- market_comparison() ---
+
+    def _by_label(self, comparison):
+        return {m['label']: m for m in comparison}
+
+    def test_market_comparison_rate_avg_and_median(self):
+        # Portland: three events at 10%, 20%, 60% -> mean 30.0, median 20.0 (mean != median).
+        for name, views, orders in [('P1', 100, 10), ('P2', 100, 20), ('P3', 100, 60)]:
+            self._orders(self._event(name, views, market=self.market), orders)
+        # Seattle: two events at 5% and 15% -> mean 10.0, median 10.0.
+        for name, views, orders in [('S1', 100, 5), ('S2', 100, 15)]:
+            self._orders(self._event(name, views, market=self.market2), orders)
+        # No-market event at 40%.
+        self._orders(self._event('N1', 100, market=None), 40)
+
+        by = self._by_label(self._market_comparison())
+
+        self.assertEqual(set(by), {'Portland', 'Seattle', 'No market'})
+        self.assertEqual(by['Portland']['event_count'], 3)
+        self.assertEqual(by['Portland']['rate'], {'avg': 30.0, 'median': 20.0})
+        self.assertEqual(by['Seattle']['rate'], {'avg': 10.0, 'median': 10.0})
+        self.assertEqual(by['No market']['rate'], {'avg': 40.0, 'median': 40.0})
+
+    def test_market_comparison_marketing_cost_and_zero_order_exclusion(self):
+        # Portland: ev with spend 100 over 1000 views, 50 orders -> cpv 0.1, cpo 2.0
+        p1 = self._event('P1', 1000, market=self.market)
+        self._orders(p1, 50)
+        self._expense(p1, '100.00')
+        # Portland: ev with spend 60 over 2000 views, 20 orders -> cpv 0.03, cpo 3.0
+        p2 = self._event('P2', 2000, market=self.market)
+        self._orders(p2, 20)
+        self._expense(p2, '60.00')
+        # Seattle: single event with spend but ZERO orders -> cpo excluded (None), cpv present.
+        s1 = self._event('S1', 500, market=self.market2)
+        self._expense(s1, '25.00')  # cpv = 0.05
+
+        by = self._by_label(self._market_comparison())
+
+        self.assertEqual(by['Portland']['cpv'], {'avg': 0.065, 'median': 0.065})  # mean(0.1, 0.03)
+        self.assertEqual(by['Portland']['cpo'], {'avg': 2.5, 'median': 2.5})      # mean(2.0, 3.0)
+        # Seattle's only event had no orders: cpo has no samples.
+        self.assertEqual(by['Seattle']['cpo'], {'avg': None, 'median': None})
+        self.assertEqual(by['Seattle']['cpv'], {'avg': 0.05, 'median': 0.05})
+
+    def test_market_comparison_ignores_market_filter_and_respects_window(self):
+        self._orders(self._event('P', 100, market=self.market), 10)
+        self._orders(self._event('S', 100, market=self.market2), 10)
+        old = self._event('Old', 100, start=date(2023, 1, 1), market=self.market)
+        self._orders(old, 99)
+
+        # Instance built for a single market still spans all markets in the comparison.
+        comparison = self._market_comparison(
+            market_id=str(self.market.id),
+            start_date=date(2024, 1, 1), end_date=date(2024, 12, 31),
+        )
+        by = self._by_label(comparison)
+        self.assertEqual(set(by), {'Portland', 'Seattle'})
+        # The 2023 event is outside the window, so Portland only counts the in-window one.
+        self.assertEqual(by['Portland']['event_count'], 1)
+
 
 class ConversionRateViewTests(TestCase):
     """Tests for the conversion_rate analytics view and hub-card gating."""
@@ -23226,11 +23294,12 @@ class ConversionRateViewTests(TestCase):
         self.client.login(username='convview@example.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
 
-    def _direct_event_with_views(self, name='Live', views=100, orders=25):
+    def _direct_event_with_views(self, name='Live', views=100, orders=25, market=None):
         # Dated in the current year so it falls inside the default "this year" window.
         event = Event.objects.create(
             organization=self.org, name=name, start_date=date(date.today().year, 6, 15),
             venue=self.venue, ticketing_type=TICKETING_TYPE_DIRECT, public_buy_page_views=views,
+            market=market,
         )
         customer = Customer.objects.create(
             organization=self.org, email=f'{name}@example.com', name=name,
@@ -23246,6 +23315,24 @@ class ConversionRateViewTests(TestCase):
         resp = self.client.get(reverse('tickets:conversion_rate'))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.context['has_data'])
+
+    def test_market_comparison_gated_on_multiple_markets(self):
+        m1 = Market.objects.create(organization=self.org, name='Portland',
+                                   geography_level='city', geography_value='Portland')
+        # A single market bucket is not a comparison -> card hidden.
+        self._direct_event_with_views(name='P', views=100, orders=10, market=m1)
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_market_comparison'])
+
+        # Add a second market bucket -> card shown, with one entry per market.
+        m2 = Market.objects.create(organization=self.org, name='Seattle',
+                                   geography_level='city', geography_value='Seattle')
+        self._direct_event_with_views(name='S', views=100, orders=20, market=m2)
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertTrue(resp.context['has_market_comparison'])
+        comparison = json.loads(resp.context['market_comparison_json'])
+        self.assertEqual({m['label'] for m in comparison}, {'Portland', 'Seattle'})
 
     def test_renders_data(self):
         self._direct_event_with_views(views=100, orders=25)

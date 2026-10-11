@@ -16,6 +16,13 @@
   .conv-table td.text-end, .conv-table th.text-end { text-align: right; }
   .conv-table thead th.text-end a { justify-content: flex-end; }
   .conv-table .conv-date { color: var(--text-secondary, #6c757d); white-space: nowrap; }
+  /* Collapsible chart cards — chevron in the header hides the body to save space. */
+  .card-collapse-btn { background: none; border: 0; padding: 0 .25rem; line-height: 1;
+                       color: var(--text-secondary, #6c757d); cursor: pointer; }
+  .card-collapse-btn .bi { transition: transform .2s ease; display: inline-block; }
+  .card.is-collapsed .card-collapse-btn .bi { transform: rotate(180deg); }
+  .card.is-collapsed .card-body { display: none; }
+  .card.is-collapsed .btn-group { display: none; }
   /* Marketing-spend columns/cards are hidden by default; the organizer opts in via
      the toggle. Hiding in CSS (not JS) avoids a flash of the metrics on first paint. */
   .conv-mktg { display: none !important; }
@@ -131,8 +138,10 @@
 
 <script type="application/json" id="chart-data">{{ chart_json|safe }}</script>
 <div class="card mb-4">
-    <div class="card-header">
+    <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Conversion Rate Over Time</h5>
+        <button type="button" class="card-collapse-btn" data-collapse-key="trend"
+                aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
     </div>
     <div class="card-body">
         <div class="chart-container" style="height: 300px;">
@@ -140,6 +149,124 @@
         </div>
     </div>
 </div>
+
+{% if has_market_comparison %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0">Market Comparison</h5>
+        <div class="d-flex align-items-center flex-wrap gap-2">
+            <div class="btn-group btn-group-sm" role="group" id="mcMetric" aria-label="Metric">
+                <button type="button" class="btn btn-outline-secondary active" data-metric="rate">Conversion rate</button>
+                <button type="button" class="btn btn-outline-secondary" data-metric="cpv">Marketing $/View</button>
+                <button type="button" class="btn btn-outline-secondary" data-metric="cpo">Marketing $/Order</button>
+            </div>
+            <div class="btn-group btn-group-sm" role="group" id="mcStat" aria-label="Statistic">
+                <button type="button" class="btn btn-outline-secondary active" data-stat="avg">Average</button>
+                <button type="button" class="btn btn-outline-secondary" data-stat="median">Median</button>
+            </div>
+            <button type="button" class="card-collapse-btn ms-1" data-collapse-key="market"
+                    aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 320px;">
+            <canvas id="marketComparison"></canvas>
+        </div>
+    </div>
+</div>
+<script type="application/json" id="market-comparison-data">{{ market_comparison_json|safe }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('market-comparison-data');
+    if (!el || typeof Chart === 'undefined') return;
+    var markets = JSON.parse(el.textContent);  // one entry per market
+    if (!markets.length) return;
+
+    var cs = getComputedStyle(document.documentElement);
+    var textColor = cs.getPropertyValue('--text-secondary').trim() || '#666';
+    var gridColor = cs.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.1)';
+    var greenColor = cs.getPropertyValue('--success').trim() || '#2e7d32';
+    var blueColor = cs.getPropertyValue('--info').trim() || '#7B8FBF';
+
+    // higherBetter drives the sort direction (best market on top); fmt formats the value.
+    var METRICS = {
+        rate: { label: 'Conversion rate', higherBetter: true, color: greenColor,
+                fmt: function(v) { return v.toFixed(1) + '%'; } },
+        cpv:  { label: 'Marketing $/View', higherBetter: false, color: blueColor,
+                fmt: function(v) { return '$' + v.toFixed(4); } },
+        cpo:  { label: 'Marketing $/Order', higherBetter: false, color: blueColor,
+                fmt: function(v) { return '$' + v.toFixed(2); } }
+    };
+    var METRIC_KEY = 'cue_conv_market_metric';
+    var STAT_KEY = 'cue_conv_market_stat';
+
+    var metric = 'rate', stat = 'avg';
+    try { var sm = localStorage.getItem(METRIC_KEY); if (METRICS[sm]) metric = sm; } catch (e) {}
+    try { var ss = localStorage.getItem(STAT_KEY); if (ss === 'avg' || ss === 'median') stat = ss; } catch (e) {}
+
+    window.cueCharts = window.cueCharts || {};
+    var chart = new Chart(document.getElementById('marketComparison').getContext('2d'), {
+        type: 'bar',
+        data: { labels: [], datasets: [{ data: [], borderWidth: 0, borderRadius: 3 }] },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: function(ctx) {
+                    return METRICS[metric].label + ': ' + METRICS[metric].fmt(ctx.parsed.x);
+                } } }
+            },
+            scales: {
+                x: { beginAtZero: true, grid: { color: gridColor },
+                     ticks: { color: textColor, callback: function(v) { return METRICS[metric].fmt(v); } } },
+                y: { grid: { display: false }, ticks: { color: textColor } }
+            }
+        }
+    });
+
+    function render() {
+        var cfg = METRICS[metric];
+        // Keep only markets that have the selected stat for this metric (e.g. $/Order
+        // drops markets whose events all had zero orders).
+        var rows = markets
+            .map(function(mk) { return { label: mk.label, value: mk[metric] ? mk[metric][stat] : null }; })
+            .filter(function(r) { return r.value !== null && r.value !== undefined; });
+        rows.sort(function(a, b) { return cfg.higherBetter ? b.value - a.value : a.value - b.value; });
+        chart.data.labels = rows.map(function(r) { return r.label; });
+        chart.data.datasets[0].data = rows.map(function(r) { return r.value; });
+        chart.data.datasets[0].backgroundColor = cfg.color;
+        chart.data.datasets[0].label = cfg.label;
+        chart.update();
+    }
+
+    function activate(groupId, attr, value) {
+        document.getElementById(groupId).querySelectorAll('button').forEach(function(b) {
+            b.classList.toggle('active', b.getAttribute(attr) === value);
+        });
+    }
+    function wire(groupId, attr, setter, storageKey) {
+        document.getElementById(groupId).querySelectorAll('button').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var val = btn.getAttribute(attr);
+                activate(groupId, attr, val);
+                setter(val);
+                try { localStorage.setItem(storageKey, val); } catch (e) {}
+                render();
+            });
+        });
+    }
+
+    activate('mcMetric', 'data-metric', metric);
+    activate('mcStat', 'data-stat', stat);
+    wire('mcMetric', 'data-metric', function(v) { metric = v; }, METRIC_KEY);
+    wire('mcStat', 'data-stat', function(v) { stat = v; }, STAT_KEY);
+    render();
+    window.cueCharts.marketComparison = chart;
+});
+</script>
+{% endif %}
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -163,7 +290,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     var labels = data.map(function(d) { return fmtDate(d.start_date); });
 
-    new Chart(document.getElementById('conversionTrend').getContext('2d'), {
+    window.cueCharts = window.cueCharts || {};
+    window.cueCharts.conversionTrend = new Chart(document.getElementById('conversionTrend').getContext('2d'), {
         data: {
             labels: labels,
             datasets: [
@@ -344,6 +472,32 @@ document.addEventListener('DOMContentLoaded', function() {
             applyMktg(mktgToggle.checked);
         });
     }
+
+    // Collapsible chart cards (persisted per browser) to free up screen space. On
+    // expand, resize the card's chart — a canvas hidden via display:none loses its
+    // size, so Chart.js needs a nudge to redraw at the restored dimensions.
+    document.querySelectorAll('.card-collapse-btn[data-collapse-key]').forEach(function(btn) {
+        var card = btn.closest('.card');
+        var key = 'cue_conv_collapse_' + btn.getAttribute('data-collapse-key');
+        function apply(collapsed) {
+            card.classList.toggle('is-collapsed', collapsed);
+            btn.setAttribute('aria-expanded', String(!collapsed));
+            if (!collapsed) {
+                var canvas = card.querySelector('canvas');
+                if (canvas && window.cueCharts && window.cueCharts[canvas.id]) {
+                    window.cueCharts[canvas.id].resize();
+                }
+            }
+        }
+        var collapsed = false;
+        try { collapsed = localStorage.getItem(key) === '1'; } catch (e) {}
+        apply(collapsed);
+        btn.addEventListener('click', function() {
+            collapsed = !card.classList.contains('is-collapsed');
+            try { localStorage.setItem(key, collapsed ? '1' : '0'); } catch (e) {}
+            apply(collapsed);
+        });
+    });
 
     var input = document.getElementById('barScale');
     if (!input) return;
