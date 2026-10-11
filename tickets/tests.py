@@ -23356,6 +23356,18 @@ class ConversionRateViewTests(TestCase):
         self.assertTrue(resp.context['has_market_comparison'])
         comparison = json.loads(resp.context['market_comparison_json'])
         self.assertEqual({m['label'] for m in comparison}, {'Portland', 'Seattle'})
+        # The client-side "filter out markets" control renders with the card.
+        self.assertContains(resp, 'id="mcMarketsBtn"')
+        self.assertContains(resp, 'id="mcMarketsList"')
+
+    def test_market_filter_control_absent_without_comparison(self):
+        # Single market -> card (and its markets filter) not rendered.
+        m1 = Market.objects.create(organization=self.org, name='Portland',
+                                   geography_level='city', geography_value='Portland')
+        self._direct_event_with_views(name='P', views=100, orders=10, market=m1)
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertFalse(resp.context['has_market_comparison'])
+        self.assertNotContains(resp, 'id="mcMarketsBtn"')
 
     def test_market_comparison_only_shown_for_all_markets(self):
         # Two markets so the comparison would otherwise qualify.

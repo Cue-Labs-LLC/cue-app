@@ -169,6 +169,20 @@
                 <input class="form-check-input" type="checkbox" role="switch" id="mcAov">
                 <label class="form-check-label small text-muted" for="mcAov">vs. order value</label>
             </div>
+            <div class="dropdown" id="mcMarketsWrap">
+                <button class="btn btn-sm btn-outline-secondary" type="button" id="mcMarketsBtn"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                        aria-expanded="false" title="Show or hide markets">
+                    <i class="bi bi-funnel"></i> Markets
+                </button>
+                <div class="dropdown-menu dropdown-menu-end p-2" style="max-height:280px;overflow-y:auto;min-width:220px;">
+                    <div class="d-flex justify-content-between align-items-center px-1 pb-2 mb-1 border-bottom">
+                        <span class="small text-muted">Show markets</span>
+                        <span class="small"><a href="#" data-mc-markets="all">All</a> &middot; <a href="#" data-mc-markets="none">None</a></span>
+                    </div>
+                    <div id="mcMarketsList"><!-- checkboxes injected by JS --></div>
+                </div>
+            </div>
             <button type="button" class="card-collapse-btn ms-1" data-collapse-key="market"
                     aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
         </div>
@@ -207,15 +221,20 @@ document.addEventListener('DOMContentLoaded', function() {
     var METRIC_KEY = 'cue_conv_market_metric';
     var STAT_KEY = 'cue_conv_market_stat';
     var AOV_KEY = 'cue_conv_market_aov';
+    var HIDDEN_KEY = 'cue_conv_market_hidden';
 
     // Index by label so the order-value overlay can align to the sorted rows.
     var byLabel = {};
     markets.forEach(function(mk) { byLabel[mk.label] = mk; });
 
     var metric = 'rate', stat = 'avg', aovOn = false;
+    var hidden = {};  // set of market labels filtered out of the chart (label -> true)
     try { var sm = localStorage.getItem(METRIC_KEY); if (METRICS[sm]) metric = sm; } catch (e) {}
     try { var ss = localStorage.getItem(STAT_KEY); if (ss === 'avg' || ss === 'median') stat = ss; } catch (e) {}
     try { aovOn = localStorage.getItem(AOV_KEY) === '1'; } catch (e) {}
+    try {
+        JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]').forEach(function(lbl) { hidden[lbl] = true; });
+    } catch (e) {}
 
     window.cueCharts = window.cueCharts || {};
     var chart = new Chart(document.getElementById('marketComparison').getContext('2d'), {
@@ -246,6 +265,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // Keep only markets that have the selected stat for this metric (e.g. $/Order
         // drops markets whose events all had zero orders).
         var rows = markets
+            .filter(function(mk) { return !hidden[mk.label]; })  // drop filtered-out markets
             .map(function(mk) { return { label: mk.label, value: mk[metric] ? mk[metric][stat] : null }; })
             .filter(function(r) { return r.value !== null && r.value !== undefined; });
         rows.sort(function(a, b) { return cfg.higherBetter ? b.value - a.value : a.value - b.value; });
@@ -300,6 +320,71 @@ document.addEventListener('DOMContentLoaded', function() {
         try { localStorage.setItem(AOV_KEY, aovOn ? '1' : '0'); } catch (e) {}
         render();
     });
+
+    // --- "filter out markets" dropdown ---
+    var marketsBtn = document.getElementById('mcMarketsBtn');
+    var marketsList = document.getElementById('mcMarketsList');
+
+    function persistHidden() {
+        try { localStorage.setItem(HIDDEN_KEY, JSON.stringify(Object.keys(hidden))); } catch (e) {}
+    }
+    function syncMarketsBtn() {
+        var icon = marketsBtn.querySelector('i');
+        var any = Object.keys(hidden).length > 0;
+        icon.className = any ? 'bi bi-funnel-fill' : 'bi bi-funnel';
+    }
+    function setHidden(label, isHidden) {
+        if (isHidden) { hidden[label] = true; } else { delete hidden[label]; }
+    }
+
+    // Build one checkbox per market (alphabetical), checked unless filtered out.
+    var sortedLabels = markets.map(function(mk) { return mk.label; }).sort();
+    sortedLabels.forEach(function(label, i) {
+        var id = 'mcMkt_' + i;
+        var row = document.createElement('div');
+        row.className = 'form-check';
+        var input = document.createElement('input');
+        input.className = 'form-check-input';
+        input.type = 'checkbox';
+        input.id = id;
+        input.checked = !hidden[label];
+        input.setAttribute('data-market', label);
+        var lab = document.createElement('label');
+        lab.className = 'form-check-label';
+        lab.setAttribute('for', id);
+        lab.textContent = label;
+        input.addEventListener('change', function() {
+            setHidden(label, !input.checked);
+            persistHidden();
+            syncMarketsBtn();
+            render();
+        });
+        row.appendChild(input);
+        row.appendChild(lab);
+        marketsList.appendChild(row);
+    });
+
+    // "All" / "None" convenience links.
+    document.querySelectorAll('[data-mc-markets]').forEach(function(link) {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            var showAll = link.getAttribute('data-mc-markets') === 'all';
+            sortedLabels.forEach(function(label) { setHidden(label, !showAll); });
+            marketsList.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = showAll; });
+            persistHidden();
+            syncMarketsBtn();
+            render();
+        });
+    });
+    syncMarketsBtn();
+
+    // The card sets overflow:hidden, which would clip this menu — position it with
+    // Popper's fixed strategy so it escapes the card (repo pattern, customer_list.html).
+    if (window.bootstrap && bootstrap.Dropdown) {
+        var existing = bootstrap.Dropdown.getInstance(marketsBtn);
+        if (existing) existing.dispose();
+        new bootstrap.Dropdown(marketsBtn, { popperConfig: { strategy: 'fixed' } });
+    }
 
     activate('mcMetric', 'data-metric', metric);
     activate('mcStat', 'data-stat', stat);
