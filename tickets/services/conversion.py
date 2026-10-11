@@ -27,7 +27,7 @@ import numpy as np
 from django.db.models import Count, DecimalField, OuterRef, Subquery, Sum
 from django.db.models.functions import Coalesce
 
-from tickets.models import Event, EventExpense, TICKETING_TYPE_DIRECT
+from tickets.models import Event, EventExpense, TicketOrder, TICKETING_TYPE_DIRECT
 from tickets.services.markets import NO_MARKET_LABEL
 
 
@@ -206,9 +206,14 @@ class ConversionRateCalculator:
         Cost per order excludes events with no orders; a market whose events all have
         zero orders reports ``cpo = {'avg': None, 'median': None}`` (and drops out of
         the $/Order view client-side).
+
+        Also returns ``aov`` (average/median order value) per market — the central
+        tendency of the market's order totals — so the UI can overlay it against
+        ``cpo`` (how much it costs to acquire an order vs. what an order is worth).
         """
+        base = self._base_queryset()
         rows = list(
-            self._base_queryset()
+            base
             .annotate(
                 order_count=Count('ticket_orders'),
                 marketing_spend=_marketing_spend_expr(),
@@ -216,6 +221,15 @@ class ConversionRateCalculator:
             .values('order_count', 'public_buy_page_views', 'marketing_spend',
                     'market_id', 'market__name')
         )
+
+        # Order values per market, for the average-order-value comparison. Gross
+        # total_amount (refunds not deducted) over the same orders counted by
+        # order_count (Count('ticket_orders')), so AOV and $/Order stay comparable.
+        amounts_by_market = {}
+        for market_id, amount in (
+            TicketOrder.objects.filter(event__in=base).values_list('event__market_id', 'total_amount')
+        ):
+            amounts_by_market.setdefault(market_id, []).append(float(amount))
 
         # Group per-event values by market (None market_id -> the "No market" bucket).
         groups = {}
@@ -225,7 +239,7 @@ class ConversionRateCalculator:
             spend = float(row['marketing_spend'])
             key = row['market_id']
             label = (row['market__name'] or '').strip() or NO_MARKET_LABEL
-            g = groups.setdefault(key, {'label': label, 'rates': [], 'cpvs': [], 'cpos': []})
+            g = groups.setdefault(key, {'key': key, 'label': label, 'rates': [], 'cpvs': [], 'cpos': []})
             # views > 0 for every qualifying event (gate), so rate/cpv are always defined.
             g['rates'].append(orders / views * 100 if views > 0 else 0.0)
             if views > 0:
@@ -240,6 +254,7 @@ class ConversionRateCalculator:
                 'rate': _stats(g['rates'], 1),
                 'cpv': _stats(g['cpvs'], 4),
                 'cpo': _stats(g['cpos'], 2),
+                'aov': _stats(amounts_by_market.get(g['key'], []), 2),
             }
             for g in groups.values()
         ]

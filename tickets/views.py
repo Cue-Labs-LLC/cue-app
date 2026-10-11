@@ -4238,9 +4238,11 @@ def conversion_rate(request):
         start_date=start_date, end_date=end_date,
     )
     result = calculator.calculate()
-    # Cross-market comparison spans ALL markets in the window (ignores the single-market
-    # filter above); needs >=2 market buckets to be a comparison worth showing.
-    market_comparison = calculator.market_comparison()
+    # Cross-market comparison spans ALL markets in the window. It's only meaningful (and
+    # only shown) when the market dropdown is on "All markets" — a specific-market or
+    # "No market" view would juxtapose one market against the rest, which is confusing.
+    # Needs >=2 market buckets to be a comparison worth showing.
+    market_comparison = calculator.market_comparison() if selected == '' else []
 
     # Sort the per-event rows for the table (default: best-converting first, so the
     # table reads as a leaderboard). Maps a ?sort= column key to an event-dict field.

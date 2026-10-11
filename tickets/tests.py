@@ -23071,6 +23071,14 @@ class ConversionRateCalculatorTests(TestCase):
                 total_amount=Decimal('10.00'),
             )
 
+    def _order(self, event, amount, suffix=''):
+        return TicketOrder.objects.create(
+            customer=self.customer, event=event,
+            order_number=f'{event.name}-{suffix or amount}',
+            order_date='2024-06-01 10:00:00',
+            total_amount=Decimal(str(amount)),
+        )
+
     def _calc(self, **kwargs):
         from tickets.services.conversion import ConversionRateCalculator
         return ConversionRateCalculator(self.org, **kwargs).calculate()
@@ -23256,6 +23264,21 @@ class ConversionRateCalculatorTests(TestCase):
         self.assertEqual(by['Seattle']['cpo'], {'avg': None, 'median': None})
         self.assertEqual(by['Seattle']['cpv'], {'avg': 0.05, 'median': 0.05})
 
+    def test_market_comparison_average_order_value(self):
+        # Portland: three orders at $10, $20, $60 -> AOV mean 30.0, median 20.0.
+        p1 = self._event('P1', 100, market=self.market)
+        self._order(p1, '10.00', 'a')
+        self._order(p1, '20.00', 'b')
+        self._order(p1, '60.00', 'c')
+        # Seattle: event with views + marketing spend but NO orders -> aov has no samples.
+        s1 = self._event('S1', 100, market=self.market2)
+        self._expense(s1, '25.00')
+
+        by = self._by_label(self._market_comparison())
+
+        self.assertEqual(by['Portland']['aov'], {'avg': 30.0, 'median': 20.0})
+        self.assertEqual(by['Seattle']['aov'], {'avg': None, 'median': None})
+
     def test_market_comparison_ignores_market_filter_and_respects_window(self):
         self._orders(self._event('P', 100, market=self.market), 10)
         self._orders(self._event('S', 100, market=self.market2), 10)
@@ -23333,6 +23356,26 @@ class ConversionRateViewTests(TestCase):
         self.assertTrue(resp.context['has_market_comparison'])
         comparison = json.loads(resp.context['market_comparison_json'])
         self.assertEqual({m['label'] for m in comparison}, {'Portland', 'Seattle'})
+
+    def test_market_comparison_only_shown_for_all_markets(self):
+        # Two markets so the comparison would otherwise qualify.
+        m1 = Market.objects.create(organization=self.org, name='Portland',
+                                   geography_level='city', geography_value='Portland')
+        m2 = Market.objects.create(organization=self.org, name='Seattle',
+                                   geography_level='city', geography_value='Seattle')
+        self._direct_event_with_views(name='P', views=100, orders=10, market=m1)
+        self._direct_event_with_views(name='S', views=100, orders=20, market=m2)
+        # No event without a market, so "No market" isn't an option here.
+
+        # All markets (no filter) -> card shown.
+        resp = self.client.get(reverse('tickets:conversion_rate'))
+        self.assertTrue(resp.context['has_market_comparison'])
+
+        # A specific market selected -> card hidden (and not computed).
+        resp = self.client.get(reverse('tickets:conversion_rate'), {'market': str(m1.id)})
+        self.assertEqual(resp.context['selected_market'], str(m1.id))
+        self.assertFalse(resp.context['has_market_comparison'])
+        self.assertEqual(json.loads(resp.context['market_comparison_json']), [])
 
     def test_renders_data(self):
         self._direct_event_with_views(views=100, orders=25)
