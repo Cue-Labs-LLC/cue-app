@@ -16,13 +16,11 @@
   .conv-table td.text-end, .conv-table th.text-end { text-align: right; }
   .conv-table thead th.text-end a { justify-content: flex-end; }
   .conv-table .conv-date { color: var(--text-secondary, #6c757d); white-space: nowrap; }
-  /* Collapsible chart cards — chevron in the header hides the body to save space. */
-  .card-collapse-btn { background: none; border: 0; padding: 0 .25rem; line-height: 1;
-                       color: var(--text-secondary, #6c757d); cursor: pointer; }
-  .card-collapse-btn .bi { transition: transform .2s ease; display: inline-block; }
-  .card.is-collapsed .card-collapse-btn .bi { transform: rotate(180deg); }
-  .card.is-collapsed .card-body { display: none; }
-  .card.is-collapsed .btn-group { display: none; }
+  /* The tab pills share a flex row with the Overview controls, so no bottom margin. */
+  #convTabs { margin-bottom: 0 !important; }
+  /* Hide the Overview-only controls on the Market Comparison tab. ID+class beats the
+     .d-flex !important utility, which a plain inline style would not. */
+  #convOverviewControls.is-hidden { display: none !important; }
   /* Marketing-spend columns/cards are hidden by default; the organizer opts in via
      the toggle. Hiding in CSS (not JS) avoids a flash of the metrics on first paint. */
   .conv-mktg { display: none !important; }
@@ -38,28 +36,9 @@
         <h1>Conversion Rate</h1>
         <p class="page-header-subtitle">Buy-page orders per view for each event with page-view data.</p>
     </div>
-    <form method="get" class="d-flex align-items-center gap-2">
-        <input type="hidden" name="window" value="{{ active_window }}">
-        <input type="hidden" name="sort" value="{{ sort_by }}">
-        {% if active_window == 'custom' %}
-        <input type="hidden" name="start" value="{{ window_start }}">
-        <input type="hidden" name="end" value="{{ window_end }}">
-        {% endif %}
-        <label for="market" class="text-muted small mb-0">Market</label>
-        <select name="market" id="market" class="form-select form-select-sm" style="width:auto"
-                onchange="this.form.submit()">
-            <option value="">All markets</option>
-            {% for m in markets %}
-            <option value="{{ m.id }}"{% if selected_market == m.id|stringformat:'s' %} selected{% endif %}>{{ m.name }}</option>
-            {% endfor %}
-            {% if has_no_market %}
-            <option value="none"{% if selected_market == 'none' %} selected{% endif %}>No market</option>
-            {% endif %}
-        </select>
-    </form>
 </div>
 
-<div class="window-selector mb-3">
+<div class="window-selector mb-2">
   <div class="dropdown">
     <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
       <i class="bi bi-calendar3"></i>
@@ -84,13 +63,50 @@
   {% endif %}
 </div>
 
-{% if has_data %}
-<div class="d-flex justify-content-end mb-2">
-    <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" role="switch" id="toggleMktg">
-        <label class="form-check-label small text-muted" for="toggleMktg">Show marketing spend metrics</label>
+{% comment %} The tab pills sit under the date selector and share a row with the Overview-only
+controls (marketing-spend toggle + market selector). Those controls apply to the Overview tab,
+so they're hidden when the Market Comparison tab is active (see the tab script below). With one
+market there's no comparison: the nav is omitted and the Overview pane renders alone. {% endcomment %}
+<div class="d-flex {% if has_market_comparison %}justify-content-between{% else %}justify-content-end{% endif %} align-items-center flex-wrap gap-2 mb-3">
+    {% if has_market_comparison %}
+    <nav class="nav nav-tabs" id="convTabs" role="tablist">
+        <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+        <button class="nav-link" id="tab-markets-btn" data-bs-toggle="tab" data-bs-target="#tab-markets" type="button" role="tab">Market Comparison</button>
+    </nav>
+    {% endif %}
+    <div class="d-flex align-items-center gap-3" id="convOverviewControls">
+        {% if has_data %}
+        <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" role="switch" id="toggleMktg">
+            <label class="form-check-label small text-muted" for="toggleMktg">Show marketing spend metrics</label>
+        </div>
+        {% endif %}
+        <form method="get" class="d-flex align-items-center gap-2">
+            <input type="hidden" name="window" value="{{ active_window }}">
+            <input type="hidden" name="sort" value="{{ sort_by }}">
+            {% if active_window == 'custom' %}
+            <input type="hidden" name="start" value="{{ window_start }}">
+            <input type="hidden" name="end" value="{{ window_end }}">
+            {% endif %}
+            <label for="market" class="text-muted small mb-0">Market</label>
+            <select name="market" id="market" class="form-select form-select-sm" style="width:auto"
+                    onchange="this.form.submit()">
+                <option value="">All markets</option>
+                {% for m in markets %}
+                <option value="{{ m.id }}"{% if selected_market == m.id|stringformat:'s' %} selected{% endif %}>{{ m.name }}</option>
+                {% endfor %}
+                {% if has_no_market %}
+                <option value="none"{% if selected_market == 'none' %} selected{% endif %}>No market</option>
+                {% endif %}
+            </select>
+        </form>
     </div>
 </div>
+
+<div class="tab-content">
+<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
+
+{% if has_data %}
 <div class="row mb-4 g-3">
     <div class="col-lg col-md-4 col-sm-6">
         <div class="stat-card">
@@ -138,10 +154,8 @@
 
 <script type="application/json" id="chart-data">{{ chart_json|safe }}</script>
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header">
         <h5 class="mb-0">Conversion Rate Over Time</h5>
-        <button type="button" class="card-collapse-btn" data-collapse-key="trend"
-                aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
     </div>
     <div class="card-body">
         <div class="chart-container" style="height: 300px;">
@@ -150,7 +164,212 @@
     </div>
 </div>
 
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('chart-data');
+    if (!el || typeof Chart === 'undefined') return;
+    var data = JSON.parse(el.textContent);  // one entry per event, chronological
+    if (!data.length) return;
+
+    // Read theme tokens so the chart matches light/dark automatically.
+    var cs = getComputedStyle(document.documentElement);
+    var textColor = cs.getPropertyValue('--text-secondary').trim() || '#666';
+    var gridColor = cs.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.1)';
+    var rateColor = cs.getPropertyValue('--success').trim() || '#2e7d32';       // conversion = green
+    var rateFill = cs.getPropertyValue('--success-muted').trim() || 'rgba(46,125,50,0.12)';
+    var volColor = cs.getPropertyValue('--info').trim() || '#7B8FBF';           // views = blue
+
+    function fmtDate(iso) {
+        var p = iso.split('-');
+        var dt = new Date(p[0], p[1] - 1, p[2]);
+        return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' });
+    }
+    var labels = data.map(function(d) { return fmtDate(d.start_date); });
+
+    window.cueCharts = window.cueCharts || {};
+    window.cueCharts.conversionTrend = new Chart(document.getElementById('conversionTrend').getContext('2d'), {
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    type: 'line',
+                    label: 'Conversion rate',
+                    data: data.map(function(d) { return d.conversion_rate; }),
+                    borderColor: rateColor,
+                    backgroundColor: rateFill,
+                    fill: true,
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointBackgroundColor: rateColor,
+                    yAxisID: 'y',
+                    order: 0,
+                },
+                {
+                    type: 'bar',
+                    label: 'Views',
+                    data: data.map(function(d) { return d.views; }),
+                    backgroundColor: volColor,
+                    borderWidth: 0,
+                    borderRadius: 2,
+                    yAxisID: 'y1',
+                    order: 1,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { labels: { color: textColor, boxWidth: 12 } },
+                tooltip: {
+                    callbacks: {
+                        title: function(items) {
+                            var d = data[items[0].dataIndex];
+                            return d.name + ' · ' + fmtDate(d.start_date);
+                        },
+                        label: function(ctx) {
+                            var d = data[ctx.dataIndex];
+                            if (ctx.dataset.type === 'line') {
+                                return 'Conversion: ' + d.conversion_rate + '% (' +
+                                    d.orders.toLocaleString() + ' orders)';
+                            }
+                            return 'Views: ' + d.views.toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { color: textColor, maxRotation: 0, autoSkip: true }, grid: { color: gridColor } },
+                y: {
+                    beginAtZero: true, position: 'left',
+                    title: { display: true, text: 'Conversion rate (%)', color: textColor },
+                    ticks: { color: textColor, callback: function(v) { return v + '%'; } },
+                    grid: { color: gridColor }
+                },
+                y1: {
+                    beginAtZero: true, position: 'right',
+                    title: { display: true, text: 'Views', color: textColor },
+                    ticks: { color: textColor },
+                    grid: { drawOnChartArea: false }
+                }
+            }
+        }
+    });
+});
+</script>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Conversion Rate by Event</h5>
+        <div class="d-flex align-items-center gap-1" title="The conversion rate a full bar represents">
+            <label for="barScale" class="text-muted small mb-0">Full bar =</label>
+            <input type="number" id="barScale" min="1" max="100" step="1" value="{{ bar_scale_default }}"
+                   inputmode="numeric" class="form-control form-control-sm" style="width:68px">
+            <span class="text-muted small">%</span>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover conv-table mb-0">
+                <thead>
+                    <tr>
+                        <th>
+                            {% with asc='name' desc='-name' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Event
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th>
+                            {% with asc='date' desc='-date' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Date
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='views' desc='-views' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Views
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='orders' desc='-orders' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Orders
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='rate' desc='-rate' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Conversion Rate
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='spend' desc='-spend' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing Spend
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='cpv' desc='-cpv' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/View
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end conv-mktg">
+                            {% with asc='cpo' desc='-cpo' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/Order
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
+                            {% endwith %}
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in events %}
+                    <tr>
+                        <td><a href="{% url 'tickets:event_detail' e.event_id %}">{{ e.name }}</a></td>
+                        <td class="conv-date">{{ e.start_date|date:"M d, Y" }}</td>
+                        <td class="text-end">{{ e.views|intcomma }}</td>
+                        <td class="text-end">{{ e.orders|intcomma }}</td>
+                        <td class="text-end">
+                            <div class="conv-meter">
+                                <span class="conv-meter-track"><span class="conv-meter-fill" data-rate="{{ e.conversion_rate }}" style="width:{{ e.bar_pct }}%"></span></span>
+                                <span class="conv-meter-val">{{ e.conversion_rate|floatformat:1 }}%</span>
+                            </div>
+                        </td>
+                        <td class="text-end conv-mktg">${{ e.marketing_spend|currency }}</td>
+                        <td class="text-end conv-mktg">{% if e.cost_per_view is not None %}${{ e.cost_per_view|floatformat:4 }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end conv-mktg">{% if e.cost_per_order is not None %}${{ e.cost_per_order|currency }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-percent d-block"></i>
+            {% if summary.event_count or selected_market or active_window != 'all' %}
+            <p>No events with buy-page views in the selected window{% if selected_market %} for this market{% endif %}. Try a wider range.</p>
+            <a href="?{% if selected_market %}market={{ selected_market }}&amp;{% endif %}window=all" class="btn btn-primary"><i class="bi bi-calendar3"></i> View all time</a>
+            {% else %}
+            <p>No buy-page view data yet. Conversion rate appears once your events record page views &mdash; tracked automatically for events sold on Cue, or entered manually for CSV events when page views are enabled in display settings.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+</div>{# /tab-overview #}
+
 {% if has_market_comparison %}
+<div class="tab-pane fade" id="tab-markets" role="tabpanel">
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0">Market Comparison</h5>
@@ -183,8 +402,6 @@
                     <div id="mcMarketsList"><!-- checkboxes injected by JS --></div>
                 </div>
             </div>
-            <button type="button" class="card-collapse-btn ms-1" data-collapse-key="market"
-                    aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
         </div>
     </div>
     <div class="card-body">
@@ -395,193 +612,9 @@ document.addEventListener('DOMContentLoaded', function() {
     window.cueCharts.marketComparison = chart;
 });
 </script>
+</div>{# /tab-markets #}
 {% endif %}
-
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    var el = document.getElementById('chart-data');
-    if (!el || typeof Chart === 'undefined') return;
-    var data = JSON.parse(el.textContent);  // one entry per event, chronological
-    if (!data.length) return;
-
-    // Read theme tokens so the chart matches light/dark automatically.
-    var cs = getComputedStyle(document.documentElement);
-    var textColor = cs.getPropertyValue('--text-secondary').trim() || '#666';
-    var gridColor = cs.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.1)';
-    var rateColor = cs.getPropertyValue('--success').trim() || '#2e7d32';       // conversion = green
-    var rateFill = cs.getPropertyValue('--success-muted').trim() || 'rgba(46,125,50,0.12)';
-    var volColor = cs.getPropertyValue('--info').trim() || '#7B8FBF';           // views = blue
-
-    function fmtDate(iso) {
-        var p = iso.split('-');
-        var dt = new Date(p[0], p[1] - 1, p[2]);
-        return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' });
-    }
-    var labels = data.map(function(d) { return fmtDate(d.start_date); });
-
-    window.cueCharts = window.cueCharts || {};
-    window.cueCharts.conversionTrend = new Chart(document.getElementById('conversionTrend').getContext('2d'), {
-        data: {
-            labels: labels,
-            datasets: [
-                {
-                    type: 'line',
-                    label: 'Conversion rate',
-                    data: data.map(function(d) { return d.conversion_rate; }),
-                    borderColor: rateColor,
-                    backgroundColor: rateFill,
-                    fill: true,
-                    borderWidth: 2,
-                    tension: 0.3,
-                    pointRadius: 3,
-                    pointHoverRadius: 5,
-                    pointBackgroundColor: rateColor,
-                    yAxisID: 'y',
-                    order: 0,
-                },
-                {
-                    type: 'bar',
-                    label: 'Views',
-                    data: data.map(function(d) { return d.views; }),
-                    backgroundColor: volColor,
-                    borderWidth: 0,
-                    borderRadius: 2,
-                    yAxisID: 'y1',
-                    order: 1,
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            plugins: {
-                legend: { labels: { color: textColor, boxWidth: 12 } },
-                tooltip: {
-                    callbacks: {
-                        title: function(items) {
-                            var d = data[items[0].dataIndex];
-                            return d.name + ' · ' + fmtDate(d.start_date);
-                        },
-                        label: function(ctx) {
-                            var d = data[ctx.dataIndex];
-                            if (ctx.dataset.type === 'line') {
-                                return 'Conversion: ' + d.conversion_rate + '% (' +
-                                    d.orders.toLocaleString() + ' orders)';
-                            }
-                            return 'Views: ' + d.views.toLocaleString();
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: { ticks: { color: textColor, maxRotation: 0, autoSkip: true }, grid: { color: gridColor } },
-                y: {
-                    beginAtZero: true, position: 'left',
-                    title: { display: true, text: 'Conversion rate (%)', color: textColor },
-                    ticks: { color: textColor, callback: function(v) { return v + '%'; } },
-                    grid: { color: gridColor }
-                },
-                y1: {
-                    beginAtZero: true, position: 'right',
-                    title: { display: true, text: 'Views', color: textColor },
-                    ticks: { color: textColor },
-                    grid: { drawOnChartArea: false }
-                }
-            }
-        }
-    });
-});
-</script>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Conversion Rate by Event</h5>
-        <div class="d-flex align-items-center gap-1" title="The conversion rate a full bar represents">
-            <label for="barScale" class="text-muted small mb-0">Full bar =</label>
-            <input type="number" id="barScale" min="1" max="100" step="1" value="{{ bar_scale_default }}"
-                   inputmode="numeric" class="form-control form-control-sm" style="width:68px">
-            <span class="text-muted small">%</span>
-        </div>
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover conv-table mb-0">
-                <thead>
-                    <tr>
-                        <th>
-                            {% with asc='name' desc='-name' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Event
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th>
-                            {% with asc='date' desc='-date' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Date
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end">
-                            {% with asc='views' desc='-views' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Views
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end">
-                            {% with asc='orders' desc='-orders' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Orders
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end">
-                            {% with asc='rate' desc='-rate' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Conversion Rate
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end conv-mktg">
-                            {% with asc='spend' desc='-spend' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing Spend
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end conv-mktg">
-                            {% with asc='cpv' desc='-cpv' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/View
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                        <th class="text-end conv-mktg">
-                            {% with asc='cpo' desc='-cpo' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&amp;window={{ active_window }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}{% if active_window == 'custom' %}&amp;start={{ window_start }}&amp;end={{ window_end }}{% endif %}">Marketing $/Order
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>{% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a>
-                            {% endwith %}
-                        </th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for e in events %}
-                    <tr>
-                        <td><a href="{% url 'tickets:event_detail' e.event_id %}">{{ e.name }}</a></td>
-                        <td class="conv-date">{{ e.start_date|date:"M d, Y" }}</td>
-                        <td class="text-end">{{ e.views|intcomma }}</td>
-                        <td class="text-end">{{ e.orders|intcomma }}</td>
-                        <td class="text-end">
-                            <div class="conv-meter">
-                                <span class="conv-meter-track"><span class="conv-meter-fill" data-rate="{{ e.conversion_rate }}" style="width:{{ e.bar_pct }}%"></span></span>
-                                <span class="conv-meter-val">{{ e.conversion_rate|floatformat:1 }}%</span>
-                            </div>
-                        </td>
-                        <td class="text-end conv-mktg">${{ e.marketing_spend|currency }}</td>
-                        <td class="text-end conv-mktg">{% if e.cost_per_view is not None %}${{ e.cost_per_view|floatformat:4 }}{% else %}&mdash;{% endif %}</td>
-                        <td class="text-end conv-mktg">{% if e.cost_per_order is not None %}${{ e.cost_per_order|currency }}{% else %}&mdash;{% endif %}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
+</div>{# /tab-content #}
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -601,32 +634,6 @@ document.addEventListener('DOMContentLoaded', function() {
             applyMktg(mktgToggle.checked);
         });
     }
-
-    // Collapsible chart cards (persisted per browser) to free up screen space. On
-    // expand, resize the card's chart — a canvas hidden via display:none loses its
-    // size, so Chart.js needs a nudge to redraw at the restored dimensions.
-    document.querySelectorAll('.card-collapse-btn[data-collapse-key]').forEach(function(btn) {
-        var card = btn.closest('.card');
-        var key = 'cue_conv_collapse_' + btn.getAttribute('data-collapse-key');
-        function apply(collapsed) {
-            card.classList.toggle('is-collapsed', collapsed);
-            btn.setAttribute('aria-expanded', String(!collapsed));
-            if (!collapsed) {
-                var canvas = card.querySelector('canvas');
-                if (canvas && window.cueCharts && window.cueCharts[canvas.id]) {
-                    window.cueCharts[canvas.id].resize();
-                }
-            }
-        }
-        var collapsed = false;
-        try { collapsed = localStorage.getItem(key) === '1'; } catch (e) {}
-        apply(collapsed);
-        btn.addEventListener('click', function() {
-            collapsed = !card.classList.contains('is-collapsed');
-            try { localStorage.setItem(key, collapsed ? '1' : '0'); } catch (e) {}
-            apply(collapsed);
-        });
-    });
 
     var input = document.getElementById('barScale');
     if (!input) return;
@@ -660,20 +667,45 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-{% else %}
-<div class="card">
-    <div class="card-body">
-        <div class="empty-state">
-            <i class="bi bi-percent d-block"></i>
-            {% if summary.event_count or selected_market or active_window != 'all' %}
-            <p>No events with buy-page views in the selected window{% if selected_market %} for this market{% endif %}. Try a wider range.</p>
-            <a href="?{% if selected_market %}market={{ selected_market }}&amp;{% endif %}window=all" class="btn btn-primary"><i class="bi bi-calendar3"></i> View all time</a>
-            {% else %}
-            <p>No buy-page view data yet. Conversion rate appears once your events record page views &mdash; tracked automatically for events sold on Cue, or entered manually for CSV events when page views are enabled in display settings.</p>
-            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
-            {% endif %}
-        </div>
-    </div>
-</div>
-{% endif %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Tab persistence + chart sizing. The active tab is remembered per browser so it
+    // survives the window/market reloads (query-param navigations). A chart built while
+    // its pane is hidden has a 0-sized canvas, so resize on every tab show.
+    var tabs = document.getElementById('convTabs');
+    if (!tabs || typeof bootstrap === 'undefined') return;
+    var TAB_KEY = 'cue_conv_active_tab';
+
+    function resizeCharts() {
+        if (!window.cueCharts) return;
+        Object.keys(window.cueCharts).forEach(function(k) {
+            try { window.cueCharts[k].resize(); } catch (e) {}
+        });
+    }
+
+    // The marketing toggle + market selector share the tab row but only apply to the
+    // Overview tab, so hide them while the Market Comparison tab is active.
+    function syncControls(target) {
+        var controls = document.getElementById('convOverviewControls');
+        if (controls) { controls.classList.toggle('is-hidden', target === 'markets'); }
+    }
+
+    var active = 'overview';
+    try {
+        var saved = localStorage.getItem(TAB_KEY);
+        if (saved) {
+            var btn = tabs.querySelector('[data-bs-target="#tab-' + saved + '"]');
+            if (btn) { active = saved; new bootstrap.Tab(btn).show(); }
+        }
+    } catch (e) {}
+    syncControls(active);
+
+    tabs.addEventListener('shown.bs.tab', function(e) {
+        var target = (e.target.getAttribute('data-bs-target') || '').replace('#tab-', '');
+        try { localStorage.setItem(TAB_KEY, target); } catch (e2) {}
+        syncControls(target);
+        resizeCharts();
+    });
+});
+</script>
 {% endblock %}
