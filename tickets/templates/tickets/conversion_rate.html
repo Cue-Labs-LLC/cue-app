@@ -164,6 +164,11 @@
                 <button type="button" class="btn btn-outline-secondary active" data-stat="avg">Average</button>
                 <button type="button" class="btn btn-outline-secondary" data-stat="median">Median</button>
             </div>
+            <div class="form-check form-switch mb-0" id="mcAovWrap" style="display:none;"
+                 title="Overlay each market's order value to compare against the cost to acquire an order">
+                <input class="form-check-input" type="checkbox" role="switch" id="mcAov">
+                <label class="form-check-label small text-muted" for="mcAov">vs. order value</label>
+            </div>
             <button type="button" class="card-collapse-btn ms-1" data-collapse-key="market"
                     aria-label="Collapse chart" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
         </div>
@@ -187,7 +192,9 @@ document.addEventListener('DOMContentLoaded', function() {
     var gridColor = cs.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.1)';
     var greenColor = cs.getPropertyValue('--success').trim() || '#2e7d32';
     var blueColor = cs.getPropertyValue('--info').trim() || '#7B8FBF';
+    var amberColor = cs.getPropertyValue('--warning').trim() || '#d99a2b';
 
+    var money2 = function(v) { return '$' + v.toFixed(2); };
     // higherBetter drives the sort direction (best market on top); fmt formats the value.
     var METRICS = {
         rate: { label: 'Conversion rate', higherBetter: true, color: greenColor,
@@ -195,14 +202,20 @@ document.addEventListener('DOMContentLoaded', function() {
         cpv:  { label: 'Marketing $/View', higherBetter: false, color: blueColor,
                 fmt: function(v) { return '$' + v.toFixed(4); } },
         cpo:  { label: 'Marketing $/Order', higherBetter: false, color: blueColor,
-                fmt: function(v) { return '$' + v.toFixed(2); } }
+                fmt: money2 }
     };
     var METRIC_KEY = 'cue_conv_market_metric';
     var STAT_KEY = 'cue_conv_market_stat';
+    var AOV_KEY = 'cue_conv_market_aov';
 
-    var metric = 'rate', stat = 'avg';
+    // Index by label so the order-value overlay can align to the sorted rows.
+    var byLabel = {};
+    markets.forEach(function(mk) { byLabel[mk.label] = mk; });
+
+    var metric = 'rate', stat = 'avg', aovOn = false;
     try { var sm = localStorage.getItem(METRIC_KEY); if (METRICS[sm]) metric = sm; } catch (e) {}
     try { var ss = localStorage.getItem(STAT_KEY); if (ss === 'avg' || ss === 'median') stat = ss; } catch (e) {}
+    try { aovOn = localStorage.getItem(AOV_KEY) === '1'; } catch (e) {}
 
     window.cueCharts = window.cueCharts || {};
     var chart = new Chart(document.getElementById('marketComparison').getContext('2d'), {
@@ -213,9 +226,11 @@ document.addEventListener('DOMContentLoaded', function() {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { display: false },
+                legend: { display: false, labels: { color: textColor, boxWidth: 12 } },
                 tooltip: { callbacks: { label: function(ctx) {
-                    return METRICS[metric].label + ': ' + METRICS[metric].fmt(ctx.parsed.x);
+                    // Dataset 1 (when present) is the order-value overlay — always money.
+                    var f = (ctx.datasetIndex === 1) ? money2 : METRICS[metric].fmt;
+                    return ctx.dataset.label + ': ' + f(ctx.parsed.x);
                 } } }
             },
             scales: {
@@ -234,11 +249,31 @@ document.addEventListener('DOMContentLoaded', function() {
             .map(function(mk) { return { label: mk.label, value: mk[metric] ? mk[metric][stat] : null }; })
             .filter(function(r) { return r.value !== null && r.value !== undefined; });
         rows.sort(function(a, b) { return cfg.higherBetter ? b.value - a.value : a.value - b.value; });
+
+        var datasets = [{
+            label: cfg.label,
+            data: rows.map(function(r) { return r.value; }),
+            backgroundColor: cfg.color, borderWidth: 0, borderRadius: 3
+        }];
+        // Order-value overlay: only for $/Order, when the toggle is on. Follows the
+        // avg/median stat so it's a like-for-like comparison with the cost bars.
+        if (metric === 'cpo' && aovOn) {
+            datasets.push({
+                label: (stat === 'median' ? 'Median order value' : 'Avg order value'),
+                data: rows.map(function(r) { var mk = byLabel[r.label]; return mk.aov ? mk.aov[stat] : null; }),
+                backgroundColor: amberColor, borderWidth: 0, borderRadius: 3
+            });
+        }
+
         chart.data.labels = rows.map(function(r) { return r.label; });
-        chart.data.datasets[0].data = rows.map(function(r) { return r.value; });
-        chart.data.datasets[0].backgroundColor = cfg.color;
-        chart.data.datasets[0].label = cfg.label;
+        chart.data.datasets = datasets;
+        chart.options.plugins.legend.display = datasets.length > 1;
         chart.update();
+    }
+
+    // The "vs. order value" toggle only makes sense for the $/Order metric.
+    function syncAovVisibility() {
+        document.getElementById('mcAovWrap').style.display = (metric === 'cpo') ? '' : 'none';
     }
 
     function activate(groupId, attr, value) {
@@ -258,10 +293,19 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    var aovInput = document.getElementById('mcAov');
+    aovInput.checked = aovOn;
+    aovInput.addEventListener('change', function() {
+        aovOn = aovInput.checked;
+        try { localStorage.setItem(AOV_KEY, aovOn ? '1' : '0'); } catch (e) {}
+        render();
+    });
+
     activate('mcMetric', 'data-metric', metric);
     activate('mcStat', 'data-stat', stat);
-    wire('mcMetric', 'data-metric', function(v) { metric = v; }, METRIC_KEY);
+    wire('mcMetric', 'data-metric', function(v) { metric = v; syncAovVisibility(); }, METRIC_KEY);
     wire('mcStat', 'data-stat', function(v) { stat = v; }, STAT_KEY);
+    syncAovVisibility();
     render();
     window.cueCharts.marketComparison = chart;
 });
