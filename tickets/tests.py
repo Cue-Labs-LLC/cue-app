@@ -23359,35 +23359,43 @@ class ConversionRateViewTests(TestCase):
         # The client-side "filter out markets" control renders with the card.
         self.assertContains(resp, 'id="mcMarketsBtn"')
         self.assertContains(resp, 'id="mcMarketsList"')
+        # With a comparison to show, the page splits into tabs.
+        self.assertContains(resp, 'id="convTabs"')
+        self.assertContains(resp, 'data-bs-target="#tab-markets"')
 
     def test_market_filter_control_absent_without_comparison(self):
-        # Single market -> card (and its markets filter) not rendered.
+        # Single market -> card (and its markets filter) not rendered, and no tabs.
         m1 = Market.objects.create(organization=self.org, name='Portland',
                                    geography_level='city', geography_value='Portland')
         self._direct_event_with_views(name='P', views=100, orders=10, market=m1)
         resp = self.client.get(reverse('tickets:conversion_rate'))
         self.assertFalse(resp.context['has_market_comparison'])
         self.assertNotContains(resp, 'id="mcMarketsBtn"')
+        self.assertNotContains(resp, 'id="convTabs"')
 
-    def test_market_comparison_only_shown_for_all_markets(self):
-        # Two markets so the comparison would otherwise qualify.
+    def test_market_comparison_independent_of_market_selector(self):
+        # Market Comparison lives on its own tab, decoupled from the Overview tab's
+        # market dropdown: it stays available (all markets) even when a specific
+        # market is selected.
         m1 = Market.objects.create(organization=self.org, name='Portland',
                                    geography_level='city', geography_value='Portland')
         m2 = Market.objects.create(organization=self.org, name='Seattle',
                                    geography_level='city', geography_value='Seattle')
         self._direct_event_with_views(name='P', views=100, orders=10, market=m1)
         self._direct_event_with_views(name='S', views=100, orders=20, market=m2)
-        # No event without a market, so "No market" isn't an option here.
 
-        # All markets (no filter) -> card shown.
+        # All markets.
         resp = self.client.get(reverse('tickets:conversion_rate'))
         self.assertTrue(resp.context['has_market_comparison'])
+        self.assertEqual({m['label'] for m in json.loads(resp.context['market_comparison_json'])},
+                         {'Portland', 'Seattle'})
 
-        # A specific market selected -> card hidden (and not computed).
+        # A specific market selected -> the comparison still spans all markets.
         resp = self.client.get(reverse('tickets:conversion_rate'), {'market': str(m1.id)})
         self.assertEqual(resp.context['selected_market'], str(m1.id))
-        self.assertFalse(resp.context['has_market_comparison'])
-        self.assertEqual(json.loads(resp.context['market_comparison_json']), [])
+        self.assertTrue(resp.context['has_market_comparison'])
+        self.assertEqual({m['label'] for m in json.loads(resp.context['market_comparison_json'])},
+                         {'Portland', 'Seattle'})
 
     def test_renders_data(self):
         self._direct_event_with_views(views=100, orders=25)
