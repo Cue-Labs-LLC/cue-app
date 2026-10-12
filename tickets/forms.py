@@ -1275,10 +1275,11 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
         model = Event
         fields = [
             'name', 'ticketing_type', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
-            'description', 'capacity', 'timezone', 'ticket_link', 'public_buy_page_views',
+            'description', 'genre', 'capacity', 'timezone', 'ticket_link', 'public_buy_page_views',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
+            'genre': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., techno, house'}),
             'public_buy_page_views': forms.NumberInput(
                 attrs={'class': 'form-control', 'placeholder': 'e.g., 1200', 'min': '0'}
             ),
@@ -1309,6 +1310,10 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
             widget=forms.Select(attrs={'class': 'form-select'}),
         )
         self.fields['description'].required = False
+        self.fields['genre'].required = False
+        self.fields['genre'].help_text = (
+            'Comma-separated genres used to find competing events (optional).'
+        )
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
         # Manual page-views entry is opt-in (org setting) and only for external
@@ -1363,6 +1368,7 @@ class EventForm(EventDateTimeFormMixin, forms.ModelForm):
                 Column('capacity', css_class='form-group col-md-6 mb-0'),
             ),
             Field('description'),
+            Field('genre'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
             *([Field('public_buy_page_views')] if allow_page_views else []),
         ]
@@ -1682,10 +1688,11 @@ class DirectEventForm(EventDateTimeFormMixin, forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity', 'flyer', 'facebook_pixel_id', 'venue', 'show_social_proof', 'show_attendee_count']
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'genre', 'capacity', 'flyer', 'facebook_pixel_id', 'venue', 'show_social_proof', 'show_attendee_count']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
+            'genre': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., techno, house'}),
             'start_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
             'start_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
@@ -1703,6 +1710,10 @@ class DirectEventForm(EventDateTimeFormMixin, forms.ModelForm):
             ).order_by('name', 'city')
         self.fields['summary'].required = False
         self.fields['description'].required = False
+        self.fields['genre'].required = False
+        self.fields['genre'].help_text = (
+            'Comma-separated genres used to find competing events (optional).'
+        )
         self.fields['capacity'].required = False
         # Combined start/end datetime inputs replace the four date/time fields.
         self._init_event_datetimes(end_required=True)
@@ -1731,6 +1742,7 @@ class DirectEventForm(EventDateTimeFormMixin, forms.ModelForm):
                 Column('end_datetime', css_class='form-group col-md-6 mb-0'),
             ),
             Field('description'),
+            Field('genre'),
             Row(
                 Column('venue', css_class='form-group col-md-6 mb-0'),
                 Column('capacity', css_class='form-group col-md-6 mb-0'),

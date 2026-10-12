@@ -1712,7 +1712,8 @@ def _under_market_comp_daily_cap(organization):
     return _market_comp_daily_scan_count(organization) < cap
 
 
-def request_competition_scan(organization, event, *, force=False):
+def request_competition_scan(organization, event, *, force=False, genre_hints=None,
+                             include_domains=None, exclude_domains=None):
     """Gate + enqueue a market-competition scan. Returns a short status string.
 
     The single entry point a view (P5) calls. Order of gates:
@@ -1721,6 +1722,13 @@ def request_competition_scan(organization, event, *, force=False):
       - ``'capped'``      — the org hit its daily scan cap (D3); nothing enqueued.
       - ``'in_progress'`` — a scan for this event is already running (lock held, D4).
       - ``'scanning'``    — gates passed; the Celery task was enqueued.
+
+    ``genre_hints`` is an optional per-run organizer override (P5): a list scans
+    for exactly those genres instead of the auto-derived ones; ``None`` auto-derives.
+    ``include_domains`` / ``exclude_domains`` are optional per-run domain scoping
+    (lists of hostnames; ``None`` falls back to the settings defaults). An override
+    of either implies a deliberate re-scan, so the caller passes ``force=True`` with
+    it (the freshness hash doesn't cover genres or domains).
 
     The in-progress lock is acquired here, *before* enqueue (§4.1), and released in
     the task's ``finally``.
@@ -1738,12 +1746,16 @@ def request_competition_scan(organization, event, *, force=False):
         _competition_lock_key(event.id), 1, _COMPETITION_SCAN_LOCK_TTL
     ):
         return 'in_progress'
-    scan_event_competition_task.delay(str(event.id))
+    scan_event_competition_task.delay(
+        str(event.id), genre_hints=genre_hints,
+        include_domains=include_domains, exclude_domains=exclude_domains,
+    )
     return 'scanning'
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def scan_event_competition_task(self, event_id):
+def scan_event_competition_task(self, event_id, genre_hints=None,
+                                include_domains=None, exclude_domains=None):
     """Run one market-competition scan for an event and persist the result.
 
     Mirrors ``regenerate_event_summary_task``: per-event, hash-gated, cache-on-Event,
@@ -1751,6 +1763,11 @@ def scan_event_competition_task(self, event_id):
     reports ``unavailable`` on missing key / guard failure / empty-or-failed scan
     (D2) — that is a valid persisted terminal result, not a retry. Only unexpected
     (e.g. DB) errors retry.
+
+    ``genre_hints`` / ``include_domains`` / ``exclude_domains`` are optional per-run
+    organizer overrides (P5). When any is provided the freshness short-circuit is
+    skipped (the organizer asked for this exact scan); all ``None`` keeps the default
+    hash-gated, auto-derived, settings-default-domains behaviour.
     """
     from tickets.cache_utils import safe_cache_delete
     from tickets.models import Event
@@ -1771,11 +1788,20 @@ def scan_event_competition_task(self, event_id):
         safe_cache_delete(_competition_lock_key(event_id))
         return 'missing'
 
+    overridden = (
+        genre_hints is not None
+        or include_domains is not None
+        or exclude_domains is not None
+    )
     try:
         # Defense-in-depth: a direct/duplicate run no-ops if a fresh result exists.
-        if is_competition_fresh(event):
+        # Any per-run override is an explicit re-scan, so it bypasses the freshness gate.
+        if not overridden and is_competition_fresh(event):
             return 'fresh'
-        result = calculate_event_competition(event.organization, event)
+        result = calculate_event_competition(
+            event.organization, event, genre_hints=genre_hints,
+            include_domains=include_domains, exclude_domains=exclude_domains,
+        )
         persist_competition(event, result)
         return result.status
     except Exception as exc:

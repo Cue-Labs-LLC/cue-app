@@ -81,6 +81,7 @@ class CompetitionResult:
     counts: dict = field(default_factory=dict)
     coverage: dict = field(default_factory=dict)
     summary: str = ''
+    genres: list = field(default_factory=list)         # genres this scan searched for
 
     def to_dict(self) -> dict:
         """Serialize for persistence into ``Event.competition_data``."""
@@ -93,4 +94,5 @@ class CompetitionResult:
             'counts': self.counts,
             'coverage': self.coverage,
             'summary': self.summary,
+            'genres': list(self.genres),
         }

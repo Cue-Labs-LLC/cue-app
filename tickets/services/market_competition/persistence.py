@@ -27,8 +27,9 @@ def compute_input_hash(event) -> str:
     """Return a sha256 fingerprint of the event data a competition scan depends on.
 
     Covers name, talent lineup names, venue city/state, the full date span
-    (``start_date``..``end_date`` — DO5-b), and the ±window. A change in any of
-    these makes a stored result stale; nothing else affects the scan.
+    (``start_date``..``end_date`` — DO5-b), the ±window, and the organizer-set
+    ``genre``. A change in any of these makes a stored result stale; nothing else
+    affects the scan.
     """
     venue = getattr(event, 'venue', None)
     parts = [
@@ -45,6 +46,9 @@ def compute_input_hash(event) -> str:
         event.start_date.isoformat() if event.start_date else '',
         event.end_date.isoformat() if event.end_date else '',
         str(settings.MARKET_COMPETITION_DATE_WINDOW_DAYS),
+        # An organizer-set genre changes what the scan searches for, so a change
+        # to it must invalidate a cached result (force a re-scan within the TTL).
+        getattr(event, 'genre', '') or '',
     ])
     payload = '\x1f'.join(parts)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()

@@ -20,6 +20,8 @@ See ``docs/technical-design/market-competition-agent.md`` §4.2 (calculator), §
 D1/D2/D6, DO5-e/f.
 """
 import logging
+import re
+from functools import lru_cache
 
 from django.conf import settings
 
@@ -27,7 +29,7 @@ from tickets.models import AITokenUsage
 from tickets.services.ai_metering import record_ai_token_usage
 from tickets.services.ai_tracing import trace_config
 
-from . import scanner
+from . import sources
 from .scoring import score_competition
 from .types import CompetitionResult, TargetEvent
 
@@ -52,33 +54,141 @@ GENRE_KEYWORDS = {
     'country': ['country', 'bluegrass', 'americana'],
     'latin': ['latin', 'reggaeton', 'salsa', 'bachata', 'cumbia'],
     'afrobeats': ['afrobeats', 'afrobeat', 'amapiano'],
-    'reggae': ['reggae', 'dancehall'],
+    'reggae': ['reggae'],
+    'dancehall': ['dancehall'],
     'comedy': ['comedy', 'stand-up', 'stand up', 'standup'],
     'drag': ['drag'],
     'dj': ['dj set', 'dj night'],
 }
 
 
-def derive_genre_hints(event) -> list:
+_GENRE_MAX = 6
+
+
+def genre_options() -> list:
+    """The canonical genres to offer as selectable options in the UI (D4/P5).
+
+    The same vocabulary auto-detection draws from (``GENRE_KEYWORDS``), in a stable
+    display order — so when auto-detect finds nothing the organizer can still pick
+    one or more from the list instead of guessing the spelling.
+    """
+    return list(GENRE_KEYWORDS.keys())
+
+
+def parse_genres(raw, *, max_genres=_GENRE_MAX) -> list:
+    """Canonical parse of a comma-separated genre string → clean hint list.
+
+    Trims, lower-cases, de-dupes (stable order), drops blanks, and caps the count
+    (each genre adds search queries — DO5-g). Shared by the model's ``Event.genre``,
+    the panel override, and ``resolve_event_genres`` so every path normalizes the
+    same way.
+    """
+    seen = []
+    for part in str(raw or '').split(','):
+        g = part.strip().lower()
+        if g and g not in seen:
+            seen.append(g)
+        if len(seen) >= max_genres:
+            break
+    return seen
+
+
+@lru_cache(maxsize=None)
+def _keyword_pattern(keyword):
+    """A compiled word-boundary matcher for one genre keyword.
+
+    Word boundaries matter: a plain substring check tags "edm" from the "rave" in
+    "t​rave​l" (travel) and "rap" from "photo​grap​hy" — both
+    seen in real posh descriptions. ``\\b`` only matches a genuine word edge, and a
+    digit/ampersand-aware edge for keywords like "r&b" whose boundary isn't a
+    standard ``\\w``/``\\W`` transition.
+    """
+    # Optional trailing "s" keeps legit plurals ("dj sets", "raves") while the
+    # boundaries still reject mid-word collisions ("travel", "photography").
+    return re.compile(r'(?<![\w&])' + re.escape(keyword) + r's?(?![\w&])')
+
+
+def genres_in_text(text) -> list:
+    """Canonical genres whose trigger keywords appear in ``text`` (deduped, stable).
+
+    Pure, LLM-free word-boundary matching over ``GENRE_KEYWORDS``. Shared by
+    ``derive_genre_hints`` (target event) and the posh source (per-competitor
+    genre). An empty list is a valid outcome (DO5-f density fallback).
+    """
+    haystack = (text or '').lower()
+    hints = []
+    for genre, keywords in GENRE_KEYWORDS.items():
+        if any(_keyword_pattern(kw).search(haystack) for kw in keywords) and genre not in hints:
+            hints.append(genre)
+    return hints
+
+
+def derive_genre_hints(event, *, extra_text='') -> list:
     """Return the canonical genres the event's text suggests (deduped, stable order).
 
-    Scans ``event.name`` + every ``talent_lineup`` name + ``event.description``.
-    An empty list is a valid, expected outcome => the scorer's no-confident-genre
-    density fallback applies (DO5-f).
+    Scans ``event.name`` + every ``talent_lineup`` name + ``event.description`` plus
+    ``extra_text`` (the fetched buy-page content — D1=A; the caller does the I/O so
+    this function stays pure/offline). An empty list is a valid, expected outcome =>
+    the scorer's no-confident-genre density fallback applies (DO5-f).
     """
-    parts = [event.name or '', getattr(event, 'description', '') or '']
+    parts = [event.name or '', getattr(event, 'description', '') or '', extra_text or '']
     try:
         parts.extend(t.name for t in event.talent_lineup.all())
     except Exception:
         # Unsaved event or no reverse manager available — name/description still work.
         pass
-    haystack = ' '.join(parts).lower()
+    return genres_in_text(' '.join(parts))
 
-    hints = []
-    for genre, keywords in GENRE_KEYWORDS.items():
-        if any(kw in haystack for kw in keywords) and genre not in hints:
-            hints.append(genre)
-    return hints
+
+def event_buy_page_url(event) -> str:
+    """The external buy-page URL to probe for genre, or ``''``.
+
+    Only the organizer-supplied ``ticket_link`` (external listings) is fetched; a
+    Cue-hosted direct-ticketing page is never fetched (its content is the event's
+    own data, already read locally).
+    """
+    return (getattr(event, 'ticket_link', '') or '').strip()
+
+
+def event_has_buy_page(event) -> bool:
+    """True if the event has a buy page at all — an external link or a Cue page.
+
+    Direct-ticketing events always have a Cue-hosted public buy page, so they
+    always pass; external events pass only with a ``ticket_link`` (D2=A).
+    """
+    from tickets.models import TICKETING_TYPE_DIRECT
+
+    if event_buy_page_url(event):
+        return True
+    return getattr(event, 'ticketing_type', '') == TICKETING_TYPE_DIRECT
+
+
+def event_has_genre_source(event) -> bool:
+    """True if a scan can determine a genre (or run density) without prompting.
+
+    Satisfied by an explicit ``Event.genre``, a non-empty description, or a buy
+    page (external link or Cue page). When none hold, the UI blocks the scan and
+    prompts the organizer to set a genre first (D2=A).
+    """
+    if parse_genres(getattr(event, 'genre', '')):
+        return True
+    if (getattr(event, 'description', '') or '').strip():
+        return True
+    return event_has_buy_page(event)
+
+
+def resolve_event_genres(event, *, extra_text='') -> list:
+    """The genres a scan should use, honoring the organizer's explicit choice.
+
+    An explicit ``Event.genre`` wins (the organizer set it — don't second-guess);
+    otherwise fall back to keyword auto-detection over the event's text + the
+    fetched buy page (``extra_text``). Used both offline (``extra_text=''``) for the
+    panel pre-fill and comparison baseline, and with the fetched page at scan time.
+    """
+    explicit = parse_genres(getattr(event, 'genre', ''))
+    if explicit:
+        return explicit
+    return derive_genre_hints(event, extra_text=extra_text)
 
 
 def _unavailable(reason=''):
@@ -125,15 +235,22 @@ class MarketCompetitionCalculator:
             )
             return _unavailable('missing venue/city/date')
 
-        if not getattr(settings, 'TAVILY_API_KEY', ''):
-            logger.warning(
-                "Market competition scan unavailable for event %s: TAVILY_API_KEY unset",
-                event.id,
-            )
-            return _unavailable('no search key')
-
-        genre_hints = derive_genre_hints(event) if genre_hints is None else list(genre_hints)
-        scan = scanner.scan_competitors(
+        if genre_hints is None:
+            # Auto path. An explicit Event.genre wins outright (skip the fetch —
+            # the organizer already told us). Otherwise detect from the event's
+            # text plus the fetched external buy page (D1=A). A caller-supplied
+            # override list (incl. []) skips all of this.
+            explicit = parse_genres(getattr(event, 'genre', ''))
+            if explicit:
+                genre_hints = explicit
+            else:
+                from .page_fetch import fetch_page_text
+                url = event_buy_page_url(event)
+                page_text = fetch_page_text(url) if url else ''
+                genre_hints = derive_genre_hints(event, extra_text=page_text)
+        else:
+            genre_hints = list(genre_hints)
+        scan = sources.fetch_competitors(
             self.organization, event, genre_hints,
             include_domains=include_domains, exclude_domains=exclude_domains,
         )
@@ -161,6 +278,10 @@ class MarketCompetitionCalculator:
             target, scan.competitors, undated=[], coverage=coverage,
             window_days=window_days,
         )
+        # Record exactly which genres this scan searched for, so the UI can show
+        # the (auto-detected or overridden) genres transparently and pre-fill the
+        # editable field on reload. Empty => city-wide density fallback (DO5-f).
+        result.genres = list(genre_hints)
 
         result.summary = self._generate_narrative(event, result)
         return result

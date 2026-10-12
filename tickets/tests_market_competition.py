@@ -16,10 +16,20 @@ from datetime import date, time, timedelta
 from unittest.mock import MagicMock, patch
 
 import requests
+from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
 
-from .models import AITokenUsage, Event, EventTalent, Organization, Venue
+from .models import (
+    AITokenUsage,
+    Event,
+    EventTalent,
+    Organization,
+    UserProfile,
+    Venue,
+)
 from .services.market_competition import (
     CompetitionResult,
     CompetitorEvent,
@@ -792,7 +802,8 @@ class ScanCompetitorsTests(TestCase):
 
 @override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
                    OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
-                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets')
+                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets',
+                   MARKET_COMPETITION_SOURCES='web')
 class CalculateCompetitionTests(TestCase):
     """P3 — the calculator orchestration end to end (search + LLM mocked)."""
 
@@ -919,7 +930,8 @@ class CalculateCompetitionTests(TestCase):
 
 @override_settings(TAVILY_API_KEY='test-key', OPENAI_API_KEY='test-key',
                    OPENAI_MODEL='gpt-4o', MARKET_COMPETITION_DATE_WINDOW_DAYS=3,
-                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets')
+                   MARKET_COMPETITION_PLATFORMS='eventbrite,dice,seetickets',
+                   MARKET_COMPETITION_SOURCES='web')
 class ScanEventCompetitionCommandTests(TestCase):
     """P3 — the `scan_event_competition` management command (demo surface)."""
 
@@ -1086,7 +1098,9 @@ class Phase4TaskTests(TestCase):
         with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
             self.assertEqual(
                 request_competition_scan(self.org, self.event), 'scanning')
-        delay.assert_called_once_with(str(self.event.id))
+        delay.assert_called_once_with(
+            str(self.event.id), genre_hints=None,
+            include_domains=None, exclude_domains=None)
 
     def test_inconclusive_writes_hash(self):
         # D1=A: inconclusive is a completed scan and caches within the TTL.
@@ -1131,7 +1145,9 @@ class Phase4TaskTests(TestCase):
         with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
             status = request_competition_scan(self.org, self.event)
         self.assertEqual(status, 'scanning')
-        delay.assert_called_once_with(str(self.event.id))
+        delay.assert_called_once_with(
+            str(self.event.id), genre_hints=None,
+            include_domains=None, exclude_domains=None)
 
     def test_force_overrides_freshness(self):
         from tickets.tasks import request_competition_scan
@@ -1139,7 +1155,9 @@ class Phase4TaskTests(TestCase):
         with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
             status = request_competition_scan(self.org, self.event, force=True)
         self.assertEqual(status, 'scanning')
-        delay.assert_called_once_with(str(self.event.id))
+        delay.assert_called_once_with(
+            str(self.event.id), genre_hints=None,
+            include_domains=None, exclude_domains=None)
 
     # --- daily cap (D3) --------------------------------------------------------
 
@@ -1168,7 +1186,9 @@ class Phase4TaskTests(TestCase):
         with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
             status = request_competition_scan(self.org, self.event)
         self.assertEqual(status, 'scanning')
-        delay.assert_called_once_with(str(self.event.id))
+        delay.assert_called_once_with(
+            str(self.event.id), genre_hints=None,
+            include_domains=None, exclude_domains=None)
 
     # --- in-progress lock (D4) -------------------------------------------------
 
@@ -1178,7 +1198,9 @@ class Phase4TaskTests(TestCase):
         with patch('tickets.tasks.scan_event_competition_task.delay') as delay:
             status = request_competition_scan(self.org, self.event)
         self.assertEqual(status, 'scanning')
-        delay.assert_called_once_with(str(self.event.id))
+        delay.assert_called_once_with(
+            str(self.event.id), genre_hints=None,
+            include_domains=None, exclude_domains=None)
         self.assertIsNotNone(
             django_cache.get(_competition_lock_key(self.event.id)))
 
@@ -1228,3 +1250,936 @@ class Phase4TaskTests(TestCase):
         retry.assert_called_once()
         _, kwargs = retry.call_args
         self.assertIsInstance(kwargs.get('exc'), RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — views + event-detail panel
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class Phase5ViewTests(TestCase):
+    """The scan (POST) + poll (GET) endpoints and the event-detail context.
+
+    The scan view's gate/enqueue logic lives in ``request_competition_scan``
+    (P4-tested); here we pin the *view contract* — feature-flag + org scoping +
+    status passthrough — and the poll state machine, with the trigger mocked.
+    """
+
+    SCAN_VIEW = 'tickets.views.event_competition_scan'
+    TRIGGER = 'tickets.tasks.request_competition_scan'
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='MC View Org', slug='mc-view-org',
+            market_competition_enabled=True,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='The Venue', city='Austin', state='TX',
+        )
+        # A description gives the event a genre source, so it isn't gated by the
+        # D2=A "set a genre first" prompt — the gate itself is covered separately.
+        self.event = Event.objects.create(
+            organization=self.org, name='Headliner Night', venue=self.venue,
+            start_date=date(2026, 6, 15), start_time=time(20, 0, 0),
+            description='An evening of live music.',
+        )
+        self.user = User.objects.create_user(
+            username='mcowner@test.com', email='mcowner@test.com',
+            password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='mcowner@test.com', password='pw12345')
+
+    def _scan_url(self, event=None):
+        return reverse('tickets:event_competition_scan',
+                       args=[(event or self.event).id])
+
+    def _status_url(self, event=None):
+        return reverse('tickets:event_competition_status',
+                       args=[(event or self.event).id])
+
+    def _seed_result(self, status='ready'):
+        self.event.competition_status = status
+        self.event.competition_score = 42
+        self.event.competition_label = 'Medium'
+        self.event.competition_generated_at = timezone.now()
+        self.event.competition_data = {
+            'score': 42, 'label': 'Medium', 'status': status,
+            'competitors': [{
+                'name': 'Rival Show', 'date': '2026-06-16',
+                'venue_name': 'Other Hall', 'metro_normalized': 'austin',
+                'genre': 'rock', 'platform': 'eventbrite',
+                'source_url': 'https://eventbrite.com/e/rival',
+            }],
+            'undated': [{
+                'name': 'Mystery Gig', 'date': None, 'venue_name': 'TBD',
+                'metro_normalized': 'austin', 'genre': 'rock',
+                'platform': 'dice', 'source_url': 'https://dice.fm/mystery',
+            }],
+            'counts': {'total': 2, 'same_metro': 2, 'in_window': 1,
+                       'genre_matched': 1, 'undated': 1},
+            'coverage': {'queries_total': 6, 'queries_with_results': 5,
+                         'ratio': 5 / 6},
+            'summary': 'One comparable rock show the next night.',
+            'genres': ['techno', 'house'],
+        }
+        self.event.save()
+
+    # --- scan (POST) ---------------------------------------------------------
+
+    def test_scan_requires_feature_flag(self):
+        self.org.market_competition_enabled = False
+        self.org.save()
+        resp = self.client.post(self._scan_url())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_scan_cross_org_is_404(self):
+        other_org = Organization.objects.create(name='Other', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Elsewhere', city='Dallas')
+        other_event = Event.objects.create(
+            organization=other_org, name='Not Yours', venue=other_venue,
+            start_date=date(2026, 7, 1), start_time=time(20, 0, 0))
+        resp = self.client.post(self._scan_url(other_event))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_scan_returns_trigger_status_and_enqueues_once(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            resp = self.client.post(self._scan_url())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {'status': 'scanning'})
+        trigger.assert_called_once()
+        _, kwargs = trigger.call_args
+        self.assertFalse(kwargs.get('force'))
+
+    def test_scan_capped_passthrough(self):
+        with patch(self.TRIGGER, return_value='capped'):
+            resp = self.client.post(self._scan_url())
+        self.assertEqual(resp.json(), {'status': 'capped'})
+
+    def test_scan_force_flag_threaded(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {'force': '1'})
+        _, kwargs = trigger.call_args
+        self.assertTrue(kwargs.get('force'))
+
+    def test_scan_genre_override_threaded_and_forces(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {'genres': 'Techno, House'})
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('genre_hints'), ['techno', 'house'])
+        # A genre override is a deliberate re-scan => bypass the freshness gate.
+        self.assertTrue(kwargs.get('force'))
+
+    def test_scan_without_genres_auto_derives(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url())
+        _, kwargs = trigger.call_args
+        self.assertIsNone(kwargs.get('genre_hints'))
+        self.assertFalse(kwargs.get('force'))
+
+    def test_scan_blank_genres_matches_empty_derivation(self):
+        # The test event derives no genres, so a blank field == the auto-detected
+        # baseline => treated as a plain auto scan (no override, cache respected).
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {'genres': '  ,  '})
+        _, kwargs = trigger.call_args
+        self.assertIsNone(kwargs.get('genre_hints'))
+        self.assertFalse(kwargs.get('force'))
+
+    def test_scan_unchanged_auto_genres_not_an_override(self):
+        # Event whose name auto-detects a genre; submitting that same genre means
+        # the organizer agreed => behaves like an auto scan (no force).
+        techno = Event.objects.create(
+            organization=self.org, name='Techno Night', venue=self.venue,
+            start_date=date(2026, 8, 1), start_time=time(21, 0, 0),
+            description='Doors at 9.')
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(techno), {'genres': 'techno'})
+        _, kwargs = trigger.call_args
+        self.assertIsNone(kwargs.get('genre_hints'))
+        self.assertFalse(kwargs.get('force'))
+
+    def test_scan_edited_genres_are_an_override(self):
+        techno = Event.objects.create(
+            organization=self.org, name='Techno Night', venue=self.venue,
+            start_date=date(2026, 8, 1), start_time=time(21, 0, 0),
+            description='Doors at 9.')
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(techno), {'genres': 'house'})
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('genre_hints'), ['house'])
+        self.assertTrue(kwargs.get('force'))
+
+    def test_scan_cleared_genres_force_city_wide(self):
+        # Clearing a pre-filled field differs from the derived baseline => an
+        # explicit empty override that forces the city-wide density fallback.
+        techno = Event.objects.create(
+            organization=self.org, name='Techno Night', venue=self.venue,
+            start_date=date(2026, 8, 1), start_time=time(21, 0, 0),
+            description='Doors at 9.')
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(techno), {'genres': ''})
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('genre_hints'), [])
+        self.assertTrue(kwargs.get('force'))
+
+    def test_genre_parser_dedupes_caps_and_lowercases(self):
+        from tickets.views import _parse_competition_genres, _COMPETITION_MAX_GENRES
+        self.assertEqual(_parse_competition_genres(''), [])
+        self.assertEqual(_parse_competition_genres(None), [])
+        self.assertEqual(
+            _parse_competition_genres('Rock, rock, POP'), ['rock', 'pop'])
+        many = ','.join('g%d' % i for i in range(20))
+        self.assertEqual(
+            len(_parse_competition_genres(many)), _COMPETITION_MAX_GENRES)
+
+    def test_panel_renders_genre_chips(self):
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertContains(resp, 'id="competition-genre-chips"')
+        # No free-text genre input — predefined options only.
+        self.assertNotContains(resp, 'id="competition-genres"')
+
+    def test_panel_renders_all_genre_options(self):
+        from tickets.services.market_competition import genre_options
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        # Every canonical genre is offered as a selectable chip (one checkbox each).
+        self.assertEqual(resp.context['competition_genre_options'], genre_options())
+        self.assertContains(
+            resp, 'name="competition-genre"', count=len(genre_options()))
+        self.assertContains(resp, '>techno</label>')
+
+    def test_panel_preselects_auto_detected_genres(self):
+        techno = Event.objects.create(
+            organization=self.org, name='Techno Night', venue=self.venue,
+            start_date=date(2026, 8, 1), start_time=time(21, 0, 0),
+            description='Doors at 9.')
+        resp = self.client.get(reverse('tickets:event_detail', args=[techno.id]))
+        self.assertEqual(resp.context['competition_genre_selected'], ['techno'])
+
+    def test_panel_no_detection_leaves_options_unselected(self):
+        # Event with a description but no genre word => nothing pre-selected, but
+        # the organizer can still pick from the full option list.
+        plain = Event.objects.create(
+            organization=self.org, name='Familiar Faces', venue=self.venue,
+            start_date=date(2026, 8, 5), start_time=time(21, 0, 0),
+            description='On sale now. Follow us for the lineup.')
+        resp = self.client.get(reverse('tickets:event_detail', args=[plain.id]))
+        self.assertEqual(resp.context['competition_genre_selected'], [])
+        self.assertTrue(resp.context['competition_genre_options'])  # still offered
+
+    def test_panel_preselects_last_scanned_genres(self):
+        self._seed_result('ready')
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        # _seed_result stored genres=['techno','house']; both chips pre-selected.
+        self.assertEqual(
+            resp.context['competition_genre_selected'], ['techno', 'house'])
+
+    def test_panel_ignores_non_option_genres(self):
+        # A custom Event.genre value outside the predefined list is not offered as
+        # a chip and is not pre-selected (only predefined options are selectable).
+        bare = Event.objects.create(
+            organization=self.org, name='Weird Fest', venue=self.venue,
+            start_date=date(2026, 8, 6), start_time=time(21, 0, 0),
+            description='x', genre='techno, polka')  # polka isn't a canonical option
+        resp = self.client.get(reverse('tickets:event_detail', args=[bare.id]))
+        self.assertEqual(resp.context['competition_genre_selected'], ['techno'])
+        self.assertNotIn('competition_genre_custom', resp.context)
+        self.assertNotContains(resp, '>polka</label>')
+
+    def test_scan_drops_non_option_genres(self):
+        # Even a direct POST with an off-list genre keeps only predefined options.
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {'genres': 'techno, polka'})
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('genre_hints'), ['techno'])
+
+    # --- domain scoping ------------------------------------------------------
+
+    def test_domain_parser_extracts_hosts(self):
+        from tickets.views import _parse_competition_domains, _COMPETITION_MAX_DOMAINS
+        self.assertEqual(_parse_competition_domains(''), [])
+        self.assertEqual(
+            _parse_competition_domains('https://Eventbrite.com/e/x, dice.fm , dice.fm'),
+            ['eventbrite.com', 'dice.fm'])
+        many = ','.join('d%d.com' % i for i in range(40))
+        self.assertEqual(
+            len(_parse_competition_domains(many)), _COMPETITION_MAX_DOMAINS)
+
+    @override_settings(MARKET_COMPETITION_INCLUDE_DOMAINS='',
+                       MARKET_COMPETITION_EXCLUDE_DOMAINS='')
+    def test_scan_threads_domains_and_forces(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {
+                'include_domains': 'eventbrite.com, dice.fm',
+                'exclude_domains': 'ticketmaster.com',
+            })
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('include_domains'), ['eventbrite.com', 'dice.fm'])
+        self.assertEqual(kwargs.get('exclude_domains'), ['ticketmaster.com'])
+        # Domains differ from the (empty) defaults => an explicit re-scan.
+        self.assertTrue(kwargs.get('force'))
+
+    @override_settings(MARKET_COMPETITION_INCLUDE_DOMAINS='eventbrite.com',
+                       MARKET_COMPETITION_EXCLUDE_DOMAINS='')
+    def test_scan_keeping_default_domains_not_forced(self):
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            self.client.post(self._scan_url(), {
+                'include_domains': 'eventbrite.com',  # == the default
+                'exclude_domains': '',
+            })
+        _, kwargs = trigger.call_args
+        self.assertEqual(kwargs.get('include_domains'), ['eventbrite.com'])
+        self.assertEqual(kwargs.get('exclude_domains'), [])
+        self.assertFalse(kwargs.get('force'))
+
+    @override_settings(MARKET_COMPETITION_INCLUDE_DOMAINS='eventbrite.com,dice.fm',
+                       MARKET_COMPETITION_EXCLUDE_DOMAINS='ticketmaster.com',
+                       MARKET_COMPETITION_SOURCES='web')
+    def test_panel_prefills_domain_defaults(self):
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertEqual(resp.context['competition_include_domains'],
+                         'eventbrite.com, dice.fm')
+        self.assertEqual(resp.context['competition_exclude_domains'],
+                         'ticketmaster.com')
+        self.assertContains(resp, 'id="competition-include-domains"')
+        self.assertContains(resp, 'id="competition-exclude-domains"')
+
+    def test_domain_controls_hidden_when_posh_only(self):
+        with override_settings(MARKET_COMPETITION_SOURCES='posh'):
+            resp = self.client.get(reverse('tickets:event_detail',
+                                           args=[self.event.id]))
+        self.assertFalse(resp.context['competition_domain_controls'])
+        self.assertNotContains(resp, 'id="competition-include-domains"')
+
+    def test_status_payload_includes_genres(self):
+        self._seed_result('ready')
+        data = self.client.get(self._status_url()).json()
+        self.assertEqual(data['genres'], ['techno', 'house'])
+
+    def test_scan_rejects_get(self):
+        resp = self.client.get(self._scan_url())
+        self.assertEqual(resp.status_code, 405)
+
+    # --- poll (GET) ----------------------------------------------------------
+
+    def test_status_idle_when_never_scanned(self):
+        resp = self.client.get(self._status_url())
+        self.assertEqual(resp.json(), {'status': 'idle'})
+
+    def test_status_scanning_when_lock_held(self):
+        from django.core.cache import cache as django_cache
+        from tickets.tasks import _competition_lock_key
+        django_cache.add(_competition_lock_key(self.event.id), 1, 300)
+        resp = self.client.get(self._status_url())
+        self.assertEqual(resp.json(), {'status': 'scanning'})
+
+    def test_status_ready_returns_payload(self):
+        self._seed_result('ready')
+        data = self.client.get(self._status_url()).json()
+        self.assertEqual(data['status'], 'ready')
+        self.assertEqual(data['counts']['genre_matched'], 1)
+        self.assertEqual(len(data['competitors']), 1)
+        self.assertEqual(len(data['undated']), 1)
+        self.assertEqual(data['coverage']['queries_with_results'], 5)
+        self.assertEqual(data['summary'],
+                         'One comparable rock show the next night.')
+        self.assertIsNotNone(data['generated_at'])
+
+    @override_settings(MARKET_COMPETITION_SHOW_SCORE=False)
+    def test_status_payload_hides_score_by_default(self):
+        self._seed_result('ready')
+        data = self.client.get(self._status_url()).json()
+        self.assertFalse(data['show_score'])
+        # The numeric value still rides in the payload; the panel gates display.
+        self.assertEqual(data['score'], 42)
+
+    @override_settings(MARKET_COMPETITION_SHOW_SCORE=True)
+    def test_status_payload_shows_score_when_gate_open(self):
+        self._seed_result('ready')
+        data = self.client.get(self._status_url()).json()
+        self.assertTrue(data['show_score'])
+
+    def test_status_unavailable_distinct_from_ready_zero(self):
+        self._seed_result('unavailable')
+        data = self.client.get(self._status_url()).json()
+        self.assertEqual(data['status'], 'unavailable')
+
+    def test_status_inconclusive_distinct_from_ready_zero(self):
+        self._seed_result('inconclusive')
+        data = self.client.get(self._status_url()).json()
+        self.assertEqual(data['status'], 'inconclusive')
+
+    def test_status_requires_feature_flag(self):
+        self.org.market_competition_enabled = False
+        self.org.save()
+        resp = self.client.get(self._status_url())
+        self.assertEqual(resp.status_code, 404)
+
+    # --- event_detail context + panel ---------------------------------------
+
+    def test_event_detail_carries_cached_payload(self):
+        self._seed_result('ready')
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.context['competition_payload']
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload['status'], 'ready')
+        self.assertFalse(resp.context['competition_show_score'])
+
+    def test_event_detail_payload_none_when_never_scanned(self):
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertIsNone(resp.context['competition_payload'])
+
+    def test_panel_hidden_when_flag_off(self):
+        self.org.market_competition_enabled = False
+        self.org.save()
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertNotContains(resp, 'id="competition-card"')
+
+    def test_panel_shown_when_flag_on(self):
+        resp = self.client.get(reverse('tickets:event_detail',
+                                       args=[self.event.id]))
+        self.assertContains(resp, 'id="competition-card"')
+
+    # --- role gating ---------------------------------------------------------
+
+    def test_attendee_redirected_from_scan(self):
+        attendee = User.objects.create_user(
+            username='att@test.com', email='att@test.com', password='pw12345')
+        UserProfile.objects.create(
+            user=attendee, organization=self.org,
+            role=UserProfile.Role.ATTENDEE)
+        c = Client()
+        c.login(username='att@test.com', password='pw12345')
+        resp = c.post(self._scan_url())
+        self.assertEqual(resp.status_code, 302)
+
+    # --- genre-source gate (D2=A) --------------------------------------------
+
+    def _bare_external_event(self):
+        # External, no description, no ticket_link, no genre => no genre source.
+        from tickets.models import TICKETING_TYPE_EXTERNAL
+        return Event.objects.create(
+            organization=self.org, name='Mystery Show', venue=self.venue,
+            start_date=date(2026, 9, 1), start_time=time(20, 0, 0),
+            ticketing_type=TICKETING_TYPE_EXTERNAL)
+
+    def test_scan_blocked_when_no_genre_source(self):
+        bare = self._bare_external_event()
+        with patch(self.TRIGGER, return_value='scanning') as trigger:
+            resp = self.client.post(self._scan_url(bare))
+        self.assertEqual(resp.json(), {'status': 'needs_genre'})
+        trigger.assert_not_called()
+
+    def test_panel_prompts_to_set_genre_when_no_source(self):
+        bare = self._bare_external_event()
+        resp = self.client.get(reverse('tickets:event_detail', args=[bare.id]))
+        self.assertTrue(resp.context['competition_needs_genre'])
+        self.assertContains(resp, 'Set a genre')
+        self.assertContains(
+            resp, reverse('tickets:event_edit', args=[bare.id]))
+        # Scan controls are not rendered while blocked.
+        self.assertNotContains(resp, 'id="competition-genres"')
+
+    def test_set_genre_unblocks_the_tool(self):
+        bare = self._bare_external_event()
+        bare.genre = 'techno'
+        bare.save()
+        resp = self.client.get(reverse('tickets:event_detail', args=[bare.id]))
+        self.assertFalse(resp.context['competition_needs_genre'])
+        self.assertContains(resp, 'id="competition-genre-chips"')
+        self.assertEqual(resp.context['competition_genre_selected'], ['techno'])
+
+    def test_direct_event_never_blocked(self):
+        from tickets.models import TICKETING_TYPE_DIRECT
+        direct = Event.objects.create(
+            organization=self.org, name='House Party', venue=self.venue,
+            start_date=date(2026, 9, 2), start_time=time(20, 0, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT)  # Cue buy page always exists
+        resp = self.client.get(reverse('tickets:event_detail', args=[direct.id]))
+        self.assertFalse(resp.context['competition_needs_genre'])
+
+    def test_external_event_with_ticket_link_not_blocked(self):
+        from tickets.models import TICKETING_TYPE_EXTERNAL
+        linked = Event.objects.create(
+            organization=self.org, name='Linked Show', venue=self.venue,
+            start_date=date(2026, 9, 3), start_time=time(20, 0, 0),
+            ticketing_type=TICKETING_TYPE_EXTERNAL,
+            ticket_link='https://eventbrite.com/e/linked')
+        resp = self.client.get(reverse('tickets:event_detail', args=[linked.id]))
+        self.assertFalse(resp.context['competition_needs_genre'])
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — genre sources: description/buy-page detection + gate (D1/D2/D3/D4)
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class GenreSourceServiceTests(TestCase):
+    """The service helpers behind the transparent genre field + the D2=A gate."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org = Organization.objects.create(name='Gen Org', slug='gen-org')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Hall', city='Austin', state='TX')
+
+    def _event(self, **kw):
+        from tickets.models import TICKETING_TYPE_EXTERNAL
+        defaults = dict(
+            organization=self.org, name='Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+            ticketing_type=TICKETING_TYPE_EXTERNAL)
+        defaults.update(kw)
+        return Event.objects.create(**defaults)
+
+    def test_parse_genres_normalizes(self):
+        from tickets.services.market_competition import parse_genres
+        self.assertEqual(parse_genres('  Techno , techno, HOUSE '),
+                         ['techno', 'house'])
+        self.assertEqual(parse_genres(''), [])
+        self.assertEqual(len(parse_genres(','.join(str(i) for i in range(20)),
+                                          max_genres=3)), 3)
+
+    def test_genre_keywords_match_on_word_boundaries(self):
+        from tickets.services.market_competition.calculator import genres_in_text
+        # Mid-word collisions must NOT trigger a genre (the posh "edm"-from-"travel"
+        # and "rap"-from-"photography" bug).
+        self.assertEqual(genres_in_text('due to travel complications'), [])
+        self.assertEqual(genres_in_text('event photography and video notice'), [])
+        # Real genre words still match, including legit plurals.
+        self.assertEqual(genres_in_text('dj sets by tba'), ['dj'])
+        self.assertEqual(
+            genres_in_text('hip-hop r&b dancehall afrobeats'),
+            ['hip-hop', 'r&b', 'afrobeats', 'dancehall'])  # dancehall is its own genre
+
+    def test_derive_uses_extra_text(self):
+        from tickets.services.market_competition import derive_genre_hints
+        ev = self._event(name='Untitled')  # name alone => nothing
+        self.assertEqual(derive_genre_hints(ev), [])
+        self.assertEqual(
+            derive_genre_hints(ev, extra_text='A night of deep house music'),
+            ['house'])
+
+    def test_resolve_prefers_explicit_genre(self):
+        from tickets.services.market_competition import resolve_event_genres
+        ev = self._event(name='Techno Night', genre='jazz, soul')
+        # Explicit Event.genre wins over what the name would auto-detect.
+        self.assertEqual(resolve_event_genres(ev), ['jazz', 'soul'])
+
+    def test_resolve_falls_back_to_detection(self):
+        from tickets.services.market_competition import resolve_event_genres
+        ev = self._event(name='Techno Night')
+        self.assertEqual(resolve_event_genres(ev), ['techno'])
+        self.assertEqual(
+            resolve_event_genres(ev, extra_text='country bluegrass'),
+            ['techno', 'country'])
+
+    def test_has_genre_source_matrix(self):
+        from tickets.models import TICKETING_TYPE_DIRECT
+        from tickets.services.market_competition import event_has_genre_source
+        self.assertFalse(event_has_genre_source(self._event()))  # bare external
+        self.assertTrue(event_has_genre_source(self._event(description='x')))
+        self.assertTrue(event_has_genre_source(self._event(genre='techno')))
+        self.assertTrue(event_has_genre_source(
+            self._event(ticket_link='https://eventbrite.com/e/x')))
+        self.assertTrue(event_has_genre_source(
+            self._event(ticketing_type=TICKETING_TYPE_DIRECT)))
+
+    def test_buy_page_url_external_only(self):
+        from tickets.models import TICKETING_TYPE_DIRECT
+        from tickets.services.market_competition import event_buy_page_url
+        self.assertEqual(
+            event_buy_page_url(self._event(ticket_link='https://dice.fm/e/x')),
+            'https://dice.fm/e/x')
+        # We never fetch our own Cue-hosted direct page.
+        self.assertEqual(
+            event_buy_page_url(self._event(ticketing_type=TICKETING_TYPE_DIRECT)),
+            '')
+
+    def test_input_hash_includes_genre(self):
+        from tickets.services.market_competition import compute_input_hash
+        ev = self._event()
+        before = compute_input_hash(ev)
+        ev.genre = 'techno'
+        self.assertNotEqual(compute_input_hash(ev), before)
+
+
+@override_settings(CACHES=LOCMEM_CACHE, DEBUG=False)
+class BuyPageFetchTests(TestCase):
+    """The SSRF-guarded, cached, fail-silent buy-page probe (D1=A)."""
+
+    FETCH = 'tickets.services.market_competition.page_fetch.requests.get'
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _resp(self, *, status=200, ctype='text/html', body=b'<html>x</html>'):
+        r = MagicMock()
+        r.raise_for_status.return_value = None
+        r.headers = {'Content-Type': ctype}
+        r.content = body
+        r.encoding = 'utf-8'
+        if status >= 400:
+            r.raise_for_status.side_effect = requests.HTTPError('boom')
+        return r
+
+    def test_success_strips_tags(self):
+        from tickets.services.market_competition.page_fetch import fetch_page_text
+        html = b'<html><head><title>Techno Rave</title></head><body>' \
+               b'<script>var x=1</script><p>Deep house all night</p></body></html>'
+        with patch(self.FETCH, return_value=self._resp(body=html)):
+            text = fetch_page_text('https://eventbrite.com/e/x')
+        self.assertIn('Techno Rave', text)
+        self.assertIn('Deep house all night', text)
+        self.assertNotIn('var x=1', text)  # script stripped
+
+    def test_blocks_ssrf_url(self):
+        from tickets.services.market_competition.page_fetch import fetch_page_text
+        with patch(self.FETCH) as get:
+            self.assertEqual(fetch_page_text('http://169.254.169.254/latest'), '')
+            get.assert_not_called()  # blocked before any request
+
+    def test_non_html_returns_empty(self):
+        from tickets.services.market_competition.page_fetch import fetch_page_text
+        with patch(self.FETCH, return_value=self._resp(ctype='application/pdf')):
+            self.assertEqual(fetch_page_text('https://eventbrite.com/x.pdf'), '')
+
+    def test_timeout_returns_empty(self):
+        from tickets.services.market_competition.page_fetch import fetch_page_text
+        with patch(self.FETCH, side_effect=requests.Timeout('slow')):
+            self.assertEqual(fetch_page_text('https://eventbrite.com/e/x'), '')
+
+    def test_caches_result(self):
+        from tickets.services.market_competition.page_fetch import fetch_page_text
+        html = b'<html><body>jazz quartet</body></html>'
+        with patch(self.FETCH, return_value=self._resp(body=html)) as get:
+            fetch_page_text('https://eventbrite.com/e/x')
+            fetch_page_text('https://eventbrite.com/e/x')
+        self.assertEqual(get.call_count, 1)  # second call served from cache
+
+
+@override_settings(CACHES=LOCMEM_CACHE, TAVILY_API_KEY='k',
+                   MARKET_COMPETITION_SOURCES='web')
+class CalculatorGenreWiringTests(TestCase):
+    """calculate() resolves Event.genre / the fetched buy page into the scan."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Calc Org', slug='calc-org')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Hall', city='Austin', state='TX')
+
+    def _event(self, **kw):
+        from tickets.models import TICKETING_TYPE_EXTERNAL
+        defaults = dict(
+            organization=self.org, name='Untitled Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+            ticketing_type=TICKETING_TYPE_EXTERNAL)
+        defaults.update(kw)
+        return Event.objects.create(**defaults)
+
+    def _run_capture(self, event):
+        """Call calculate() with the scan stubbed; return the genre_hints used."""
+        from tickets.services.market_competition import calculate_event_competition
+        stub = ScanResult(competitors=[], target_metro_normalized='',
+                          coverage={'queries_total': 0, 'queries_with_results': 0,
+                                    'ratio': 1.0}, ok=False)
+        with patch('tickets.services.market_competition.scanner.scan_competitors',
+                   return_value=stub) as scan:
+            calculate_event_competition(self.org, event)
+        return scan.call_args[0][2]  # 3rd positional arg: genre_hints
+
+    def test_explicit_genre_used(self):
+        ev = self._event(genre='jazz', ticket_link='https://eventbrite.com/e/x')
+        with patch('tickets.services.market_competition.page_fetch.fetch_page_text') as f:
+            hints = self._run_capture(ev)
+        self.assertEqual(hints, ['jazz'])
+        f.assert_not_called()  # explicit genre => no need to fetch the page
+
+    def test_buy_page_feeds_detection(self):
+        ev = self._event(ticket_link='https://eventbrite.com/e/x')
+        with patch('tickets.services.market_competition.page_fetch.fetch_page_text',
+                   return_value='Underground techno warehouse rave') as f:
+            hints = self._run_capture(ev)
+        f.assert_called_once_with('https://eventbrite.com/e/x')
+        self.assertIn('techno', hints)
+
+
+# ---------------------------------------------------------------------------
+# posh.vip source + multi-source fan-out (D1=B)
+# ---------------------------------------------------------------------------
+
+def _posh_item(title, start, venue="The Mayan", city="Los Angeles",
+               url="https://posh.vip/e/x", desc=""):
+    return {
+        "eventTitle": title,
+        "startDateTime": start,          # ISO string or None
+        "venueName": venue,
+        "city": city,
+        "eventUrl": url,
+        "description": desc,
+    }
+
+
+@override_settings(CACHES=LOCMEM_CACHE, APIFY_TOKEN="tok",
+                   MARKET_COMPETITION_SOURCES="posh")
+class PoshVipSourceTests(TestCase):
+    """The posh.vip Apify source — mapping, genre, dedupe, coverage (LLM-free)."""
+
+    FETCH = "tickets.services.market_competition.sources.fetch_posh_events"
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Posh Org", slug="posh-org")
+        self.venue = Venue.objects.create(
+            organization=self.org, name="The Echo", city="Los Angeles", state="CA")
+        self.event = Event.objects.create(
+            organization=self.org, name="Bloom", venue=self.venue,
+            start_date=date(2026, 10, 25), end_date=date(2026, 10, 25),
+            start_time=time(21, 0, 0))
+
+    def _fetch(self, items):
+        from tickets.services.market_competition.sources import PoshVipSource
+        with patch(self.FETCH, return_value=items) as f:
+            res = PoshVipSource().fetch(self.org, self.event, ["r&b"])
+        return res, f
+
+    def test_maps_fields_and_infers_genre(self):
+        items = [
+            _posh_item("Deep House Rooftop", "2026-10-26T22:00:00",
+                       venue="Exchange", url="https://posh.vip/e/dh"),
+            _posh_item("CLUB OVO - DRAKE NIGHT", "2026-10-23T22:00:00"),
+        ]
+        res, _ = self._fetch(items)
+        self.assertTrue(res.ok)
+        self.assertEqual(res.target_metro_normalized, "los angeles")
+        by_name = {c.name: c for c in res.competitors}
+        self.assertEqual(by_name["Deep House Rooftop"].genre, "house")
+        self.assertEqual(by_name["Deep House Rooftop"].platform, "posh")
+        self.assertEqual(by_name["Deep House Rooftop"].date, date(2026, 10, 26))
+        self.assertEqual(by_name["Deep House Rooftop"].metro_normalized, "los angeles")
+        # Branded title with no genre word => empty genre (keyword-only, by design).
+        self.assertEqual(by_name["CLUB OVO - DRAKE NIGHT"].genre, "")
+
+    def test_when_maps_from_target_date(self):
+        from django.utils import timezone
+        soon = timezone.localdate() + timedelta(days=3)
+        far = timezone.localdate() + timedelta(days=40)
+        for d, expected in ((soon, "This Week"), (far, "This Month")):
+            self.event.start_date = d
+            self.event.end_date = d
+            self.event.save()
+            with patch(self.FETCH, return_value=[]) as f:
+                from tickets.services.market_competition.sources import PoshVipSource
+                PoshVipSource().fetch(self.org, self.event, [])
+            _, kwargs = f.call_args
+            self.assertEqual(f.call_args[0][1], expected)
+
+    def test_self_exclusion_and_dedupe(self):
+        items = [
+            _posh_item("Bloom", "2026-10-25T21:00:00", venue="The Echo"),   # the target
+            _posh_item("Rival", "2026-10-25T21:00:00", venue="Club A"),
+            _posh_item("Rival", "2026-10-25T21:00:00", venue="Club A"),      # dupe
+        ]
+        res, _ = self._fetch(items)
+        names = [c.name for c in res.competitors]
+        self.assertEqual(names, ["Rival"])  # target excluded, dupe collapsed
+
+    def test_undated_event_kept_with_none_date(self):
+        res, _ = self._fetch([_posh_item("Mystery", None)])
+        self.assertEqual(res.competitors[0].date, None)
+
+    def test_utc_datetime_converted_to_local_date(self):
+        from tickets.services.market_competition.sources import _posh_local_date
+        # 04:00 UTC on Oct 24 is 21:00 Pacific on Oct 23 (the real event night).
+        self.assertEqual(
+            _posh_local_date('2026-10-24T04:00:00.000Z', 'America/Los_Angeles'),
+            date(2026, 10, 23))
+        # End-to-end: the mapped competitor date is the local date, not the UTC one.
+        item = _posh_item('Familiar Faces: LA', '2026-10-24T04:00:00.000Z')
+        item['timezone'] = 'America/Los_Angeles'
+        res, _ = self._fetch([item])
+        self.assertEqual(res.competitors[0].date, date(2026, 10, 23))
+
+    def test_unavailable_when_fetch_fails(self):
+        from tickets.services.market_competition.sources import PoshVipSource
+        with patch(self.FETCH, return_value=None):  # no token / provider error
+            res = PoshVipSource().fetch(self.org, self.event, [])
+        self.assertFalse(res.ok)
+
+    def test_unavailable_without_city(self):
+        from tickets.services.market_competition.sources import PoshVipSource
+        self.venue.city = ""
+        self.venue.save()
+        with patch(self.FETCH) as f:
+            res = PoshVipSource().fetch(self.org, self.event, [])
+        f.assert_not_called()
+        self.assertFalse(res.ok)
+
+    def test_coverage_zero_when_feed_misses_target_date(self):
+        # Feed only has events well before the target => not a trustworthy "clear".
+        res, _ = self._fetch([_posh_item("Old Thing", "2026-09-01T21:00:00")])
+        self.assertEqual(res.coverage["queries_with_results"], 0)
+
+    def test_coverage_hit_when_feed_reaches_target(self):
+        res, _ = self._fetch([_posh_item("On Target", "2026-10-25T21:00:00")])
+        self.assertEqual(res.coverage["queries_with_results"], 1)
+
+    def test_calculate_end_to_end_with_posh(self):
+        # Full calculator path on posh only — no TAVILY/OpenAI extraction needed.
+        from tickets.services.market_competition import calculate_event_competition
+        items = [_posh_item("R&B Night", "2026-10-26T21:00:00", desc="soul and r&b")]
+        llm = MagicMock()
+        llm.invoke.return_value = MagicMock(
+            content="n", usage_metadata={"input_tokens": 1, "output_tokens": 1,
+                                         "total_tokens": 2})
+        with patch(self.FETCH, return_value=items), \
+                patch("langchain_openai.ChatOpenAI", return_value=llm):
+            result = calculate_event_competition(self.org, self.event)
+        self.assertEqual(result.status, "ready")
+        self.assertEqual([c.name for c in result.competitors], ["R&B Night"])
+
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class SourceRegistryTests(TestCase):
+    def test_default_is_posh(self):
+        from tickets.services.market_competition.sources import (
+            get_active_sources, PoshVipSource)
+        with override_settings(MARKET_COMPETITION_SOURCES="posh"):
+            srcs = get_active_sources()
+        self.assertEqual([type(s) for s in srcs], [PoshVipSource])
+
+    def test_web_and_unknown(self):
+        from tickets.services.market_competition.sources import (
+            get_active_sources, WebSearchSource, PoshVipSource)
+        with override_settings(MARKET_COMPETITION_SOURCES="web,bogus"):
+            srcs = get_active_sources()
+        self.assertEqual([type(s) for s in srcs], [WebSearchSource])
+        with override_settings(MARKET_COMPETITION_SOURCES=""):
+            srcs = get_active_sources()  # empty => posh fallback
+        self.assertEqual([type(s) for s in srcs], [PoshVipSource])
+
+    def test_fan_out_merges_and_dedupes(self):
+        from tickets.services.market_competition import sources as S
+        org = Organization.objects.create(name="FO", slug="fo-org")
+        venue = Venue.objects.create(organization=org, name="V", city="LA")
+        event = Event.objects.create(
+            organization=org, name="T", venue=venue,
+            start_date=date(2026, 10, 25), start_time=time(20, 0, 0))
+
+        shared = CompetitorEvent(name="Same", date=date(2026, 10, 25),
+                                 venue_name="X", metro_normalized="la",
+                                 genre="", platform="posh", source_url="u")
+        posh_res = ScanResult(competitors=[shared],
+                              target_metro_normalized="la",
+                              coverage={"queries_total": 1, "queries_with_results": 1,
+                                        "ratio": 1.0}, ok=True)
+        web_res = ScanResult(
+            competitors=[shared, CompetitorEvent(
+                name="WebOnly", date=date(2026, 10, 25), venue_name="Y",
+                metro_normalized="la", genre="", platform="web", source_url="u2")],
+            target_metro_normalized="la",
+            coverage={"queries_total": 4, "queries_with_results": 2, "ratio": 0.5},
+            ok=True)
+        with override_settings(MARKET_COMPETITION_SOURCES="posh,web"), \
+                patch.object(S.PoshVipSource, "fetch", return_value=posh_res), \
+                patch.object(S.WebSearchSource, "fetch", return_value=web_res):
+            merged = S.fetch_competitors(org, event, [])
+        names = sorted(c.name for c in merged.competitors)
+        self.assertEqual(names, ["Same", "WebOnly"])  # shared collapsed across sources
+        self.assertTrue(merged.ok)
+        self.assertEqual(merged.coverage["queries_total"], 5)
+
+
+@override_settings(CACHES=LOCMEM_CACHE, APIFY_TOKEN="tok",
+                   MARKET_COMPETITION_POSH_MAX_EVENTS=300)
+class ApifyClientTests(TestCase):
+    """The posh.vip Apify HTTP wrapper."""
+
+    POST = "tickets.services.market_competition.apify_client.requests.post"
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def test_sends_maxitems_query_param(self):
+        # Pay-per-result run-sync requires maxItems (caps results + reserved charge).
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        resp = MagicMock(status_code=200)
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = [{"eventTitle": "X"}]
+        with patch(self.POST, return_value=resp) as post:
+            out = fetch_posh_events("Los Angeles", "This Month")
+        self.assertEqual(out, [{"eventTitle": "X"}])
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs["params"]["maxItems"], 300)
+
+    def test_none_without_token(self):
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        with override_settings(APIFY_TOKEN=""):
+            self.assertIsNone(fetch_posh_events("LA", "This Month"))
+
+    def _ok_resp(self, items=None):
+        resp = MagicMock(status_code=200)
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = items if items is not None else [{"eventTitle": "X"}]
+        return resp
+
+    def test_feed_is_cached_across_calls(self):
+        # Cost efficiency: a second scan of the same (city, window) reuses the paid
+        # fetch instead of re-charging Apify.
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        with patch(self.POST, return_value=self._ok_resp()) as post:
+            fetch_posh_events("Los Angeles", "This Month")
+            fetch_posh_events("Los Angeles", "This Month")
+        self.assertEqual(post.call_count, 1)  # second served from cache
+
+    def test_db_cache_survives_cache_clear(self):
+        # The whole point of the durable cache: a dev autoreload / Redis eviction
+        # (simulated by clearing the django cache) must NOT cause a re-charge.
+        from django.core.cache import cache as django_cache
+        from tickets.models import MarketCompetitionFeedCache
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        with patch(self.POST, return_value=self._ok_resp()) as post:
+            fetch_posh_events("Los Angeles", "This Month")
+            django_cache.clear()  # wipe the ephemeral cache (reload/eviction)
+            out = fetch_posh_events("Los Angeles", "This Month")
+        self.assertEqual(post.call_count, 1)  # DB served the second call
+        self.assertEqual(out, [{"eventTitle": "X"}])
+        self.assertEqual(MarketCompetitionFeedCache.objects.count(), 1)
+
+    def test_stale_db_entry_refetches(self):
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        with patch(self.POST, return_value=self._ok_resp()) as post:
+            with override_settings(MARKET_COMPETITION_POSH_CACHE_TTL=3600):
+                fetch_posh_events("Los Angeles", "This Month")
+            with override_settings(MARKET_COMPETITION_POSH_CACHE_TTL=0):
+                fetch_posh_events("Los Angeles", "This Month")  # TTL=0 => stale
+        self.assertEqual(post.call_count, 2)
+
+    def test_http_error_returns_none_and_logs_body(self):
+        from tickets.services.market_competition.apify_client import fetch_posh_events
+        resp = MagicMock(status_code=400)
+        resp.text = '{"error":{"type":"max-items-must-be-greater-than-zero"}}'
+        resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
+        with patch(self.POST, return_value=resp), \
+                self.assertLogs("tickets.services.market_competition.apify_client",
+                                level="WARNING") as logs:
+            out = fetch_posh_events("LA", "This Month")
+        self.assertIsNone(out)
+        self.assertTrue(any("max-items-must-be-greater-than-zero" in m for m in logs.output))
