@@ -493,6 +493,35 @@ MARKET_COMPETITION_RESULT_TTL_DAYS = int(
 MARKET_COMPETITION_DAILY_SCAN_CAP = int(
     os.environ.get('MARKET_COMPETITION_DAILY_SCAN_CAP', '50')
 )
+# Numeric-score display gate (DO1 / P6). The 0-100 score is computed and
+# persisted, but the event-detail panel shows only the competitor list + coarse
+# count + coverage + Low/Med/High label until the P6 eval clears the precision
+# bar. Flip to True once the eval demonstrates extraction is trustworthy.
+MARKET_COMPETITION_SHOW_SCORE = (
+    os.environ.get('MARKET_COMPETITION_SHOW_SCORE', 'False').lower() == 'true'
+)
+# Active competitor-event sources, comma-separated (D1=B). Default: the posh.vip
+# scraper only — enumerable structured data beats web-search's ranked sample.
+# Add 'web' to also run the Tavily+LLM source; order doesn't matter (results merge).
+MARKET_COMPETITION_SOURCES = os.environ.get('MARKET_COMPETITION_SOURCES', 'posh')
+# posh.vip source (Apify hypebridge/posh-vip actor) — needs APIFY_TOKEN.
+APIFY_TOKEN = os.environ.get('APIFY_TOKEN', '')
+MARKET_COMPETITION_POSH_ACTOR = os.environ.get(
+    'MARKET_COMPETITION_POSH_ACTOR', 'hypebridge~posh-vip'
+)
+MARKET_COMPETITION_POSH_MAX_EVENTS = int(
+    os.environ.get('MARKET_COMPETITION_POSH_MAX_EVENTS', '500')
+)
+MARKET_COMPETITION_POSH_TIMEOUT = int(
+    os.environ.get('MARKET_COMPETITION_POSH_TIMEOUT', '120')
+)
+# Success-cache TTL (seconds) for a posh.vip (city, window) feed. The feed is
+# shared across every event + genre/domain choice for that city/window, so a
+# longer TTL means more scans reuse one paid fetch (each hit = $0 vs ~$0.80).
+# Default 24h; a nightlife month-feed changes slowly. Failures use a short TTL.
+MARKET_COMPETITION_POSH_CACHE_TTL = int(
+    os.environ.get('MARKET_COMPETITION_POSH_CACHE_TTL', str(60 * 60 * 24))
+)
 
 # Mailchimp integration
 MAILCHIMP_CLIENT_ID = os.environ.get('MAILCHIMP_CLIENT_ID', '')

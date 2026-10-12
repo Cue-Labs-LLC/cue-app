@@ -1512,6 +1512,11 @@ class Event(AuditBaseModel):
     # summary needs regenerating. Set on every generation (manual or automatic).
     ai_summary_input_hash = models.CharField(max_length=64, blank=True, default='')
     # --- Market competition scan (per-event competitive-density signal) ---
+    # Organizer-set genres for the market-competition scan (comma-separated, e.g.
+    # "techno, house"). When blank the scan auto-detects from the event name,
+    # lineup, description, and (for external events) the fetched buy-page content;
+    # set explicitly to override, or to unblock an event with no other genre source.
+    genre = models.CharField(max_length=200, blank=True, default='')
     competition_score = models.PositiveSmallIntegerField(null=True, blank=True)
     competition_label = models.CharField(max_length=20, blank=True, default='')
     # One of: ready | unavailable | inconclusive (D2/DO2).
@@ -4891,3 +4896,29 @@ class LoyaltyTierTransition(BaseModel):
             f"{self.from_tier_id or 'none'} -> {self.to_tier_id or 'none'} "
             f"(customer={self.customer_id})"
         )
+
+
+class MarketCompetitionFeedCache(BaseModel):
+    """Durable, org-independent cache of a market-competition source feed.
+
+    A posh.vip ``(city, window)`` feed is global public-event data, and each fetch
+    costs real Apify credits (~$2/run), so the raw payload is cached in the DB —
+    durable across dev server autoreloads and Redis evictions (unlike LocMemCache),
+    and shared across every org / event / genre scanning the same city + window.
+
+    Keyed by a sha256 of ``(actor, location, window, max_events)``; re-fetching the
+    same key upserts the one row, so the table is bounded by the number of distinct
+    city/window combinations (no unbounded growth). ``updated_at`` (BaseModel,
+    ``auto_now``) is the fetch time the freshness TTL measures against.
+    """
+    cache_key = models.CharField(max_length=64, unique=True, db_index=True)
+    location = models.CharField(max_length=255, blank=True, default='')
+    window = models.CharField(max_length=40, blank=True, default='')
+    payload = models.JSONField(default=list)
+
+    class Meta:
+        verbose_name = 'Market competition feed cache'
+        verbose_name_plural = 'Market competition feed caches'
+
+    def __str__(self):
+        return f"{self.location} / {self.window} ({len(self.payload or [])} events)"

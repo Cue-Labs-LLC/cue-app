@@ -134,11 +134,21 @@ market_competition/
 ├── search_client.py   # requests-based web-search wrapper (weather.py style)
 ├── query_plan.py      # build_queries(event, genre_hints) -> list[str]  (DO3, fixed plan)
 ├── scanner.py         # run queries + LLM extraction/normalization → list[CompetitorEvent]
+├── sources.py         # CompetitorEventSource ABC + WebSearchSource + PoshVipSource + fetch_competitors (D1=B)
+├── apify_client.py    # requests wrapper for the posh.vip Apify actor (weather.py style)
 └── calculator.py      # MarketCompetitionCalculator(organization).calculate(event)
 ```
 
-(No `sources.py` ABC in the POC — D1=B. The calculator calls a single scanner
-function; the interface is extracted when a second source lands.)
+**UPDATE (post-POC — D1=B realized):** a real second source landed (the posh.vip
+Apify scraper), so the `CompetitorEventSource` ABC is now extracted
+(`sources.py`): `WebSearchSource` wraps the original Tavily+LLM scanner;
+`PoshVipSource` is the new structured scraper; `fetch_competitors` fans out over
+the active sources (`MARKET_COMPETITION_SOURCES`, default `posh`) and merges +
+dedupes. The calculator calls `fetch_competitors`, not a single scanner.
+**Why posh-only now:** a coverage spike showed the posh.vip scraper returns ~49
+in-window LA events for a weekend vs. web-search's 1 (and catches branded club
+nights web-search ranks away); enumerable structured data beats a ranked sample,
+so the org runs posh as the sole active source and adds more scrapers over time.
 
 Reuses: `weather.py` (external fetch discipline — timeout, versioned cache,
 failure sentinel, fail-silently-and-log); `sms_strategist.py:451-466`
@@ -169,9 +179,14 @@ multi-tenancy rule; new Event/Org fields are additive.)
     without recompute)
   - `competition_generated_at` `DateTimeField(null=True)`
   - `competition_input_hash` `CharField(max_length=64, blank=True)` — sha256 of
-    `(name, talent, city, state, start_date, end_date, window)` (DO5-b includes the
-    date span); **written only on a successful scan** (D5). Used only to suppress
-    re-scans **within** the freshness TTL window (DO4) — see §4.2.
+    `(name, talent, city, state, start_date, end_date, window, genre)` (DO5-b
+    includes the date span; P5 adds `genre` so an organizer genre change re-scans);
+    **written only on a successful scan** (D5). Used only to suppress re-scans
+    **within** the freshness TTL window (DO4) — see §4.2.
+  - `genre` `CharField(max_length=200, blank=True)` **(P5, D3=A)** — organizer-set,
+    comma-separated genres for the scan (on the event create/edit forms). Blank =>
+    auto-detect; set => used directly. Unblocks an event that has no description or
+    buy page (the D2=A gate).
 - **`Organization`** new fields (`*_enabled` convention, near `models.py:301`):
   - `market_competition_enabled` `BooleanField(default=False)` — master rollout
     gate; feature ships dark, turned on per org in the admin Feature Flags fieldset.
@@ -293,10 +308,43 @@ multi-tenancy rule; new Event/Org fields are additive.)
 - `MARKET_COMPETITION_DAILY_SCAN_CAP` (per-org scans/day; past it the trigger
   returns a capped status and does not enqueue — D3; mirrors
   `IG_AGENT_DAILY_ANSWER_CAP`; `0` disables).
+- `MARKET_COMPETITION_SHOW_SCORE` (default `False`; DO1/P6). The 0–100 score is
+  always computed + persisted, but the event-detail panel shows only the
+  competitor list + coarse count + coverage + Low/Med/High label until this gate
+  opens. P6 flips it to `True` once the eval clears the precision bar — no UI
+  rework needed.
 - `MARKET_COMPETITION_PLATFORMS` (comma-separated non-API platform names seeded
   into the query plan; default `eventbrite,dice,seetickets`).
 - No new pip dependency (Tavily via `requests`; extraction/narrative reuse
   existing `langchain_openai`).
+- **Sources (D1=B realized):** `MARKET_COMPETITION_SOURCES` (comma-separated,
+  default `posh`) selects the active `CompetitorEventSource`s; results merge +
+  dedupe. posh.vip source needs `APIFY_TOKEN` (absent → that source is
+  `unavailable`); tune via `MARKET_COMPETITION_POSH_ACTOR`
+  (default `hypebridge~posh-vip`), `MARKET_COMPETITION_POSH_MAX_EVENTS`
+  (default 500), `MARKET_COMPETITION_POSH_TIMEOUT` (default 120s). The posh source
+  is **LLM-free**: structured mapping, keyword-inferred genre, and the actor's own
+  `location=<city>` scoping *as* the metro (no metro-normalization LLM call).
+  **Cost (corrected):** pay-per-result at **$4 / 1,000 results** = $0.004/result,
+  so a busy metro-weekend (~200 results) is **~$0.80/scan**, and the run-sync call
+  **reserves `maxItems` × price upfront** (so a 500-cap reserves up to $2.00 and
+  needs that much Apify balance to start — `max-items-must-be-greater-than-zero` /
+  `not-enough-usage-to-run-paid-actor` otherwise). **Real per-fetch cost ~$2** (200
+  results + compute), so caching matters. **Cost efficiency:** the fetch is cached
+  on **(actor, city, window, max_events)** — *not* the event or genre — so every
+  event in the same metro/window and every genre/domain re-scan reuses one paid
+  fetch (each cache hit = $0), TTL `MARKET_COMPETITION_POSH_CACHE_TTL` (default 24h).
+  The success cache is a **durable DB table** (`MarketCompetitionFeedCache`), not the
+  request cache — it survives dev `runserver` autoreloads *and* Redis evictions and
+  is shared org-wide (LocMemCache in dev is per-process + wiped on every reload, so
+  it silently re-charged during development). Only a short failure sentinel stays in
+  the ephemeral cache (backoff; a failed run doesn't scrape). Delete a row in the
+  admin to force a re-fetch. Spend is further bounded by the 7-day Event freshness TTL (no same-event
+  re-fetch), the per-org daily cap (D3), `MARKET_COMPETITION_POSH_MAX_EVENTS` (caps
+  results *and* the upfront reserve — recall/cost knob), and using the narrower
+  `This Week` window for events ≤7 days out. When a scan's target date is beyond posh's ~1-month discovery
+  horizon the feed can't reach it → reported as zero coverage (→ `unavailable`),
+  never a false "you're clear".
 - **Per-scan cost (DO5-g):** a scan issues N (≈ genres + 1 + platforms, typically
   5–8) Tavily searches + 1 extraction LLM call + 1 narrative LLM call. Size the
   daily cap against that; record actuals via `AITokenUsage` + log search counts.
@@ -384,7 +432,10 @@ multi-tenancy rule; new Event/Org fields are additive.)
   (else 404) + org-scoped (cross-org → 404) + daily-cap gate (D3) + single enqueue
   (lock, D4) + returns `scanning`; GET poll returns `idle|scanning|ready|
   unavailable|inconclusive`; `event_detail` context carries cached result;
-  `unavailable`/`inconclusive` render distinctly from a genuine `ready` 0 (D2/DO2).
+  `unavailable`/`inconclusive` render distinctly from a genuine `ready` 0 (D2/DO2);
+  **the per-run genre override** threads a parsed, deduped, capped, lower-cased
+  hint list to the trigger as `genre_hints` and forces past the freshness gate,
+  while a blank field auto-derives (`genre_hints=None`, no force).
 - **Build:** `events/<uuid:event_id>/competition/scan/` (POST) +
   `events/<uuid:event_id>/competition/` (GET) views + URLs (precedent
   `urls.py:199-201`); `event_detail` context; a panel in `event_detail.html`
@@ -393,9 +444,55 @@ multi-tenancy rule; new Event/Org fields are additive.)
   "inconclusive" / "summary unavailable" states; Scan button). Poll client uses a
   **bounded cadence** (~3s interval, max ~2min, stop on terminal state — D8). No
   new sidebar link (lives on the event page).
+  - **Genre sources + transparent, editable field + "set a genre" gate** (folded
+    into P5 at the user's request; see the four decisions below). Two layers:
+    - **Detection (D1=A, D4=A):** genres are auto-detected from the event name +
+      lineup + description **and, for external events, the fetched `ticket_link`
+      buy page** — `page_fetch.fetch_page_text` (SSRF-guarded via the webhook
+      validator, short timeout, versioned cache + failure sentinel, fail-silent,
+      HTML→text) feeds `derive_genre_hints(event, extra_text=…)`. A persisted
+      **`Event.genre`** (comma-separated, on the event create/edit forms; D3=A)
+      wins outright when set (no fetch). `resolve_event_genres(event)` =
+      `Event.genre` else auto-detect; `parse_genres` is the shared normalizer.
+      `Event.genre` is part of the freshness input-hash so changing it re-scans.
+    - **Gate (D2=A):** `event_has_genre_source(event)` = `Event.genre` OR a
+      non-empty description OR a buy page (an external `ticket_link`, or a
+      direct-ticketing event's Cue page — so direct events always pass). When
+      false the panel hides the scan controls and shows a **"Set a genre on this
+      event"** prompt linking to the event edit page, and the scan view refuses
+      with `status='needs_genre'` (defense for a direct POST).
+    - **Transparent genre picker (predefined options only):** the panel renders
+      the canonical genres (`genre_options()` = `GENRE_KEYWORDS` keys) as
+      multi-select chips, **pre-selected** from the last successful scan's genres
+      (`CompetitionResult.genres`, recorded + persisted) else
+      `resolve_event_genres(event)` — so the organizer always sees what will be
+      searched and can pick one or more even when auto-detect found nothing. There
+      is deliberately **no free-text entry** (chips only); the scan view drops any
+      submitted genre not in `genre_options()` (defense for a direct POST). It
+      **compares the selection to the resolved baseline** (both restricted to the
+      selectable set): unchanged (or param absent) => auto scan (`genre_hints=None`,
+      freshness/cache respected); changed — incl. none selected => scan city-wide —
+      => an explicit per-run override (`genre_hints=<list|[]>`, `force=True`, since
+      the hash can't see a per-run value). Threaded through
+      `request_competition_scan` → `scan_event_competition_task` →
+      `calculate_event_competition` (all gained `genre_hints=`). The `ready` panel
+      echoes the genres the scan used ("Searched for: …" / "Searched city-wide").
+      The per-scan selection is not stored (that's what `Event.genre` is for).
+    - **Per-run domain scoping in the panel:** an "Advanced: search domains"
+      disclosure with **include** ("only these sites") and **exclude** ("never
+      these sites") fields, pre-filled with the `MARKET_COMPETITION_INCLUDE_DOMAINS`
+      / `..._EXCLUDE_DOMAINS` settings defaults. The scan view parses each
+      (`_parse_competition_domains` — strips scheme/path to a host, lower-case,
+      de-dupe, cap `_COMPETITION_MAX_DOMAINS=20`); a change from the defaults forces
+      a fresh scan (domains aren't in the hash). Threaded `request_competition_scan`
+      → `scan_event_competition_task` → `calculate_event_competition`
+      (`include_domains=` / `exclude_domains=`, already supported by the scanner /
+      `web_search`). Blank field => `[]` (open web for that side), distinct from the
+      non-panel `None` (settings default). The search-layer proxy for the deferred
+      D4-D size tier (§4.3) is now organizer-tunable per scan.
 - **Accept / demo:** enable the org flag, open an event, click Scan → panel polls
   (bounded), populates list+count+coverage, persists on reload; failure states
-  render honestly.
+  render honestly; typing genres re-scans for exactly those.
 
 ### Phase 6 — Eval harness (in-phase, GATES the numeric score — DO1/D7)
 This phase is **not optional and not after-the-fact**: the numeric score stays
@@ -461,11 +558,22 @@ scan_event_competition <event_id>` (P3, needs `TAVILY_API_KEY` + `OPENAI_API_KEY
 - [x] **P2** — Search client (mocked-requests tests) + coverage accounting + `market_search` command
 - [x] **P3** — Scanner (fixed-plan + round-robin sampling + extraction/normalize/dedupe/self-exclude) + calculator (keyword-map genre derivation, D1) + narrative (graceful) + metering + `scan_event_competition` command (with `--genres`/`--include-domains`/`--exclude-domains` overrides). Deviations from the approved plan (query carries genre in every query + event's own date; `ScanResult` return; `flush_traces`) noted in §3/§4.2.
 - [x] **P4** — Celery task (`scan_event_competition_task`) + persistence (success-only hash, TTL re-scan) + TTL'd `cache.add` lock + per-org daily cap. Shipped as planned, plus: a `request_competition_scan(org, event, *, force=False)` trigger helper (the single gate+enqueue entry P5's view calls — returns `fresh|capped|in_progress|scanning`); freshness/TTL (DO4) and hash/persist logic live in a new `market_competition/persistence.py` (`compute_input_hash`, `is_competition_fresh`, `persist_competition`); freshness is checked in both the trigger and the task (defense-in-depth for direct/duplicate runs); the task releases the lock + `flush_traces()` in `finally`. Decisions confirmed with user: `inconclusive` **writes** the input hash (caches like `ready`; only `unavailable` leaves it empty — D1=A); `MARKET_COMPETITION_DAILY_SCAN_CAP` default `50`.
-- [ ] **P5** — Scan/poll endpoints + event-detail panel (list+count+coverage, bounded poll, honest failure states)
+- [x] **P5** — Scan/poll endpoints (`event_competition_scan` POST + `event_competition_status` GET, feature-flag + org-scoped, `request_competition_scan` passthrough) + event-detail panel (leads with count+list+coverage, Low/Med/High label; numeric score gated behind new `MARKET_COMPETITION_SHOW_SCORE` setting, default `False`, flipped by P6 — DO1) + bounded ~3s/2min poll stopping on terminal state (D8) + honest `idle`/`scanning`/`capped`/`unavailable`/`inconclusive` states distinct from a genuine `ready` 0 (D2/DO2). Shared render path: the view hands the template a `competition_payload` (server-rendered initial state) that the poll JS reuses. Includes the **genre sources + transparent field + gate** (added at user request): detection pulls from name + lineup + description **and the fetched external `ticket_link` buy page** (`page_fetch`, SSRF-guarded, cached, fail-silent — D1=A, D4=A); a persisted **`Event.genre`** field on the event forms wins when set (D3=A, in the freshness hash); the panel field is **pre-filled** with the resolved/last-scanned genres (editable; unchanged = auto, edited/cleared = forced override); and when an event has **no genre, description, or buy page** (`event_has_genre_source`, D2=A) the panel shows a **"Set a genre"** prompt linking to the edit page and the scan view refuses with `needs_genre`. Direct-ticketing events always pass (they have a Cue buy page). Also adds an **"Advanced: search domains"** disclosure (per-run include/exclude site scoping, pre-filled from the settings defaults, threaded trigger→task→calculator, forces a re-scan when changed).
 - [ ] **P6** — Eval harness (GATES numeric score): extraction/date/metro precision + scoring sanity
 
 ## 9. NOT in scope (considered, deferred)
-- Structured events-API source + the `CompetitorEventSource` ABC — extracted when a 2nd source exists (D1=B).
+- A **structured genre taxonomy / org-level genre config.** P5 ships a free-text
+  per-event `Event.genre` field (D3=A) plus the per-run panel override; a
+  controlled vocabulary or org-wide default remains a later consideration.
+- **LLM genre classification of competitors.** posh competitor genre is
+  keyword-only (weak on branded titles like "Club OVO"), so a *selected* genre
+  narrows the density by dropping unknown-genre events; density mode (no genre
+  selected) captures the full picture. A batched LLM classifier is a future option.
+- **More scraper sources.** posh.vip is the first `CompetitorEventSource`; the org
+  will add others (Eventbrite/DICE/Ticketmaster scrapers or APIs) incrementally —
+  each a new `CompetitorEventSource` added to `MARKET_COMPETITION_SOURCES`.
+- True radius + venue geocoding (D3=A) — posh now provides lat/lng, so this is
+  closer; still deferred.
 - True radius + venue geocoding (D3=A) — next phase.
 - Price/size (same-wallet) similarity (D4-D).
 - Adaptive ReAct agent — fixed query plan for the POC (DO3); revisit if multi-step search earns it.

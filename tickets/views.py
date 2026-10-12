@@ -6372,6 +6372,27 @@ def event_detail(request, event_id):
         'show_conversion_comparison_card': show_conversion_comparison_card,
         'conversion_current_json': conversion_current_json,
         'conversion_compare_json': conversion_compare_json,
+        # Market competition (P5): hand the panel a ready-made payload so the
+        # server-rendered initial state and the poll JS share one render path.
+        'competition_payload': (
+            _competition_payload(event) if event.competition_status else None
+        ),
+        'competition_show_score': settings.MARKET_COMPETITION_SHOW_SCORE,
+        # Genre picker: selectable options (pre-selected from the last scan / the
+        # resolved auto-detect) + any custom leftovers — so the organizer can pick
+        # one or more even when auto-detect found nothing (transparency).
+        **_competition_genre_context(event),
+        # Pre-fill the domain-scoping fields with the configured defaults so the
+        # organizer sees (and can tune) which sites the scan searches. Only
+        # relevant to the web-search source — hidden when it isn't active.
+        'competition_domain_controls': _competition_web_source_active(),
+        'competition_include_domains': ', '.join(
+            _competition_setting_domains('MARKET_COMPETITION_INCLUDE_DOMAINS')),
+        'competition_exclude_domains': ', '.join(
+            _competition_setting_domains('MARKET_COMPETITION_EXCLUDE_DOMAINS')),
+        # D2=A: block the tool (show a "set a genre" prompt) when the event has no
+        # genre, no description, and no buy page to detect one from.
+        'competition_needs_genre': not _competition_has_genre_source(event),
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6531,6 +6552,235 @@ def event_detail(request, event_id):
         context['rating_counts'] = []
 
     return render(request, 'tickets/event_detail.html', context)
+
+
+# Upper bound on organizer-supplied genres per scan — each genre adds one Tavily
+# query (plus platform-scoped queries), so cap the query-plan fan-out (DO5-g cost).
+_COMPETITION_MAX_GENRES = 6
+
+
+def _parse_competition_genres(raw):
+    """Parse an organizer's free-text genre field into a clean hint list.
+
+    Thin wrapper over the service's canonical ``parse_genres`` (trim, lower-case,
+    de-dupe, cap) so the view and the model's ``Event.genre`` normalize identically.
+    Returns a list (possibly empty when blank) — the caller decides what an empty
+    list means based on whether the field was submitted at all.
+    """
+    from .services.market_competition import parse_genres
+
+    return parse_genres(raw, max_genres=_COMPETITION_MAX_GENRES)
+
+
+# Upper bound on organizer-supplied domains per field — bounds abuse / payload size.
+_COMPETITION_MAX_DOMAINS = 20
+
+
+def _competition_setting_domains(name):
+    """The configured default include/exclude domains for a setting (a list)."""
+    raw = getattr(settings, name, '') or ''
+    return [d.strip().lower() for d in raw.split(',') if d.strip()]
+
+
+def _competition_web_source_active():
+    """True if the web-search source is active (its domain controls are relevant)."""
+    from .services.market_competition.sources import get_active_sources
+
+    return any(s.name == 'web' for s in get_active_sources())
+
+
+def _parse_competition_domains(raw):
+    """Parse a comma-separated domain field into a clean host list (possibly empty).
+
+    Trims, lower-cases, strips any scheme/path a user pastes (``https://x.com/a`` →
+    ``x.com``), de-dupes, and caps the count. An empty field => ``[]`` (open web for
+    that side), distinct from ``None`` (use the settings default).
+    """
+    seen = []
+    for part in str(raw or '').split(','):
+        d = part.strip().lower()
+        if not d:
+            continue
+        # Reduce a pasted URL to its host.
+        d = d.split('://', 1)[-1].split('/', 1)[0].split('@')[-1]
+        if d and d not in seen:
+            seen.append(d)
+        if len(seen) >= _COMPETITION_MAX_DOMAINS:
+            break
+    return seen
+
+
+def _competition_has_genre_source(event):
+    """Whether a competition scan can run without first prompting for a genre (D2=A)."""
+    from .services.market_competition import event_has_genre_source
+
+    return event_has_genre_source(event)
+
+
+def _competition_resolved_genres(event):
+    """The genres to pre-select/pre-fill in the panel (a plain list).
+
+    After a successful (``ready``/``inconclusive``) scan, exactly what that scan
+    searched for — including an empty list if the organizer scanned city-wide.
+    Otherwise (never scanned, or an ``unavailable`` scan that never really ran) the
+    resolved genres (``Event.genre`` else offline auto-detect) so the organizer
+    sees and can correct them before the first scan.
+    """
+    data = event.competition_data or {}
+    if event.competition_status in ('ready', 'inconclusive') and 'genres' in data:
+        return data.get('genres') or []
+    from .services.market_competition import resolve_event_genres
+    return resolve_event_genres(event)  # offline: Event.genre else auto-detect
+
+
+def _competition_genre_context(event):
+    """Build the panel's genre-picker context: the options + the pre-selected ones.
+
+    Only the predefined ``genre_options`` are selectable; a resolved genre outside
+    that list (e.g. a free-text ``Event.genre``) simply isn't pre-selected.
+    """
+    from .services.market_competition import genre_options
+
+    options = genre_options()
+    resolved = _competition_resolved_genres(event)
+    selected = [g for g in resolved if g in options]
+    return {
+        'competition_genre_options': options,
+        'competition_genre_selected': selected,
+    }
+
+
+def _competition_payload(event):
+    """Build the poll/JSON payload for a persisted competition scan.
+
+    Reads straight off ``event.competition_data`` (already JSON-safe — dates are
+    ISO strings) so the panel renders without a recompute. ``score`` is included
+    but the panel only displays it when ``MARKET_COMPETITION_SHOW_SCORE`` is set
+    (DO1 / P6 gate).
+    """
+    data = event.competition_data or {}
+    return {
+        'status': event.competition_status or 'idle',
+        'score': event.competition_score,
+        'label': event.competition_label or '',
+        'competitors': data.get('competitors', []),
+        'undated': data.get('undated', []),
+        'counts': data.get('counts', {}),
+        'coverage': data.get('coverage', {}),
+        'summary': data.get('summary', ''),
+        'genres': data.get('genres', []),
+        'generated_at': (
+            event.competition_generated_at.isoformat()
+            if event.competition_generated_at else None
+        ),
+        'show_score': settings.MARKET_COMPETITION_SHOW_SCORE,
+    }
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_competition_scan(request, event_id):
+    """Trigger a market-competition scan for one event (POST).
+
+    Gated on the org's ``market_competition_enabled`` flag (off => 404, feature
+    ships dark) and org-scoped (a cross-org event id => 404). Delegates the whole
+    gate+enqueue decision to ``request_competition_scan`` (D3 daily cap, D4
+    in-progress lock, DO4 freshness) and returns its short status so the panel's
+    poll knows whether a scan is now running.
+    """
+    from .tasks import request_competition_scan
+
+    org = get_organization(request)
+    if not org.market_competition_enabled:
+        raise Http404("Market competition is not enabled for this organization.")
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from .services.market_competition import (
+        event_has_genre_source,
+        genre_options,
+        resolve_event_genres,
+    )
+
+    # D2=A gate: an event with no genre, no description, and no buy page can't be
+    # scanned until the organizer sets a genre on it (the panel hides the controls
+    # and shows a prompt; this guards a direct POST).
+    if not event_has_genre_source(event):
+        return JsonResponse({'status': 'needs_genre'})
+
+    force = request.POST.get('force') in ('1', 'true', 'True')
+    # The panel submits the selected chips (predefined options only) and always
+    # sends the param. We compare what came back against the resolved baseline:
+    #   - param absent (non-panel caller) => resolve normally, respect the cache.
+    #   - selection matches the baseline (organizer agreed) => same as a normal scan.
+    #   - selection differs (changed, or none => scan city-wide) => an explicit
+    #     per-run override; force past the freshness gate (the hash can't see it).
+    if 'genres' in request.POST:
+        # Only predefined genres are accepted — drop anything off the option list.
+        allowed = set(genre_options())
+        submitted = [g for g in _parse_competition_genres(request.POST.get('genres'))
+                     if g in allowed]
+        # Compare against the baseline restricted to the same selectable set.
+        baseline = [g for g in resolve_event_genres(event) if g in allowed]
+        if submitted == baseline:
+            genre_hints = None  # unchanged => behave exactly like a normal scan
+        else:
+            genre_hints = submitted
+            force = True
+    else:
+        genre_hints = None
+
+    # Per-run domain scoping (optional). The panel pre-fills the settings defaults
+    # and always submits both fields; a change from the defaults is an explicit
+    # override that forces a fresh scan (domains aren't in the freshness hash).
+    default_inc = _competition_setting_domains('MARKET_COMPETITION_INCLUDE_DOMAINS')
+    default_exc = _competition_setting_domains('MARKET_COMPETITION_EXCLUDE_DOMAINS')
+    if 'include_domains' in request.POST:
+        include_domains = _parse_competition_domains(request.POST.get('include_domains'))
+    else:
+        include_domains = default_inc
+    if 'exclude_domains' in request.POST:
+        exclude_domains = _parse_competition_domains(request.POST.get('exclude_domains'))
+    else:
+        exclude_domains = default_exc
+    if include_domains != default_inc or exclude_domains != default_exc:
+        force = True
+
+    status = request_competition_scan(
+        org, event, force=force, genre_hints=genre_hints,
+        include_domains=include_domains, exclude_domains=exclude_domains,
+    )
+    # scanning | in_progress => a scan is (now) running; fresh => already current;
+    # capped => daily cap hit (soft, surfaced in the panel, not an error).
+    return JsonResponse({'status': status})
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["GET"])
+def event_competition_status(request, event_id):
+    """Poll the current market-competition state for one event (GET).
+
+    State machine (priority order): an in-progress lock => ``scanning``; else a
+    persisted status (``ready|unavailable|inconclusive``) => that status plus the
+    cached payload; else ``idle`` (never scanned). The bounded poll on the event
+    page stops once a terminal status is returned (D8).
+    """
+    from django.core.cache import cache as django_cache
+
+    from .tasks import _competition_lock_key
+
+    org = get_organization(request)
+    if not org.market_competition_enabled:
+        raise Http404("Market competition is not enabled for this organization.")
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if django_cache.get(_competition_lock_key(event.id)):
+        return JsonResponse({'status': 'scanning'})
+    if event.competition_status:
+        return JsonResponse(_competition_payload(event))
+    return JsonResponse({'status': 'idle'})
 
 
 @login_required

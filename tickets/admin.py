@@ -27,6 +27,7 @@ from .models import (
     SMSCreditTransaction,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
     DeviceToken,
+    MarketCompetitionFeedCache,
 )
 
 
@@ -1749,3 +1750,16 @@ class WebhookDeliveryAdmin(OrgScopedModelAdmin):
         return False
 
 
+
+
+@admin.register(MarketCompetitionFeedCache)
+class MarketCompetitionFeedCacheAdmin(admin.ModelAdmin):
+    """Durable market-competition source feeds. Delete a row to force a re-fetch."""
+    list_display = ('location', 'window', 'event_count', 'updated_at')
+    search_fields = ('location', 'window', 'cache_key')
+    readonly_fields = ('cache_key', 'location', 'window', 'payload', 'created_at', 'updated_at')
+    ordering = ('-updated_at',)
+
+    @admin.display(description='Events')
+    def event_count(self, obj):
+        return len(obj.payload or [])

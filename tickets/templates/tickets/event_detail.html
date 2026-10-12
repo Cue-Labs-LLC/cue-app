@@ -779,6 +779,320 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 {% endif %}
 
+{% if org.market_competition_enabled %}
+{% if competition_needs_genre %}
+<div class="card mb-4" id="competition-card">
+    <div class="card-header d-flex align-items-center">
+        <h5 class="mb-0"><i class="bi bi-binoculars"></i> Market Competition</h5>
+    </div>
+    <div class="card-body">
+        <div class="empty-state" style="padding: 24px 8px;">
+            <i class="bi bi-tag text-muted" style="font-size: 1.6rem;"></i>
+            <p class="mb-1 mt-2"><strong>Set a genre to scan the market</strong></p>
+            <p class="text-muted mb-3" style="font-size: 0.9rem;">
+                This event has no description or ticket link for us to detect a genre from.
+                Add a genre on the event so we know which shows to compare it against.
+            </p>
+            <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-primary">
+                <i class="bi bi-pencil me-1"></i> Set the event genre
+            </a>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="card mb-4" id="competition-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-binoculars"></i> Market Competition</h5>
+        <div class="d-flex align-items-center gap-2">
+            <span class="text-muted" style="font-size: 0.8rem;" id="competition-timestamp"></span>
+            <button class="btn btn-sm btn-outline-primary" id="btn-scan-competition" type="button">
+                <i class="bi bi-search"></i> <span class="label">Scan market competition</span>
+            </button>
+        </div>
+    </div>
+    <div class="px-3 pt-3" id="competition-controls">
+        <label class="form-label text-muted mb-2" style="font-size: 0.82rem;">
+            Genres to search
+        </label>
+        <div class="competition-genre-chips d-flex flex-wrap gap-2 mb-2" id="competition-genre-chips">
+            {% for g in competition_genre_options %}
+            <input type="checkbox" class="btn-check" name="competition-genre"
+                   id="cg-{{ forloop.counter }}" value="{{ g }}"
+                   autocomplete="off"{% if g in competition_genre_selected %} checked{% endif %}>
+            <label class="btn btn-sm btn-outline-secondary" for="cg-{{ forloop.counter }}">{{ g }}</label>
+            {% endfor %}
+        </div>
+        <div class="form-text" style="font-size: 0.78rem;" id="competition-genre-help">
+            Pick the genres that fit — we pre-select any we auto-detect. Select none to scan city-wide.
+        </div>
+        {% if competition_domain_controls %}
+        <details class="mt-2" id="competition-domains">
+            <summary class="text-muted" style="font-size: 0.82rem; cursor: pointer;">
+                Advanced: search domains
+            </summary>
+            <div class="mt-2">
+                <label for="competition-include-domains" class="form-label text-muted mb-1" style="font-size: 0.78rem;">
+                    Only these sites <span class="text-muted">(comma-separated, optional)</span>
+                </label>
+                <input type="text" class="form-control form-control-sm" id="competition-include-domains"
+                       value="{{ competition_include_domains }}"
+                       placeholder="e.g. eventbrite.com, dice.fm" autocomplete="off">
+                <label for="competition-exclude-domains" class="form-label text-muted mb-1 mt-2" style="font-size: 0.78rem;">
+                    Never these sites <span class="text-muted">(comma-separated, optional)</span>
+                </label>
+                <input type="text" class="form-control form-control-sm" id="competition-exclude-domains"
+                       value="{{ competition_exclude_domains }}"
+                       placeholder="e.g. ticketmaster.com, livenation.com" autocomplete="off">
+                <div class="form-text" style="font-size: 0.78rem;">
+                    Restrict the web search to (or away from) specific ticketing sites. Leave blank to search the open web.
+                </div>
+            </div>
+        </details>
+        {% endif %}
+    </div>
+    <div class="card-body" id="competition-body"></div>
+</div>
+{{ competition_payload|json_script:"competition-initial" }}
+<script>
+(function () {
+    var card = document.getElementById('competition-card');
+    if (!card) return;
+
+    var SCAN_URL = "{% url 'tickets:event_competition_scan' event.id %}";
+    var STATUS_URL = "{% url 'tickets:event_competition_status' event.id %}";
+    var CSRF = '{{ csrf_token }}';
+    var SHOW_SCORE = {{ competition_show_score|yesno:"true,false" }};
+    var POLL_INTERVAL_MS = 3000;
+    var POLL_MAX_MS = 120000;  // stop after ~2 min (D8)
+    var TERMINAL = { ready: 1, unavailable: 1, inconclusive: 1 };
+
+    var body = document.getElementById('competition-body');
+    var btn = document.getElementById('btn-scan-competition');
+    var tsEl = document.getElementById('competition-timestamp');
+    var pollTimer = null;
+    var pollStart = 0;
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function timeAgo(iso) {
+        if (!iso) return '';
+        var then = new Date(iso).getTime();
+        if (isNaN(then)) return '';
+        var mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + ' min ago';
+        var hrs = Math.round(mins / 60);
+        if (hrs < 24) return hrs + ' hr ago';
+        return Math.round(hrs / 24) + ' days ago';
+    }
+
+    function notice(icon, cls, title, detail) {
+        return '<div class="empty-state" style="padding: 24px 8px;">' +
+            '<i class="bi ' + icon + ' ' + cls + '" style="font-size: 1.6rem;"></i>' +
+            '<p class="mb-1 mt-2"><strong>' + esc(title) + '</strong></p>' +
+            (detail ? '<p class="text-muted mb-0" style="font-size: 0.9rem;">' + esc(detail) + '</p>' : '') +
+            '</div>';
+    }
+
+    function renderList(items) {
+        var rows = items.map(function (c) {
+            var meta = [c.venue_name, c.date, c.genre, c.platform]
+                .filter(function (x) { return x; }).map(esc).join(' &middot; ');
+            var name = c.source_url
+                ? '<a href="' + esc(c.source_url) + '" target="_blank" rel="noopener noreferrer">' + esc(c.name) + '</a>'
+                : esc(c.name);
+            return '<tr><td>' + name +
+                '<div class="text-muted" style="font-size: 0.82rem;">' + meta + '</div></td></tr>';
+        }).join('');
+        return '<div class="table-responsive"><table class="table table-hover mb-0"><tbody>' +
+            rows + '</tbody></table></div>';
+    }
+
+    function render(p) {
+        var status = p && p.status ? p.status : 'idle';
+        tsEl.textContent = (p && p.generated_at && TERMINAL[status]) ? 'Scanned ' + timeAgo(p.generated_at) : '';
+
+        if (status === 'idle') {
+            body.innerHTML = '<div class="empty-state" style="padding: 24px 8px;">' +
+                '<i class="bi bi-binoculars text-muted" style="font-size: 1.6rem;"></i>' +
+                '<p class="mb-1 mt-2"><strong>See who you\'re up against</strong></p>' +
+                '<p class="text-muted mb-0" style="font-size: 0.9rem;">Scan the web for similar events in your metro around this date.</p>' +
+                '</div>';
+            return;
+        }
+        if (status === 'scanning') {
+            body.innerHTML = '<div class="text-muted" style="padding: 16px 0;">' +
+                '<span class="spinner-border spinner-border-sm me-2"></span>Scanning the market&hellip;</div>';
+            return;
+        }
+        if (status === 'capped') {
+            body.innerHTML = notice('bi-hourglass-split', 'text-warning',
+                'Daily scan limit reached', 'You\'ve used today\'s market scans. Try again tomorrow.');
+            return;
+        }
+        if (status === 'unavailable') {
+            body.innerHTML = notice('bi-exclamation-triangle', 'text-warning',
+                'Couldn\'t scan the market',
+                'The market search is unavailable right now. This is not a "no competition" result — try again later.');
+            return;
+        }
+        if (status === 'inconclusive') {
+            body.innerHTML = notice('bi-question-circle', 'text-muted',
+                'Not enough coverage to tell',
+                'The search returned too little to trust a read. This is not a "you\'re clear" result.');
+            return;
+        }
+
+        // ready
+        var counts = p.counts || {};
+        var cov = p.coverage || {};
+        var competitors = p.competitors || [];
+        var undated = p.undated || [];
+        var matched = counts.genre_matched != null ? counts.genre_matched : competitors.length;
+
+        var html = '';
+        if (matched > 0) {
+            html += '<p class="mb-1"><strong>~' + matched + ' similar ' +
+                (matched === 1 ? 'show' : 'shows') + '</strong> in your metro around this date.</p>';
+        } else {
+            html += '<p class="mb-1"><strong>No similar shows found</strong> in your metro around this date.</p>';
+        }
+
+        if (SHOW_SCORE && p.score != null) {
+            html += '<p class="mb-1">Competition score: <strong>' + p.score + '/100</strong>' +
+                (p.label ? ' (' + esc(p.label) + ')' : '') + '</p>';
+        } else if (p.label) {
+            html += '<p class="mb-1">Competition level: <strong>' + esc(p.label) + '</strong></p>';
+        }
+
+        var genres = p.genres || [];
+        html += '<p class="text-muted mb-1" style="font-size: 0.85rem;">' +
+            (genres.length
+                ? 'Searched for: ' + genres.map(esc).join(', ')
+                : 'Searched city-wide (no genre filter).') +
+            '</p>';
+
+        if (typeof cov.queries_with_results === 'number' && typeof cov.queries_total === 'number') {
+            html += '<p class="text-muted mb-3" style="font-size: 0.85rem;">' +
+                'Coverage: ' + cov.queries_with_results + ' of ' + cov.queries_total +
+                ' searches returned results.</p>';
+        }
+
+        if (p.summary) {
+            html += '<div class="mb-3">' + esc(p.summary) + '</div>';
+        }
+
+        if (competitors.length) {
+            html += '<h6 class="mt-2">Competing events</h6>' + renderList(competitors);
+        }
+        if (undated.length) {
+            html += '<h6 class="mt-3 text-muted">Found, but no confirmed date ' +
+                '<span style="font-weight: 400; font-size: 0.82rem;">(not counted)</span></h6>' +
+                renderList(undated);
+        }
+        body.innerHTML = html;
+    }
+
+    function setBtn(scanning) {
+        btn.disabled = scanning;
+        btn.querySelector('.label').textContent = scanning
+            ? 'Scanning…' : 'Re-scan';
+    }
+
+    function stopPolling() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
+
+    function poll() {
+        fetch(STATUS_URL, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (p) {
+                render(p);
+                if (TERMINAL[p.status]) { setBtn(false); stopPolling(); return; }
+                if (Date.now() - pollStart > POLL_MAX_MS) {
+                    setBtn(false); stopPolling();
+                    body.innerHTML = '<div class="text-muted" style="padding: 16px 0;">' +
+                        'This is taking longer than expected. Reload the page to check the result.</div>';
+                    return;
+                }
+                pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+            })
+            .catch(function () {
+                setBtn(false); stopPolling();
+                body.innerHTML = notice('bi-exclamation-triangle', 'text-danger',
+                    'Couldn\'t reach the server', 'Reload the page to try again.');
+            });
+    }
+
+    function startPolling() {
+        setBtn(true);
+        render({ status: 'scanning' });
+        pollStart = Date.now();
+        stopPolling();
+        pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+    }
+
+    function collectedGenres() {
+        // Checked chips only (predefined options), in DOM/option order.
+        var out = [];
+        var boxes = document.querySelectorAll('#competition-genre-chips .btn-check:checked');
+        boxes.forEach(function (b) {
+            var v = (b.value || '').trim().toLowerCase();
+            if (v && out.indexOf(v) === -1) out.push(v);
+        });
+        return out;
+    }
+
+    btn.addEventListener('click', function () {
+        setBtn(true);
+        var bodyParams = new URLSearchParams();
+        // Always send the param (even when empty) so an all-cleared selection is
+        // an explicit "scan city-wide", distinguished server-side from no field.
+        bodyParams.set('genres', collectedGenres().join(', '));
+        var incEl = document.getElementById('competition-include-domains');
+        var excEl = document.getElementById('competition-exclude-domains');
+        bodyParams.set('include_domains', incEl ? incEl.value.trim() : '');
+        bodyParams.set('exclude_domains', excEl ? excEl.value.trim() : '');
+        fetch(SCAN_URL, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': CSRF,
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: bodyParams.toString(),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d.status === 'scanning' || d.status === 'in_progress') {
+                    startPolling();
+                } else if (d.status === 'capped') {
+                    setBtn(false); render({ status: 'capped' });
+                } else {
+                    // fresh (already current) or anything else => fetch the stored result.
+                    poll();
+                }
+            })
+            .catch(function () {
+                setBtn(false);
+                body.innerHTML = notice('bi-exclamation-triangle', 'text-danger',
+                    'Couldn\'t start the scan', 'Reload the page to try again.');
+            });
+    });
+
+    // Initial paint from the server-embedded payload (null => idle). If a scan is
+    // already running (lock held), the status endpoint reports it on first poll.
+    var initial = null;
+    try { initial = JSON.parse(document.getElementById('competition-initial').textContent); }
+    catch (e) { initial = null; }
+    if (initial) { render(initial); setBtn(false); } else { render({ status: 'idle' }); }
+})();
+</script>
+{% endif %}
+{% endif %}
+
 {% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
 {% if show_page_views_chart %}
