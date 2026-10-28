@@ -1,5 +1,6 @@
 import uuid
 import json
+import io
 import tempfile
 from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, MagicMock
@@ -23544,3 +23545,77 @@ class WindowParsingTests(TestCase):
                            ('this_quarter', 'quarter_to_date'),
                            ('this_month', 'month_to_date')]:
             self.assertGreaterEqual(self._parse(full)[1], self._parse(ytd)[1])
+
+
+class FixDoubledCountryCodePhonesTests(TestCase):
+    """One-time command that strips the doubled '+1' country code on phones."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Phone Fix Org', slug='phone-fix-org')
+        self.other_org = Organization.objects.create(
+            name='Phone Fix Other', slug='phone-fix-other')
+
+    def _run(self, apply=False):
+        out = io.StringIO()
+        call_command(
+            'fix_doubled_country_code_phones',
+            org_slug=self.org.slug, apply=apply, stdout=out, stderr=out,
+        )
+        return out.getvalue()
+
+    def test_doubled_code_is_fixed_on_apply(self):
+        c = Customer.objects.create(
+            organization=self.org, email='a@example.com', name='A',
+            phone='+118433188176',
+        )
+        self._run(apply=True)
+        c.refresh_from_db()
+        self.assertEqual(c.phone, '+18433188176')
+        from tickets.sms import is_plausible_e164
+        self.assertTrue(is_plausible_e164(c.phone))
+
+    def test_dry_run_does_not_write(self):
+        c = Customer.objects.create(
+            organization=self.org, email='a@example.com', name='A',
+            phone='+118433188176',
+        )
+        out = self._run(apply=False)
+        c.refresh_from_db()
+        self.assertEqual(c.phone, '+118433188176')
+        self.assertIn('DRY-RUN', out)
+        self.assertIn('Would fix: 1', out)
+
+    def test_wrong_length_candidate_not_changed(self):
+        # Starts with "+11" but isn't "+11" + 10 digits -> not auto-fixable.
+        c = Customer.objects.create(
+            organization=self.org, email='b@example.com', name='B',
+            phone='+1184331881',
+        )
+        out = self._run(apply=True)
+        c.refresh_from_db()
+        self.assertEqual(c.phone, '+1184331881')
+        self.assertIn('not auto-fixable', out)
+
+    def test_collision_left_unchanged(self):
+        # An existing phone-only customer already holds the normalized number.
+        Customer.objects.create(
+            organization=self.org, email='', name='Existing',
+            phone='+18433188176',
+        )
+        dupe = Customer.objects.create(
+            organization=self.org, email='', name='Doubled',
+            phone='+118433188176',
+        )
+        out = self._run(apply=True)
+        dupe.refresh_from_db()
+        self.assertEqual(dupe.phone, '+118433188176')
+        self.assertIn('Conflicts', out)
+
+    def test_other_org_untouched(self):
+        c = Customer.objects.create(
+            organization=self.other_org, email='c@example.com', name='C',
+            phone='+118433188176',
+        )
+        self._run(apply=True)
+        c.refresh_from_db()
+        self.assertEqual(c.phone, '+118433188176')
