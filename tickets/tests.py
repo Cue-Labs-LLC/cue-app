@@ -10221,9 +10221,12 @@ class PerTicketQRCheckinTests(TestCase):
         from django.core import mail
         from tickets.tasks import send_order_confirmation_email_task
 
+        # Pin the date to a July day (in the future) so the zone abbreviation is
+        # always PDT — with start_date=today it flips to PST half the year.
+        self.event.start_date = date(date.today().year + 1, 7, 15)
         self.event.start_time = dt_time(20, 0)
         self.event.timezone = 'America/Los_Angeles'
-        self.event.save(update_fields=['start_time', 'timezone'])
+        self.event.save(update_fields=['start_date', 'start_time', 'timezone'])
 
         send_order_confirmation_email_task.apply(args=[str(self.order.id)]).get()
 
