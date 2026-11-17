@@ -10,6 +10,10 @@
   .md-table .md-num { font-variant-numeric: tabular-nums; }
   .md-change { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .md-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+  /* The .content > * fade-in animation leaves each top-level block in its own
+     stacking context, so the date dropdown's z-index only counts inside this row.
+     Lift the whole row above the stat cards/chart that follow it. */
+  .md-controls { position: relative; z-index: 10; }
   .md-top-event { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
 </style>
 {% endblock %}
@@ -22,7 +26,7 @@
     </div>
 </div>
 
-<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+<div class="md-controls d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
   <div class="window-selector mb-0">
     <div class="dropdown">
       <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
