@@ -53,6 +53,11 @@
         <span class="hub-link-title">Market Trends</span>
         <p class="hub-link-copy">Spot declining markets and diagnose why turnout is slipping.</p>
     </a>
+    <a href="{% url 'tickets:market_demand' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-ticket-perforated"></i></span>
+        <span class="hub-link-title">Market Demand</span>
+        <p class="hub-link-copy">Compare recent tickets sold per event across markets.</p>
+    </a>
     {% if has_conversion_data %}
     <a href="{% url 'tickets:conversion_rate' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-percent"></i></span>
