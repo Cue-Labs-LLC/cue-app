@@ -12,6 +12,7 @@ from django.http import JsonResponse
 from ..services.meta_ads import MetaAdsAPIError
 from ..services.meta_ads import MetaAdsClient
 from ..services.meta_campaign_matcher import MetaCampaignMatcher
+from ..services.meta_ads_sync import reset_meta_ads_sync, synced_account_differs
 from django.core.cache import cache as django_cache
 from django.utils import timezone as django_tz
 from ..services.meta_ads import exchange_for_long_lived_token
@@ -131,6 +132,7 @@ def meta_ads_callback(request):
         django_tz.now() + timedelta(seconds=int(expires_in))
         if expires_in else None
     )
+    # Synced history is kept: a routine token renewal re-picks the same account.
     org.save(update_fields=[
         'meta_ads_access_token',
         'meta_ads_user_id',
@@ -166,9 +168,15 @@ def meta_ads_select_account(request):
             messages.error(request, 'Please choose a valid Meta ad account.')
             return redirect('tickets:meta_ads_select_account')
 
+        update_fields = ['meta_ads_account_id', 'meta_ads_account_name']
+        if synced_account_differs(org, selected.get('id', '')):
+            # Synced history belongs to another account; the next scheduled
+            # sync rebuilds it for this one.
+            reset_meta_ads_sync(org)
+            update_fields += ['meta_ads_synced_since', 'meta_ads_synced_at']
         org.meta_ads_account_id = selected.get('id', '')
         org.meta_ads_account_name = selected.get('name', '')
-        org.save(update_fields=['meta_ads_account_id', 'meta_ads_account_name'])
+        org.save(update_fields=update_fields)
         messages.success(request, f'Meta Ads account "{org.meta_ads_account_name}" connected.')
         return redirect('tickets:meta_ads_settings')
 
@@ -191,12 +199,15 @@ def meta_ads_disconnect(request):
     org.meta_ads_account_id = ''
     org.meta_ads_account_name = ''
     org.meta_ads_token_expires_at = None
+    reset_meta_ads_sync(org)
     org.save(update_fields=[
         'meta_ads_access_token',
         'meta_ads_user_id',
         'meta_ads_account_id',
         'meta_ads_account_name',
         'meta_ads_token_expires_at',
+        'meta_ads_synced_since',
+        'meta_ads_synced_at',
     ])
     messages.success(request, 'Meta Ads disconnected.')
     return redirect('tickets:meta_ads_settings')
@@ -576,9 +587,16 @@ def meta_ads_dashboard(request):
     connected = bool(org.meta_ads_access_token and org.meta_ads_account_id)
 
     data, error, rate_limited = None, None, False
+    refresh = bool(request.GET.get('refresh'))
+    if connected and refresh and calculator.uses_synced_data():
+        # Synced numbers refresh by re-syncing recent days from Meta in the
+        # background; the page keeps reading the (soon updated) local rows.
+        from ..tasks import sync_meta_ads_insights_task
+        sync_meta_ads_insights_task.delay(str(org.pk), start_backfill=False)
+        messages.info(request, 'Syncing the latest numbers from Meta. Reload in a minute to see them.')
     if connected:
         try:
-            data = calculator.calculate(refresh=bool(request.GET.get('refresh')))
+            data = calculator.calculate(refresh=refresh)
         except MetaAdsAPIError as exc:
             error = str(exc)
             rate_limited = exc.is_rate_limited

@@ -1810,3 +1810,97 @@ def scan_event_competition_task(self, event_id, genre_hints=None,
     finally:
         safe_cache_delete(_competition_lock_key(event_id))
         flush_traces()
+
+
+# Meta Ads daily Insights sync -------------------------------------------------
+# Rate-limited by Meta? Back off this long before retrying (Insights throttling
+# windows on the Limited tier are minutes, not seconds).
+META_ADS_RATE_LIMIT_BACKOFF_SECONDS = 15 * 60
+# Gap between backfill months, to spread a ~36-month backfill out over time.
+META_ADS_BACKFILL_STEP_DELAY_SECONDS = 60
+META_ADS_BACKFILL_LOCK_TTL_SECONDS = 2 * 60 * 60
+
+
+def _meta_ads_backfill_lock_key(organization_id):
+    return f'meta_ads_backfill_lock:{organization_id}'
+
+
+def _meta_ads_sync_org(organization_id):
+    from tickets.models import Organization
+
+    org = Organization.objects.filter(pk=organization_id).first()
+    if org is None or not (org.meta_ads_access_token and org.meta_ads_account_id):
+        return None
+    return org
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=META_ADS_RATE_LIMIT_BACKOFF_SECONDS)
+def sync_meta_ads_insights_task(self, organization_id, start_backfill=True):
+    """Re-sync the trailing ~28 days of daily ad Insights for one org.
+
+    Run every few hours by the ``sync_meta_ads_insights`` command (and on
+    demand from the dashboard's Refresh). Kicks off the month-by-month backfill
+    chain if older history is still missing and no chain is running.
+    """
+    from django.core.cache import cache
+
+    from tickets.services.meta_ads import MetaAdsAPIError
+    from tickets.services.meta_ads_sync import MetaAdsInsightsSync
+
+    org = _meta_ads_sync_org(organization_id)
+    if org is None:
+        return 'not_connected'
+    sync = MetaAdsInsightsSync(org)
+    try:
+        count = sync.sync_recent()
+    except MetaAdsAPIError as exc:
+        if exc.is_rate_limited or exc.is_transient:
+            raise self.retry(exc=exc)
+        logger.warning('Meta Ads sync failed for org %s: %s', organization_id, exc)
+        return 'error'
+
+    if start_backfill and not sync.is_backfilled():
+        if cache.add(_meta_ads_backfill_lock_key(organization_id), 1, META_ADS_BACKFILL_LOCK_TTL_SECONDS):
+            backfill_meta_ads_insights_task.apply_async(
+                args=[organization_id], countdown=META_ADS_BACKFILL_STEP_DELAY_SECONDS,
+            )
+    return count
+
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=META_ADS_RATE_LIMIT_BACKOFF_SECONDS)
+def backfill_meta_ads_insights_task(self, organization_id):
+    """Sync one more month of history, then re-enqueue until Meta's floor.
+
+    Holds the per-org backfill lock (taken by whoever starts the chain) for the
+    life of the chain, refreshing it each step, so only one chain runs per org.
+    """
+    from django.core.cache import cache
+
+    from tickets.services.meta_ads import MetaAdsAPIError
+    from tickets.services.meta_ads_sync import MetaAdsInsightsSync
+
+    lock_key = _meta_ads_backfill_lock_key(organization_id)
+    org = _meta_ads_sync_org(organization_id)
+    if org is None:
+        cache.delete(lock_key)
+        return 'not_connected'
+
+    sync = MetaAdsInsightsSync(org)
+    try:
+        count = sync.backfill_previous_month()
+    except MetaAdsAPIError as exc:
+        if (exc.is_rate_limited or exc.is_transient) and self.request.retries < self.max_retries:
+            cache.set(lock_key, 1, META_ADS_BACKFILL_LOCK_TTL_SECONDS)
+            raise self.retry(exc=exc)
+        logger.warning('Meta Ads backfill stopped for org %s: %s', organization_id, exc)
+        cache.delete(lock_key)
+        return 'error'
+
+    if count is None or sync.is_backfilled():
+        cache.delete(lock_key)
+        return 'done'
+    cache.set(lock_key, 1, META_ADS_BACKFILL_LOCK_TTL_SECONDS)
+    backfill_meta_ads_insights_task.apply_async(
+        args=[organization_id], countdown=META_ADS_BACKFILL_STEP_DELAY_SECONDS,
+    )
+    return count

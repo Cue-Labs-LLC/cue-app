@@ -15,11 +15,14 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.cache import cache as django_cache
+from django.db.models import Max, Sum
 from django.utils import timezone as django_tz
+
+from ..models import MetaAdDailyInsight
 
 from .meta_ads import (
     MetaAdsAPIError,
@@ -61,12 +64,28 @@ class AdsDateRange:
     def cache_token(self):
         return self.date_preset or f'{self.since:%Y%m%d}-{self.until:%Y%m%d}'
 
+    def bounds(self, today):
+        """Inclusive (since, until) dates, matching Meta's preset semantics:
+        rolling ``last_Nd`` presets end yesterday; lifetime runs through today."""
+        if self.since:
+            return self.since, self.until
+        if self.date_preset == 'maximum':
+            return insights_history_floor(today), today
+        days = int(self.date_preset.removeprefix('last_').removesuffix('d'))
+        return today - timedelta(days=days), today - timedelta(days=1)
+
 
 def preset_date_range(key):
     """A rolling/lifetime range, falling back to the default for unknown keys."""
     labels = dict([*ROLLING_DATE_PRESETS, LIFETIME_PRESET])
     key = key if key in labels else DEFAULT_DATE_PRESET
     return AdsDateRange(key=key, label=labels[key], date_preset=key)
+
+
+def insights_history_floor(today):
+    """Earliest date Meta reliably serves Insights for (first of a month ~3 years back)."""
+    years_back, month_index = divmod(today.month - 1 - INSIGHTS_HISTORY_MONTHS, 12)
+    return date(today.year + years_back, month_index + 1, 1)
 
 
 def _format_day(d):
@@ -81,8 +100,7 @@ def calendar_date_range(key, label, start, end, today):
     history limit; a missing start means "as far back as Meta has". Custom
     ranges are labelled with their effective dates.
     """
-    years_back, month_index = divmod(today.month - 1 - INSIGHTS_HISTORY_MONTHS, 12)
-    floor = date(today.year + years_back, month_index + 1, 1)
+    floor = insights_history_floor(today)
     until = max(min(end or today, today), floor)
     since = max(start or floor, floor)
     if since > until:
@@ -121,6 +139,10 @@ CREATIVES_PAGE_SIZE = 24
 MAX_CREATIVES_SHOWN = 96
 
 CACHE_TTL_SECONDS = 600
+# Synced daily rows (MetaAdDailyInsight) are used when they cover the requested
+# range and the last sync is at most this old; otherwise fall back to live.
+SYNCED_DATA_MAX_AGE = timedelta(days=1)
+CAMPAIGN_STATUS_TTL_SECONDS = 60 * 60
 # Last good pull per range, served (flagged as stale) when Meta rate-limits a
 # refresh — the Limited Marketing API tier throttles Insights aggressively.
 STALE_BACKUP_TTL_SECONDS = 60 * 60 * 24
@@ -212,6 +234,20 @@ def _sum_metrics(rows: list[dict]) -> dict:
     })
 
 
+def _synced_metrics(row: dict) -> dict:
+    """Metrics from an aggregated MetaAdDailyInsight row. ``purchases`` sums to
+    None only when every day lacked conversion data, matching the live path."""
+    return _with_ratios({
+        'spend': (row['spend'] or Decimal('0.00')).quantize(Decimal('0.01')),
+        'impressions': row['impressions'] or 0,
+        'link_clicks': row['link_clicks'] or 0,
+        'purchases': row['purchases'],
+        'purchase_value': (
+            row['purchase_value'].quantize(Decimal('0.01')) if row['purchase_value'] is not None else None
+        ),
+    })
+
+
 def _ad_from_row(row: dict) -> dict:
     return {
         'id': row.get('ad_id'),
@@ -286,20 +322,12 @@ class MetaAdsDashboardCalculator:
 
     def calculate(self, refresh=False) -> dict:
         """Raises MetaAdsAPIError if Meta rejects the request (e.g. expired token)."""
-        raw = self._raw_insights(refresh)
-
-        campaigns = [
-            {
-                'id': row.get('campaign_id'),
-                'name': row.get('campaign_name') or 'Untitled campaign',
-                'status': raw['statuses'].get(row.get('campaign_id'), ''),
-                **_row_metrics(row),
-            }
-            for row in raw['campaign_rows']
-        ]
+        performance = (
+            self._synced_performance() if self.uses_synced_data() else self._live_performance(refresh)
+        )
+        campaigns = performance['campaigns']
         campaigns.sort(key=lambda c: c['spend'], reverse=True)
-
-        ads = [_ad_from_row(row) for row in raw['ad_rows']]
+        ads = performance['ads']
         ads.sort(key=lambda a: a['spend'], reverse=True)
 
         if self.group:
@@ -313,9 +341,7 @@ class MetaAdsDashboardCalculator:
         creatives = units[:self.shown]
         self._attach_details(creatives, refresh)
 
-        currency = next(
-            (r.get('account_currency') for r in raw['campaign_rows'] if r.get('account_currency')), '',
-        )
+        currency = performance['currency']
         return {
             'currency': currency,
             'currency_prefix': '$' if currency in ('', 'USD', 'CAD', 'AUD') else f'{currency} ',
@@ -329,7 +355,111 @@ class MetaAdsDashboardCalculator:
             'stale_fetched_at': self.stale_fetched_at,
             # True when more ads cleared the pool floor than we pull.
             'ad_pool_capped': len(ads) >= AD_POOL_LIMIT,
+            # 'synced' (summed from MetaAdDailyInsight) or 'live' (Insights API).
+            'source': performance['source'],
+            'synced_at': performance.get('synced_at'),
         }
+
+    def uses_synced_data(self, today=None) -> bool:
+        """True when the daily sync fully covers this range and is fresh."""
+        org = self.organization
+        if not (org.meta_ads_synced_since and org.meta_ads_synced_at):
+            return False
+        if django_tz.now() - org.meta_ads_synced_at > SYNCED_DATA_MAX_AGE:
+            return False
+        since, _ = self.date_range.bounds(today or django_tz.localdate())
+        return since >= org.meta_ads_synced_since
+
+    def _synced_performance(self) -> dict:
+        """Campaign + ad metrics summed from synced daily rows (no Insights calls).
+
+        Reach/frequency aren't stored (not additive across days), so they're
+        unavailable here and render as "-".
+        """
+        org = self.organization
+        since, until = self.date_range.bounds(django_tz.localdate())
+        rows = MetaAdDailyInsight.objects.filter(
+            organization=org, ad_account_id=org.meta_ads_account_id, date__range=(since, until),
+        )
+        sums = {
+            'spend': Sum('spend'),
+            'impressions': Sum('impressions'),
+            'link_clicks': Sum('link_clicks'),
+            'purchases': Sum('purchases'),
+            'purchase_value': Sum('purchase_value'),
+        }
+        statuses = self._campaign_statuses()
+        campaigns = [
+            {
+                'id': row['campaign_id'],
+                'name': row['name'] or 'Untitled campaign',
+                'status': statuses.get(row['campaign_id'], ''),
+                **_synced_metrics(row),
+            }
+            for row in rows.values('campaign_id').annotate(name=Max('campaign_name'), **sums)
+        ]
+        ad_rows = (
+            rows.values('ad_id')
+            .annotate(
+                name=Max('ad_name'), adset=Max('adset_name'), campaign=Max('campaign_name'), **sums,
+            )
+            .filter(spend__gte=AD_POOL_MIN_SPEND)
+            .order_by('-spend')[:AD_POOL_LIMIT]
+        )
+        ads = [
+            {
+                'id': row['ad_id'],
+                'name': row['name'] or 'Untitled ad',
+                'adset_name': row['adset'] or '',
+                'campaign_name': row['campaign'] or '',
+                'reach': None,
+                'frequency': None,
+                **_synced_metrics(row),
+            }
+            for row in ad_rows
+        ]
+        currency = rows.exclude(currency='').values_list('currency', flat=True).first() or ''
+        return {
+            'campaigns': campaigns, 'ads': ads, 'currency': currency,
+            'source': 'synced', 'synced_at': org.meta_ads_synced_at,
+        }
+
+    def _live_performance(self, refresh) -> dict:
+        """Campaign + ad metrics straight from the Insights API (cached)."""
+        raw = self._raw_insights(refresh)
+        campaigns = [
+            {
+                'id': row.get('campaign_id'),
+                'name': row.get('campaign_name') or 'Untitled campaign',
+                'status': raw['statuses'].get(row.get('campaign_id'), ''),
+                **_row_metrics(row),
+            }
+            for row in raw['campaign_rows']
+        ]
+        currency = next(
+            (r.get('account_currency') for r in raw['campaign_rows'] if r.get('account_currency')), '',
+        )
+        return {
+            'campaigns': campaigns,
+            'ads': [_ad_from_row(row) for row in raw['ad_rows']],
+            'currency': currency,
+            'source': 'live',
+        }
+
+    def _campaign_statuses(self) -> dict:
+        """Campaign id -> status, cached. Best-effort: badges are omitted if
+        Meta can't be reached, rather than failing a page that needs no Insights."""
+        cache_key = f'{self._cache_prefix}:campaign_statuses:v1'
+        statuses = django_cache.get(cache_key)
+        if statuses is None:
+            try:
+                campaigns = self.client.list_campaigns(self.organization.meta_ads_account_id)
+            except MetaAdsAPIError:
+                logger.warning('Meta Ads dashboard: could not load campaign statuses', exc_info=True)
+                return {}
+            statuses = {c.get('id'): c.get('status', '') for c in campaigns}
+            django_cache.set(cache_key, statuses, CAMPAIGN_STATUS_TTL_SECONDS)
+        return statuses
 
     def _sort_key(self, unit):
         """Sort by the chosen metric; creatives missing it go last; ties by spend."""

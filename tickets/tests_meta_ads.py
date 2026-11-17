@@ -1308,3 +1308,284 @@ class MetaAdsClientBatchingTests(TestCase):
             _json.loads(mock_get.call_args.kwargs['params']['filtering']),
             [{'field': 'spend', 'operator': 'GREATER_THAN_OR_EQUAL', 'value': 25.0}],
         )
+
+
+def _daily_row(day, ad_id, spend, purchases=None, value=None, campaign_id='c1', **extra):
+    row = {
+        'date_start': day.isoformat(), 'ad_id': ad_id, 'ad_name': f'Ad {ad_id}',
+        'adset_name': 'Set', 'campaign_id': campaign_id, 'campaign_name': f'Campaign {campaign_id}',
+        'account_currency': 'USD', 'spend': spend, 'impressions': '1000', 'inline_link_clicks': '20',
+        **extra,
+    }
+    if purchases is not None:
+        row['actions'] = [{'action_type': 'purchase', 'value': str(purchases)}]
+        row['action_values'] = [{'action_type': 'purchase', 'value': str(value)}]
+    return row
+
+
+class MetaAdsInsightsSyncTests(TestCase):
+    def setUp(self):
+        from datetime import date
+        self.today = date(2026, 11, 17)
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='token', meta_ads_account_id='act_123',
+        )
+        self.client_mock = MagicMock()
+
+    def _sync(self):
+        from .services.meta_ads_sync import MetaAdsInsightsSync
+        return MetaAdsInsightsSync(self.org, client=self.client_mock)
+
+    def test_sync_recent_replaces_trailing_window_and_marks_coverage(self):
+        from datetime import date, timedelta
+        from .models import MetaAdDailyInsight
+        old_day = date(2026, 9, 1)  # outside the 28-day window: must survive
+        MetaAdDailyInsight.objects.create(organization=self.org, ad_account_id='act_123', date=old_day, ad_id='9', spend=5)
+        MetaAdDailyInsight.objects.create(organization=self.org, ad_account_id='act_123', date=self.today, ad_id='1', spend=1)
+        self.client_mock.get_account_insights.return_value = [
+            _daily_row(self.today, '1', '40.00', purchases=2, value='90.00'),
+            _daily_row(self.today - timedelta(days=1), '1', '30.00'),
+        ]
+
+        count = self._sync().sync_recent(today=self.today)
+
+        kwargs = self.client_mock.get_account_insights.call_args.kwargs
+        self.assertEqual(kwargs['time_increment'], 1)
+        self.assertEqual(kwargs['time_range'], (self.today - timedelta(days=27), self.today))
+        self.assertEqual(count, 2)
+        rows = MetaAdDailyInsight.objects.filter(organization=self.org)
+        self.assertEqual(rows.count(), 3)
+        latest = rows.get(date=self.today)
+        self.assertEqual((latest.spend, latest.purchases, latest.purchase_value), (Decimal('40.00'), 2, Decimal('90.00')))
+        self.assertIsNone(rows.get(date=self.today - timedelta(days=1)).purchases)
+        self.assertTrue(rows.filter(date=old_day).exists())
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.meta_ads_synced_since, self.today - timedelta(days=27))
+        self.assertIsNotNone(self.org.meta_ads_synced_at)
+
+    def test_backfill_walks_back_a_month_at_a_time_to_the_floor(self):
+        from datetime import date
+        self.client_mock.get_account_insights.return_value = []
+        self.org.meta_ads_synced_since = date(2026, 10, 21)
+        sync = self._sync()
+
+        sync.backfill_previous_month(today=self.today)
+        self.assertEqual(self.client_mock.get_account_insights.call_args.kwargs['time_range'],
+                         (date(2026, 10, 1), date(2026, 10, 20)))
+        sync.backfill_previous_month(today=self.today)
+        self.assertEqual(self.client_mock.get_account_insights.call_args.kwargs['time_range'],
+                         (date(2026, 9, 1), date(2026, 9, 30)))
+        self.assertFalse(sync.is_backfilled(today=self.today))
+
+        self.org.meta_ads_synced_since = date(2023, 12, 1)
+        sync.backfill_previous_month(today=self.today)
+        self.assertEqual(self.org.meta_ads_synced_since, date(2023, 11, 1))
+        self.assertTrue(sync.is_backfilled(today=self.today))
+        self.assertIsNone(sync.backfill_previous_month(today=self.today))
+
+    def test_backfill_needs_an_initial_sync(self):
+        self.assertIsNone(self._sync().backfill_previous_month(today=self.today))
+        self.client_mock.get_account_insights.assert_not_called()
+
+
+class MetaAdsSyncTaskTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='token', meta_ads_account_id='act_123',
+        )
+
+    @patch('tickets.tasks.backfill_meta_ads_insights_task.apply_async')
+    @patch('tickets.services.meta_ads_sync.MetaAdsClient')
+    def test_sync_starts_one_backfill_chain(self, mock_client_cls, mock_backfill):
+        from .tasks import sync_meta_ads_insights_task
+        mock_client_cls.return_value.get_account_insights.return_value = []
+
+        sync_meta_ads_insights_task.apply(args=[str(self.org.pk)])
+        sync_meta_ads_insights_task.apply(args=[str(self.org.pk)])
+
+        self.assertEqual(mock_backfill.call_count, 1)  # lock held by the running chain
+
+    @patch('tickets.tasks.backfill_meta_ads_insights_task.apply_async')
+    @patch('tickets.services.meta_ads_sync.MetaAdsClient')
+    def test_refresh_sync_skips_backfill(self, mock_client_cls, mock_backfill):
+        from .tasks import sync_meta_ads_insights_task
+        mock_client_cls.return_value.get_account_insights.return_value = []
+        sync_meta_ads_insights_task.apply(args=[str(self.org.pk)], kwargs={'start_backfill': False})
+        mock_backfill.assert_not_called()
+
+    @patch('tickets.services.meta_ads_sync.MetaAdsClient')
+    def test_rate_limited_sync_retries(self, mock_client_cls):
+        from celery.exceptions import Retry
+        from .tasks import sync_meta_ads_insights_task
+        mock_client_cls.return_value.get_account_insights.side_effect = MetaAdsAPIError('slow down', code=4)
+        with patch.object(sync_meta_ads_insights_task, 'retry', side_effect=Retry()) as mock_retry:
+            with self.assertRaises(Retry):
+                sync_meta_ads_insights_task.run(str(self.org.pk))
+        mock_retry.assert_called_once()
+
+    def test_unconnected_org_is_skipped(self):
+        from .tasks import sync_meta_ads_insights_task
+        self.org.meta_ads_account_id = ''
+        self.org.save()
+        self.assertEqual(sync_meta_ads_insights_task.apply(args=[str(self.org.pk)]).get(), 'not_connected')
+
+    @patch('tickets.tasks.backfill_meta_ads_insights_task.apply_async')
+    @patch('tickets.services.meta_ads_sync.MetaAdsClient')
+    def test_backfill_chains_until_floor_then_releases_lock(self, mock_client_cls, mock_next):
+        from datetime import date
+        from django.core.cache import cache
+        from django.utils import timezone
+        from .services.meta_ads_dashboard import insights_history_floor
+        from .tasks import _meta_ads_backfill_lock_key, backfill_meta_ads_insights_task
+        mock_client_cls.return_value.get_account_insights.return_value = []
+        floor = insights_history_floor(timezone.localdate())
+        cache.set(_meta_ads_backfill_lock_key(str(self.org.pk)), 1)
+
+        self.org.meta_ads_synced_since = date(2026, 10, 21)
+        self.org.save()
+        backfill_meta_ads_insights_task.apply(args=[str(self.org.pk)])
+        self.assertEqual(mock_next.call_count, 1)
+
+        self.org.meta_ads_synced_since = floor.replace(month=floor.month % 12 + 1) if floor.month < 12 else floor.replace(year=floor.year + 1, month=1)
+        self.org.save()
+        result = backfill_meta_ads_insights_task.apply(args=[str(self.org.pk)]).get()
+        self.assertEqual(result, 'done')
+        self.assertEqual(mock_next.call_count, 1)
+        self.assertIsNone(cache.get(_meta_ads_backfill_lock_key(str(self.org.pk))))
+
+    @patch('tickets.management.commands.sync_meta_ads_insights.sync_meta_ads_insights_task.delay')
+    def test_command_enqueues_connected_orgs(self, mock_delay):
+        from django.core.management import call_command
+        Organization.objects.create(name='Other', slug='other')  # not connected
+        call_command('sync_meta_ads_insights', stdout=MagicMock())
+        mock_delay.assert_called_once_with(str(self.org.pk))
+
+
+class MetaAdsSyncedDashboardTests(_MetaAdsDashboardFixtures, TestCase):
+    """Dashboard reads synced daily rows when they cover the range."""
+
+    def setUp(self):
+        super().setUp()
+        from datetime import timedelta
+        from django.utils import timezone
+        from .models import MetaAdDailyInsight
+        self.today = timezone.localdate()
+        self.org.meta_ads_synced_since = self.today - timedelta(days=60)
+        self.org.meta_ads_synced_at = timezone.now()
+        self.org.save()
+
+        def add(days_ago, ad_id, spend, purchases=None, value=None, campaign_id='c1'):
+            MetaAdDailyInsight.objects.create(
+                organization=self.org, ad_account_id='act_123', date=self.today - timedelta(days=days_ago),
+                ad_id=ad_id, ad_name=f'Ad {ad_id}', campaign_id=campaign_id, campaign_name=f'Campaign {campaign_id}',
+                currency='USD', spend=Decimal(spend), impressions=1000, link_clicks=20,
+                purchases=purchases, purchase_value=Decimal(value) if value is not None else None,
+            )
+        add(1, '1', '100.00', 5, '400.00')
+        add(2, '1', '50.00', 1, '50.00')
+        add(3, '2', '200.00', campaign_id='c2')  # no conversion data
+        add(40, '1', '999.00', 99, '9999.00')  # outside last_30d
+        add(1, '3', '10.00', 1, '100.00')  # under the $25 pool floor
+        # Another account's row must never leak in.
+        MetaAdDailyInsight.objects.create(
+            organization=self.org, ad_account_id='act_999', date=self.today - timedelta(days=1),
+            ad_id='x', spend=Decimal('5000'), impressions=1,
+        )
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_sums_synced_rows_without_insights_calls(self, mock_client_cls):
+        client = self._mock(mock_client_cls, [])
+        client.list_campaigns.return_value = [{'id': 'c1', 'status': 'ACTIVE'}]
+
+        response = self.client.get(self.url, {'range': 'last_30d', 'sort': 'spend', 'group': '0'})
+
+        client.get_account_insights.assert_not_called()
+        data = response.context['data']
+        self.assertEqual(data['source'], 'synced')
+        self.assertEqual(data['totals']['spend'], Decimal('360.00'))
+        self.assertEqual(data['totals']['purchases'], 7)
+        campaigns = {c['id']: c for c in data['campaigns']}
+        self.assertEqual(campaigns['c1']['spend'], Decimal('160.00'))
+        self.assertEqual(campaigns['c1']['status'], 'ACTIVE')
+        self.assertIsNone(campaigns['c2']['purchases'])  # every day lacked conversion data
+        ad = {c['id']: c for c in data['creatives']}
+        self.assertEqual(set(ad), {'1', '2'})  # ad 3 under the $25 floor
+        self.assertEqual(ad['1']['spend'], Decimal('150.00'))
+        self.assertEqual(ad['1']['roas'], Decimal('3.00'))
+        self.assertIsNone(ad['1']['reach'])
+        self.assertContains(response, 'Synced')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_falls_back_to_live_outside_coverage_or_when_stale(self, mock_client_cls):
+        from datetime import timedelta
+        from django.utils import timezone
+        client = self._mock(mock_client_cls, self.ADS)
+
+        response = self.client.get(self.url, {'range': 'last_90d'})  # older than synced_since
+        self.assertEqual(response.context['data']['source'], 'live')
+        self.assertContains(response, 'Live from Meta')
+
+        self.org.meta_ads_synced_at = timezone.now() - timedelta(days=2)
+        self.org.save()
+        response = self.client.get(self.url, {'range': 'last_7d'})
+        self.assertEqual(response.context['data']['source'], 'live')
+        self.assertTrue(client.get_account_insights.called)
+
+    @patch('tickets.tasks.sync_meta_ads_insights_task.delay')
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_refresh_enqueues_a_sync(self, mock_client_cls, mock_delay):
+        self._mock(mock_client_cls, [])
+        response = self.client.get(self.url, {'range': 'last_7d', 'refresh': '1'})
+        mock_delay.assert_called_once_with(str(self.org.pk), start_backfill=False)
+        self.assertContains(response, 'Syncing the latest numbers from Meta')
+
+    def test_preset_bounds_match_meta_semantics(self):
+        from datetime import date
+        from .services.meta_ads_dashboard import insights_history_floor, preset_date_range
+        today = date(2026, 11, 17)
+        self.assertEqual(preset_date_range('last_7d').bounds(today), (date(2026, 11, 10), date(2026, 11, 16)))
+        self.assertEqual(preset_date_range('maximum').bounds(today), (insights_history_floor(today), today))
+
+
+class MetaAdsSyncLifecycleTests(_MetaAdsDashboardFixtures, TestCase):
+    def setUp(self):
+        super().setUp()
+        from datetime import date
+        from django.utils import timezone
+        from .models import MetaAdDailyInsight
+        self.org.meta_ads_synced_since = date(2026, 1, 1)
+        self.org.meta_ads_synced_at = timezone.now()
+        self.org.save()
+        MetaAdDailyInsight.objects.create(organization=self.org, ad_account_id='act_123', date=date(2026, 5, 1), ad_id='1', spend=1)
+
+    def _rows(self):
+        from .models import MetaAdDailyInsight
+        return MetaAdDailyInsight.objects.filter(organization=self.org).count()
+
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
+    def test_reselecting_same_account_keeps_history(self, mock_client_cls):
+        mock_client_cls.return_value.list_ad_accounts.return_value = [{'id': 'act_123', 'name': 'Main'}]
+        self.org.meta_ads_account_id = ''  # as left by an OAuth reconnect
+        self.org.save()
+        self.client.post(reverse('tickets:meta_ads_select_account'), {'account_id': 'act_123'})
+        self.org.refresh_from_db()
+        self.assertEqual(self._rows(), 1)
+        self.assertIsNotNone(self.org.meta_ads_synced_since)
+
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
+    def test_switching_account_resets_history(self, mock_client_cls):
+        mock_client_cls.return_value.list_ad_accounts.return_value = [{'id': 'act_456', 'name': 'Other'}]
+        self.client.post(reverse('tickets:meta_ads_select_account'), {'account_id': 'act_456'})
+        self.org.refresh_from_db()
+        self.assertEqual(self._rows(), 0)
+        self.assertIsNone(self.org.meta_ads_synced_since)
+
+    def test_disconnect_deletes_synced_data(self):
+        self.client.post(reverse('tickets:meta_ads_disconnect'))
+        self.org.refresh_from_db()
+        self.assertEqual(self._rows(), 0)
+        self.assertIsNone(self.org.meta_ads_synced_at)
