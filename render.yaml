@@ -162,6 +162,33 @@ services:
           type: redis
           property: connectionString
 
+  # Meta Ads daily Insights sync. Every 3 hours: enqueue one task per org with a
+  # connected ad account; each re-syncs the trailing 28 days into
+  # MetaAdDailyInsight (Meta revises conversions inside its attribution window)
+  # and continues the month-by-month history backfill until ~3 years back.
+  # The Meta Ads dashboard reads these rows instead of querying Meta live.
+  - type: cron
+    name: cue-meta-ads-sync
+    runtime: python
+    schedule: "15 */3 * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py sync_meta_ads_insights
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
   # Marketing SMS scheduler. Every 5 min: dispatch due scheduled campaigns and
   # recover any stuck mid-send. Only enqueues Celery tasks (sending runs on the
   # worker), so it needs DB + broker but not Twilio creds.

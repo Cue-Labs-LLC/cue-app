@@ -121,9 +121,18 @@
         <button type="submit" class="btn btn-sm btn-primary">Apply</button>
     </form>
     {% endif %}
-    <a href="?{{ range_query }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}&amp;refresh=1" class="btn btn-sm btn-outline-secondary" title="Data is cached for 10 minutes">
+    <a href="?{{ range_query }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}&amp;refresh=1" class="btn btn-sm btn-outline-secondary" title="{% if data.source == 'synced' %}Re-sync recent days from Meta{% else %}Data is cached for 10 minutes{% endif %}">
         <i class="bi bi-arrow-clockwise"></i> Refresh
     </a>
+    {% if data.source == 'synced' %}
+    <span class="text-muted small" title="Summed from Cue's synced daily Meta data">
+        <i class="bi bi-database-check me-1"></i>Synced {{ data.synced_at|timesince }} ago
+    </span>
+    {% elif data.source == 'live' %}
+    <span class="text-muted small" title="This range isn't synced yet, so it was loaded live from Meta">
+        <i class="bi bi-broadcast me-1"></i>Live from Meta
+    </span>
+    {% endif %}
 </div>
 
 {% if error and rate_limited %}
@@ -366,7 +375,8 @@
                 <div><dt>Reach</dt><dd>{% if a.reach %}{{ a.reach|intcomma }}{% else %}&mdash;{% endif %}</dd></div>
                 <div><dt>Frequency</dt><dd>{% if a.frequency %}{{ a.frequency }}{% else %}&mdash;{% endif %}</dd></div>
             </dl>
-            {% if a.ad_count > 1 %}<div class="cd-note">Totals across all {{ a.ad_count }} ads. Reach and frequency aren't combined because the same person can see several ads.</div>{% endif %}
+            {% if a.ad_count > 1 %}<div class="cd-note">Totals across all {{ a.ad_count }} ads. Reach and frequency aren't combined because the same person can see several ads.</div>
+            {% elif data.source == 'synced' %}<div class="cd-note">Reach and frequency aren't kept in Cue's synced daily data because they can't be added up across days.</div>{% endif %}
         </div>
 
         {% if a.ad_count > 1 %}

@@ -283,7 +283,8 @@ class MetaAdsClient:
     def get_account_insights(self, ad_account_id: str, *, level: str, fields: str,
                              date_preset: str = '', time_range: tuple | None = None,
                              limit: int = 500, sort: str = '',
-                             min_spend: Decimal | int | None = None) -> list[dict]:
+                             min_spend: Decimal | int | None = None,
+                             time_increment: int | None = None) -> list[dict]:
         """Raw Insights rows for every campaign/adset/ad in the account at ``level``.
 
         Pass either a Meta ``date_preset`` (e.g. ``last_30d``) or an inclusive
@@ -292,6 +293,8 @@ class MetaAdsClient:
         is given (e.g. ``spend_descending``) — pass it whenever ``limit`` may
         truncate, so the cap drops the smallest rows. ``min_spend`` filters on
         Meta's side, so small rows never count toward ``limit``.
+        ``time_increment=1`` splits each object into one row per day
+        (``date_start``).
         """
         account_id = self._normalize_account_id(ad_account_id)
         params = {"level": level, "fields": fields}
@@ -302,6 +305,8 @@ class MetaAdsClient:
             params["date_preset"] = date_preset
         if sort:
             params["sort"] = sort
+        if time_increment:
+            params["time_increment"] = time_increment
         if min_spend:
             params["filtering"] = json.dumps([
                 {"field": "spend", "operator": "GREATER_THAN_OR_EQUAL", "value": float(min_spend)},
