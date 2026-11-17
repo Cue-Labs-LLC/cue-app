@@ -23785,6 +23785,43 @@ class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(result['summary']['event_count'], 1)
         self.assertEqual(result['summary']['tickets_sold'], 5)
 
+    def _expense(self, event, amount, category='marketing', **kwargs):
+        return EventExpense.objects.create(
+            event=event, category=category, description='Spend', amount=Decimal(amount), **kwargs
+        )
+
+    def test_ad_spend_sums_marketing_expenses_per_market(self):
+        a1 = self._event('A1', 10, self.austin)
+        self._sell(a1, paid=5, free=5)
+        a2 = self._event('A2', 20, self.austin)
+        self._expense(a1, '100.00')
+        self._expense(a1, '50.00', source='meta_ads')
+        self._expense(a2, '30.00')
+        self._expense(a1, '999.00', category='venue')  # not ad spend
+        self._expense(a2, '999.00', deleted_at=timezone.now())  # soft-deleted
+        d1 = self._event('D1', 5, self.dallas)
+        self._sell(d1, paid=3)
+
+        markets = self._by_label(self._calc())
+        self.assertEqual(markets['Austin']['ad_spend'], 180.0)
+        self.assertEqual(markets['Austin']['ad_spend_per_event'], 90.0)
+        self.assertEqual(markets['Dallas']['ad_spend'], 0.0)
+        # Multiple expense rows don't inflate the ticket counts (isolated Subqueries).
+        self.assertEqual(markets['Austin']['tickets_sold'], 10)
+        # Ad spend is per event, so the ticket filter leaves it unchanged.
+        paid = self._by_label(self._calc(ticket_filter='paid'))
+        self.assertEqual(paid['Austin']['ad_spend'], 180.0)
+
+    def test_top_event_includes_date(self):
+        top = self._event('Big Night', 12, self.austin)
+        self._sell(top, paid=40)
+        small = self._event('Small Night', 3, self.austin)
+        self._sell(small, paid=2)
+
+        top_event = self._by_label(self._calc())['Austin']['top_event']
+        self.assertEqual(top_event['name'], 'Big Night')
+        self.assertEqual(top_event['start_date'], self.today - timedelta(days=12))
+
 
 class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
     """Tests for the market_demand analytics page."""
@@ -23816,6 +23853,21 @@ class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
         self.assertTrue(resp.context['has_data'])
         self.assertEqual(resp.context['markets'][0]['avg_per_event'], 12.0)
         self.assertContains(resp, 'marketDemandChart')
+
+    def test_table_shows_ad_spend_and_top_event_date(self):
+        market = self._market('Austin')
+        e = self._event('Show', 10, market)
+        self._sell(e, paid=12)
+        EventExpense.objects.create(
+            event=e, category='marketing', description='Ads', amount=Decimal('1250.00'),
+        )
+        # Second event with no spend halves the per-event average: $625.
+        self._event('Quiet Show', 20, market)
+        resp = self.client.get(self.url)
+        self.assertContains(resp, 'Avg ad spend')
+        self.assertContains(resp, '>$625<')
+        self.assertContains(resp, '$1,250 total across 2 events')
+        self.assertContains(resp, e.start_date.strftime('%b ') + str(e.start_date.day) + e.start_date.strftime(', %Y'))
 
     def test_invalid_window_falls_back_to_default(self):
         resp = self.client.get(self.url, {'window': 'nope'})
