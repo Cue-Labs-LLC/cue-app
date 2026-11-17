@@ -23619,3 +23619,238 @@ class FixDoubledCountryCodePhonesTests(TestCase):
         self._run(apply=True)
         c.refresh_from_db()
         self.assertEqual(c.phone, '+118433188176')
+
+
+class _MarketDemandFixtures:
+    """Shared helpers for the Market Demand calculator + view tests."""
+
+    def _setup_org(self, slug='demand-org'):
+        self.org = Organization.objects.create(name='Demand Org', slug=slug)
+        self.venue = Venue.objects.create(organization=self.org, name='Demand Hall', city='Austin')
+        self.today = date.today()
+        self._seq = 0
+
+    def _market(self, name, org=None):
+        return Market.objects.create(
+            organization=org or self.org, name=name,
+            geography_level='city', geography_value=name,
+        )
+
+    def _event(self, name, days_ago, market=None, org=None, **kwargs):
+        org = org or self.org
+        venue = self.venue if org == self.org else Venue.objects.create(
+            organization=org, name='Other Hall', city='Elsewhere',
+        )
+        return Event.objects.create(
+            organization=org, name=name, venue=venue, market=market,
+            start_date=self.today - timedelta(days=days_ago), **kwargs
+        )
+
+    def _sell(self, event, paid=0, free=0, price=Decimal('25.00')):
+        """One order at `event` holding `paid` priced tickets and `free` $0 tickets."""
+        self._seq += 1
+        customer = Customer.objects.create(
+            organization=event.organization,
+            email='demand-{}@example.com'.format(self._seq), name='Buyer {}'.format(self._seq),
+        )
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number='DEM-{}'.format(self._seq),
+            order_date=timezone.now(), total_amount=price * paid,
+        )
+        tickets = [Ticket(ticket_order=order, ticket_type='GA', price=price) for _ in range(paid)]
+        tickets += [Ticket(ticket_order=order, ticket_type='Comp', price=Decimal('0.00')) for _ in range(free)]
+        Ticket.objects.bulk_create(tickets)
+        return order
+
+
+class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
+    """Average tickets sold per event, per market, over a trailing window."""
+
+    def setUp(self):
+        self._setup_org()
+        self.austin = self._market('Austin')
+        self.dallas = self._market('Dallas')
+
+    def _calc(self, days=90, ticket_filter='all'):
+        from tickets.services.market_demand import MarketDemandCalculator
+        start = self.today - timedelta(days=days - 1)
+        return MarketDemandCalculator(self.org, start, self.today, ticket_filter=ticket_filter).calculate()
+
+    def _by_label(self, result):
+        return {m['label']: m for m in result['markets']}
+
+    def test_average_per_market_counts_zero_ticket_events(self):
+        a1 = self._event('A1', 10, self.austin)
+        self._sell(a1, paid=30)
+        self._event('A2', 20, self.austin)  # held, sold nothing: still in the denominator
+        d1 = self._event('D1', 5, self.dallas)
+        self._sell(d1, paid=10)
+
+        markets = self._by_label(self._calc())
+        self.assertEqual(markets['Austin']['event_count'], 2)
+        self.assertEqual(markets['Austin']['tickets_sold'], 30)
+        self.assertEqual(markets['Austin']['avg_per_event'], 15.0)
+        self.assertEqual(markets['Dallas']['avg_per_event'], 10.0)
+        self.assertEqual(markets['Austin']['top_event']['name'], 'A1')
+        # Sorted by avg desc.
+        self.assertEqual([m['label'] for m in self._calc()['markets']], ['Austin', 'Dallas'])
+
+    def test_excludes_cancelled_future_and_out_of_window_events(self):
+        from tickets.models import EVENT_STATUS_CANCELLED
+        keep = self._event('Keep', 10, self.austin)
+        self._sell(keep, paid=8)
+        cancelled = self._event('Cancelled', 10, self.austin, status=EVENT_STATUS_CANCELLED)
+        self._sell(cancelled, paid=100)
+        future = self._event('Future', -10, self.austin)
+        self._sell(future, paid=100)
+        old = self._event('Old', 400, self.austin)
+        self._sell(old, paid=100)
+
+        result = self._calc()
+        austin = self._by_label(result)['Austin']
+        self.assertEqual(austin['event_count'], 1)
+        self.assertEqual(austin['avg_per_event'], 8.0)
+        self.assertEqual(result['end_date'], self.today)
+
+    def test_no_market_bucket(self):
+        from tickets.services.markets import NO_MARKET_LABEL
+        e = self._event('Loose', 5)
+        self._sell(e, paid=4)
+        markets = self._by_label(self._calc())
+        self.assertIn(NO_MARKET_LABEL, markets)
+        self.assertEqual(markets[NO_MARKET_LABEL]['avg_per_event'], 4.0)
+        self.assertEqual(markets[NO_MARKET_LABEL]['key'], 'none')
+
+    def test_prior_period_change(self):
+        # 30-day window: current = last 30 days, prior = the 30 days before that.
+        now_event = self._event('Now', 5, self.austin)
+        self._sell(now_event, paid=30)
+        before = self._event('Before', 40, self.austin)
+        self._sell(before, paid=20)
+        d = self._event('D-now', 5, self.dallas)
+        self._sell(d, paid=10)
+
+        result = self._calc(days=30)
+        markets = self._by_label(result)
+        self.assertEqual(markets['Austin']['prior_avg'], 20.0)
+        self.assertEqual(markets['Austin']['change_pct'], 50.0)
+        self.assertIsNone(markets['Dallas']['prior_avg'])
+        self.assertIsNone(markets['Dallas']['change_pct'])
+        self.assertEqual(result['prior_end'], self.today - timedelta(days=30))
+        self.assertEqual(result['prior_start'], self.today - timedelta(days=59))
+        # Summary: 40 tickets / 2 events now vs 20 / 1 before => 0% change.
+        self.assertEqual(result['summary']['avg_per_event'], 20.0)
+        self.assertEqual(result['summary']['change_pct'], 0.0)
+
+    def test_ticket_filter_paid_and_free(self):
+        mixed = self._event('Mixed', 5, self.austin)
+        self._sell(mixed, paid=6, free=4)
+        free_only = self._event('FreeOnly', 6, self.austin)
+        self._sell(free_only, free=10)
+
+        paid = self._by_label(self._calc(ticket_filter='paid'))['Austin']
+        free = self._by_label(self._calc(ticket_filter='free'))['Austin']
+        both = self._by_label(self._calc(ticket_filter='all'))['Austin']
+
+        # A free-only event still counts as an event (0 paid tickets).
+        self.assertEqual(paid['event_count'], 2)
+        self.assertEqual(paid['tickets_sold'], 6)
+        self.assertEqual(paid['avg_per_event'], 3.0)
+        self.assertEqual(free['tickets_sold'], 14)
+        self.assertEqual(free['avg_per_event'], 7.0)
+        self.assertEqual(both['tickets_sold'], paid['tickets_sold'] + free['tickets_sold'])
+
+    def test_invalid_ticket_filter_falls_back_to_all(self):
+        from tickets.services.market_demand import MarketDemandCalculator
+        e = self._event('E', 5, self.austin)
+        self._sell(e, paid=2, free=3)
+        calc = MarketDemandCalculator(
+            self.org, self.today - timedelta(days=30), self.today, ticket_filter='bogus',
+        )
+        self.assertEqual(calc.ticket_filter, 'all')
+        self.assertEqual(calc.calculate()['summary']['tickets_sold'], 5)
+
+    def test_scoped_to_organization(self):
+        other = Organization.objects.create(name='Other Org', slug='other-demand-org')
+        other_market = self._market('Austin', org=other)
+        foreign = self._event('Foreign', 5, other_market, org=other)
+        self._sell(foreign, paid=500)
+        mine = self._event('Mine', 5, self.austin)
+        self._sell(mine, paid=5)
+
+        result = self._calc()
+        self.assertEqual(result['summary']['event_count'], 1)
+        self.assertEqual(result['summary']['tickets_sold'], 5)
+
+
+class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
+    """Tests for the market_demand analytics page."""
+
+    def setUp(self):
+        self._setup_org(slug='demand-view-org')
+        self.user = User.objects.create_user(
+            username='demandview', email='demandview@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client = Client()
+        self.client.login(username='demandview@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.url = reverse('tickets:market_demand')
+
+    def test_default_window_renders_markets(self):
+        market = self._market('Austin')
+        e = self._event('Show', 10, market)
+        self._sell(e, paid=12)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['active_window'], '90d')
+        self.assertEqual(resp.context['ticket_filter'], 'all')
+        self.assertTrue(resp.context['has_data'])
+        self.assertEqual(resp.context['markets'][0]['avg_per_event'], 12.0)
+        self.assertContains(resp, 'marketDemandChart')
+
+    def test_invalid_window_falls_back_to_default(self):
+        resp = self.client.get(self.url, {'window': 'nope'})
+        self.assertEqual(resp.context['active_window'], '90d')
+
+    def test_custom_window(self):
+        market = self._market('Austin')
+        e = self._event('Old Show', 200, market)
+        self._sell(e, paid=7)
+        start = (self.today - timedelta(days=210)).isoformat()
+        end = (self.today - timedelta(days=190)).isoformat()
+        resp = self.client.get(self.url, {'window': 'custom', 'start': start, 'end': end})
+        self.assertEqual(resp.context['active_window'], 'custom')
+        self.assertEqual(resp.context['summary']['tickets_sold'], 7)
+        self.assertIn('start=' + start, resp.context['window_qs'])
+
+    def test_ticket_filter_param(self):
+        market = self._market('Austin')
+        e = self._event('Show', 10, market)
+        self._sell(e, paid=3, free=9)
+        resp = self.client.get(self.url, {'tickets': 'paid'})
+        self.assertEqual(resp.context['ticket_filter'], 'paid')
+        self.assertEqual(resp.context['summary']['tickets_sold'], 3)
+        self.assertContains(resp, 'Avg paid tickets')
+        resp = self.client.get(self.url, {'tickets': 'free'})
+        self.assertEqual(resp.context['summary']['tickets_sold'], 9)
+
+    def test_empty_state(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+        self.assertContains(resp, 'No events held in this window')
+
+    def test_hub_links_to_page(self):
+        resp = self.client.get(reverse('tickets:analytics_overview'))
+        self.assertContains(resp, self.url)
+
+    def test_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 302)

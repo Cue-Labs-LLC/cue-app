@@ -1,0 +1,232 @@
+{% extends 'tickets/base.html' %}
+
+{% load humanize %}
+{% block title %}Market Demand{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<style>
+  .md-table td.text-end, .md-table th.text-end { text-align: right; }
+  .md-table .md-num { font-variant-numeric: tabular-nums; }
+  .md-change { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .md-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+  .md-top-event { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Market Demand</h1>
+        <p class="page-header-subtitle">Average {{ ticket_noun }} sold per event in each market, for events held in the selected window.</p>
+    </div>
+</div>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <div class="window-selector mb-0">
+    <div class="dropdown">
+      <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+        <i class="bi bi-calendar3"></i>
+        {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+      </button>
+      <ul class="dropdown-menu">
+        {% for label, key in window_choices %}
+        <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}&amp;tickets={{ ticket_filter }}">{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% if active_window == 'custom' %}
+    <form class="d-flex flex-wrap align-items-center gap-2" method="get">
+      <input type="hidden" name="window" value="custom">
+      <input type="hidden" name="tickets" value="{{ ticket_filter }}">
+      <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
+      <span class="text-muted small">to</span>
+      <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
+      <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="btn-group btn-group-sm" role="group" aria-label="Ticket type" id="mdTicketFilter">
+    {% for label, key in ticket_filter_choices %}
+    <a href="?{{ window_qs }}&amp;tickets={{ key }}" class="btn btn-outline-secondary{% if ticket_filter == key %} active{% endif %}"{% if ticket_filter == key %} aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if has_data %}
+<div class="row mb-4 g-3">
+    <div class="col-md-3 col-6">
+        <div class="stat-card">
+            <div class="stat-label">Avg {{ ticket_noun }} / event</div>
+            <div class="stat-value">{{ summary.avg_per_event|floatformat:1|intcomma }}</div>
+            <div class="md-sub">
+                {% if summary.change_pct is not None %}
+                <span class="md-change {% if summary.change_pct > 0 %}text-success{% elif summary.change_pct < 0 %}text-danger{% else %}text-muted{% endif %}">
+                    {% if summary.change_pct > 0 %}<i class="bi bi-arrow-up-short"></i>+{% elif summary.change_pct < 0 %}<i class="bi bi-arrow-down-short"></i>{% endif %}{{ summary.change_pct|floatformat:1 }}%
+                </span> vs. prior period
+                {% else %}
+                No prior-period events to compare
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="stat-card">
+            <div class="stat-label">Events held</div>
+            <div class="stat-value">{{ summary.event_count|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="stat-card">
+            <div class="stat-label">{{ ticket_noun|capfirst }} sold</div>
+            <div class="stat-value">{{ summary.tickets_sold|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="stat-card">
+            <div class="stat-label">Markets</div>
+            <div class="stat-value">{{ summary.market_count }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0">Avg {{ ticket_noun }} sold per event</h5>
+        <span class="small text-muted">
+            {{ range_start|date:"M j, Y" }} &ndash; {{ range_end|date:"M j, Y" }}
+            &middot; prior: {{ prior_start|date:"M j, Y" }} &ndash; {{ prior_end|date:"M j, Y" }}
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="chart-container" id="mdChartWrap">
+            <canvas id="marketDemandChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 md-table">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th class="text-end">Events</th>
+                        <th class="text-end">{{ ticket_noun|capfirst }} sold</th>
+                        <th class="text-end">Avg / event</th>
+                        <th class="text-end">Median / event</th>
+                        <th class="text-end">vs. prior</th>
+                        <th>Top event</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for m in markets %}
+                    <tr>
+                        <td>{{ m.label }}</td>
+                        <td class="text-end md-num">{{ m.event_count|intcomma }}</td>
+                        <td class="text-end md-num">{{ m.tickets_sold|intcomma }}</td>
+                        <td class="text-end md-num fw-semibold">{{ m.avg_per_event|floatformat:1|intcomma }}</td>
+                        <td class="text-end md-num">{{ m.median_per_event|floatformat:1|intcomma }}</td>
+                        <td class="text-end">
+                            {% if m.change_pct is not None %}
+                            <span class="md-change {% if m.change_pct > 0 %}text-success{% elif m.change_pct < 0 %}text-danger{% else %}text-muted{% endif %}"
+                                  title="Prior period: {{ m.prior_avg|floatformat:1 }} avg over {{ m.prior_event_count }} event{{ m.prior_event_count|pluralize }}">
+                                {% if m.change_pct > 0 %}<i class="bi bi-arrow-up-short"></i>+{% elif m.change_pct < 0 %}<i class="bi bi-arrow-down-short"></i>{% endif %}{{ m.change_pct|floatformat:1 }}%
+                            </span>
+                            {% else %}
+                            <span class="text-muted" title="No events in this market during the prior period">&mdash;</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{% url 'tickets:event_detail' m.top_event.id %}" class="md-top-event" title="{{ m.top_event.name }}">{{ m.top_event.name }}</a>
+                            <span class="text-muted small md-num">({{ m.top_event.sold|intcomma }})</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script type="application/json" id="demand-data">{{ chart_json|safe }}</script>
+<script type="application/json" id="demand-config">{"noun": "{{ ticket_noun|escapejs }}"}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('demand-data');
+    if (!el || typeof Chart === 'undefined') return;
+    var markets = JSON.parse(el.textContent);  // sorted by avg desc server-side
+    if (!markets.length) return;
+    var noun = JSON.parse(document.getElementById('demand-config').textContent).noun;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var CURRENT = '#0d6efd';
+    var PRIOR = isDark ? 'rgba(173,181,189,0.35)' : 'rgba(108,117,125,0.3)';
+
+    // Size the chart to the number of markets so bars stay readable.
+    document.getElementById('mdChartWrap').style.height = Math.max(200, markets.length * 44 + 60) + 'px';
+
+    var fmt = function(v) { return Number(v).toLocaleString('en-US', { maximumFractionDigits: 1 }); };
+
+    new Chart(document.getElementById('marketDemandChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: markets.map(function(m) { return m.label; }),
+            datasets: [
+                {
+                    label: 'This period',
+                    data: markets.map(function(m) { return m.avg_per_event; }),
+                    backgroundColor: CURRENT, borderWidth: 0, borderRadius: 3
+                },
+                {
+                    label: 'Prior period',
+                    data: markets.map(function(m) { return m.prior_avg; }),
+                    backgroundColor: PRIOR, borderWidth: 0, borderRadius: 3
+                }
+            ]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: true, labels: { color: textColor, boxWidth: 12 } },
+                tooltip: { callbacks: {
+                    label: function(ctx) {
+                        if (ctx.parsed.x === null) return ctx.dataset.label + ': no events';
+                        return ctx.dataset.label + ': ' + fmt(ctx.parsed.x) + ' ' + noun + ' / event';
+                    },
+                    afterLabel: function(ctx) {
+                        var m = markets[ctx.dataIndex];
+                        var n = ctx.datasetIndex === 0 ? m.event_count : m.prior_event_count;
+                        return n ? '(' + n + ' event' + (n === 1 ? '' : 's') + ')' : '';
+                    }
+                } }
+            },
+            scales: {
+                x: { beginAtZero: true, grid: { color: gridColor },
+                     title: { display: true, text: 'Avg ' + noun + ' / event', color: textColor },
+                     ticks: { color: textColor, callback: function(v) { return fmt(v); } } },
+                y: { grid: { display: false }, ticks: { color: textColor } }
+            }
+        }
+    });
+});
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-ticket-perforated d-block"></i>
+            <p>No events held in this window. Try a wider range.</p>
+            <a href="?window=365d&amp;tickets={{ ticket_filter }}" class="btn btn-primary"><i class="bi bi-calendar3"></i> View last 12 months</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
