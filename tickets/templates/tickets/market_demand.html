@@ -118,6 +118,7 @@
                         <th class="text-end">Avg / event</th>
                         <th class="text-end">Median / event</th>
                         <th class="text-end">vs. prior</th>
+                        <th class="text-end" title="Average marketing expenses (manual + Meta Ads) per event held in this market during the window">Avg ad spend</th>
                         <th>Top event</th>
                     </tr>
                 </thead>
@@ -139,9 +140,17 @@
                             <span class="text-muted" title="No events in this market during the prior period">&mdash;</span>
                             {% endif %}
                         </td>
+                        <td class="text-end md-num">
+                            {% if m.ad_spend %}
+                            <span title="${{ m.ad_spend|floatformat:0|intcomma }} total across {{ m.event_count }} event{{ m.event_count|pluralize }}">${{ m.ad_spend_per_event|floatformat:0|intcomma }}</span>
+                            {% else %}
+                            <span class="text-muted" title="No marketing expenses recorded">&mdash;</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <a href="{% url 'tickets:event_detail' m.top_event.id %}" class="md-top-event" title="{{ m.top_event.name }}">{{ m.top_event.name }}</a>
                             <span class="text-muted small md-num">({{ m.top_event.sold|intcomma }})</span>
+                            <div class="text-muted small">{{ m.top_event.start_date|date:"M j, Y" }}</div>
                         </td>
                     </tr>
                     {% endfor %}

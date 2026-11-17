@@ -15,6 +15,10 @@ tickets per event" stays comparable across markets: a free-only show counts as
 
 In-person orders and refunded orders are counted, matching the tickets metric
 on Market Trends.
+
+Ad spend is each event's marketing expenses (manual + Meta Ads lines, both
+category='marketing'), summed per market. It is not affected by the ticket
+filter: spend is per event, not per ticket.
 """
 from datetime import date, timedelta
 
@@ -22,7 +26,7 @@ from django.db.models import Count, IntegerField, OuterRef, Subquery
 from django.db.models.functions import Coalesce
 
 from tickets.models import EVENT_STATUS_CANCELLED, Event, Ticket
-from tickets.services.conversion import _stats
+from tickets.services.conversion import _marketing_spend_expr, _stats
 from tickets.services.markets import NO_MARKET_LABEL
 
 
@@ -84,8 +88,9 @@ class MarketDemandCalculator:
                 start_date__lte=end,
             )
             .exclude(status=EVENT_STATUS_CANCELLED)
-            .annotate(sold=Coalesce(sold_subq, 0))
-            .values('id', 'name', 'start_date', 'market_id', 'market__name', 'sold')
+            # Each stat is its own Subquery, so tickets and spend never inflate each other.
+            .annotate(sold=Coalesce(sold_subq, 0), ad_spend=_marketing_spend_expr())
+            .values('id', 'name', 'start_date', 'market_id', 'market__name', 'sold', 'ad_spend')
         )
 
     @staticmethod
@@ -112,6 +117,7 @@ class MarketDemandCalculator:
             top = max(g['rows'], key=lambda r: (r['sold'], r['start_date']))
             prior_stats = _stats(prior[key]['sold'], 1) if key in prior else None
             prior_avg = prior_stats['avg'] if prior_stats else None
+            ad_spend = sum(r['ad_spend'] for r in g['rows'])
             markets.append({
                 'key': str(key) if key else 'none',
                 'label': g['label'],
@@ -122,10 +128,14 @@ class MarketDemandCalculator:
                 'prior_avg': prior_avg,
                 'prior_event_count': len(prior[key]['sold']) if key in prior else 0,
                 'change_pct': _pct_change(stats['avg'], prior_avg),
+                # Floats (2dp) so the payload stays JSON-safe for the chart blob.
+                'ad_spend': round(float(ad_spend), 2),
+                'ad_spend_per_event': round(float(ad_spend) / len(g['rows']), 2),
                 'top_event': {
                     'id': str(top['id']),
                     'name': top['name'],
                     'sold': top['sold'],
+                    'start_date': top['start_date'],
                 },
             })
         markets.sort(key=lambda m: (-m['avg_per_event'], m['label']))
