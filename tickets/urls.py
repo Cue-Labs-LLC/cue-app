@@ -132,6 +132,7 @@ urlpatterns = [
     path('analytics/audience/', views.audience_analytics, name='audience_analytics'),
     path('analytics/conversion/', views.conversion_rate, name='conversion_rate'),
     path('analytics/market-trends/', views.market_trends, name='market_trends'),
+    path('analytics/market-demand/', views.market_demand, name='market_demand'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/meta-ads/', meta_ads_views.meta_ads_dashboard, name='meta_ads_dashboard'),
     path('analytics/meta-ads/ads/<int:ad_id>/preview/', meta_ads_views.meta_ads_ad_preview, name='meta_ads_ad_preview'),

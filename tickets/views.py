@@ -326,6 +326,47 @@ def _parse_window(request):
     return start, end, window
 
 
+# Trailing windows for the Market Demand page ("recent" demand reads better as
+# last-N-days than as calendar periods). Key -> days back from today.
+DEMAND_WINDOW_CHOICES = [
+    ('Last 30 days',   '30d'),
+    ('Last 60 days',   '60d'),
+    ('Last 90 days',   '90d'),
+    ('Last 6 months',  '180d'),
+    ('Last 12 months', '365d'),
+    ('Custom',         'custom'),
+]
+_DEMAND_WINDOW_DAYS = {'30d': 30, '60d': 60, '90d': 90, '180d': 180, '365d': 365}
+DEMAND_DEFAULT_WINDOW = '90d'
+
+
+def _parse_demand_window(request):
+    """Return (start_date, end_date, active_window) for the Market Demand page.
+
+    Trailing windows end today. 'custom' reads ?start=/?end= (end defaults to
+    today); a missing/invalid start or an unknown key falls back to the default.
+    """
+    today = date.today()
+    window = request.GET.get('window', DEMAND_DEFAULT_WINDOW)
+    if window == 'custom':
+        try:
+            start = date.fromisoformat(request.GET.get('start', ''))
+        except ValueError:
+            start = None
+        try:
+            end = date.fromisoformat(request.GET.get('end', ''))
+        except ValueError:
+            end = today
+        if start is not None:
+            if start > end:
+                start, end = end, start
+            return start, end, 'custom'
+        window = DEMAND_DEFAULT_WINDOW
+    if window not in _DEMAND_WINDOW_DAYS:
+        window = DEMAND_DEFAULT_WINDOW
+    return today - timedelta(days=_DEMAND_WINDOW_DAYS[window] - 1), today, window
+
+
 def _event_list_cache_key(org_id, search, sort, page, status_filter, external_enabled=0):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
@@ -4335,6 +4376,47 @@ def market_trends(request):
     if request.GET.get('fragment'):
         return render(request, 'tickets/_market_trends_content.html', context)
     return render(request, 'tickets/market_trends.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def market_demand(request):
+    """Analytics page: recent avg tickets sold per event, by market."""
+    from tickets.services.market_demand import MarketDemandCalculator, normalize_ticket_filter
+
+    org = get_organization(request)
+    start_date, end_date, active_window = _parse_demand_window(request)
+    ticket_filter = normalize_ticket_filter(request.GET.get('tickets', 'all'))
+
+    result = MarketDemandCalculator(
+        org, start_date, end_date, ticket_filter=ticket_filter,
+    ).calculate()
+    markets = result['markets']
+
+    # Query string for the active window, so the ticket-type toggle keeps it.
+    window_params = {'window': active_window}
+    if active_window == 'custom':
+        window_params.update(start=start_date.isoformat(), end=end_date.isoformat())
+
+    return render(request, 'tickets/market_demand.html', {
+        'window_qs': urlencode(window_params),
+        'markets': markets,
+        'summary': result['summary'],
+        'chart_json': json.dumps(markets, default=str),
+        'has_data': bool(markets),
+        'ticket_filter': ticket_filter,
+        'ticket_filter_choices': [('All tickets', 'all'), ('Paid', 'paid'), ('Free', 'free')],
+        'ticket_noun': {'all': 'tickets', 'paid': 'paid tickets', 'free': 'free tickets'}[ticket_filter],
+        'active_window': active_window,
+        'window_start': start_date.isoformat() if active_window == 'custom' else '',
+        'window_end': end_date.isoformat() if active_window == 'custom' else '',
+        'range_start': result['start_date'],
+        'range_end': result['end_date'],
+        'prior_start': result['prior_start'],
+        'prior_end': result['prior_end'],
+        'window_choices': DEMAND_WINDOW_CHOICES,
+    })
 
 
 @login_required
