@@ -1,0 +1,540 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}Meta Ads{% endblock %}
+
+{% block extra_head %}
+<style>
+.ads-status { font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+.ads-table td, .ads-table th { white-space: nowrap; }
+.ads-table td:first-child { white-space: normal; min-width: 220px; }
+.creative-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.creative-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface); display: flex; flex-direction: column; position: relative; transition: border-color .15s, transform .15s, box-shadow .15s; }
+.creative-card:hover { border-color: var(--text-tertiary); transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.08); }
+.creative-card:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.creative-open { border: 0; background: none; padding: 0; }
+.creative-open:focus { outline: none; }
+.creative-thumb { aspect-ratio: 1 / 1; background: var(--bg-inset); display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 2rem; position: relative; }
+.creative-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.creative-rank { position: absolute; top: .5rem; left: .5rem; background: rgba(0,0,0,.65); color: #fff; font-size: .75rem; font-weight: 600; padding: .1rem .45rem; border-radius: 6px; }
+.creative-body { padding: .75rem; display: flex; flex-direction: column; gap: .5rem; flex: 1; }
+.creative-name { font-weight: 600; font-size: .9rem; line-height: 1.25; word-break: break-word; }
+.creative-campaign { font-size: .75rem; color: var(--text-secondary); word-break: break-word; }
+.creative-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .75rem; margin-top: auto; padding-top: .5rem; border-top: 1px solid var(--border-light); }
+.creative-metrics dt { font-size: .68rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.creative-metrics dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.ads-range-menu { max-height: 70vh; overflow-y: auto; }
+.creative-controls .form-select { width: auto; }
+.creative-controls .input-group-text { font-size: .75rem; }
+.creative-controls .form-check-label { white-space: nowrap; }
+.creative-group-badge { position: absolute; bottom: .5rem; left: .5rem; background: rgba(0,0,0,.7); color: #fff; font-size: .72rem; font-weight: 600; padding: .15rem .5rem; border-radius: 6px; display: inline-flex; align-items: center; gap: .3rem; }
+
+/* Detail side panel */
+.creative-panel { --bs-offcanvas-width: 460px; background: var(--bg-surface); color: var(--text-primary); border-left: 1px solid var(--border); }
+.creative-panel .offcanvas-header { border-bottom: 1px solid var(--border-light); }
+.creative-panel .offcanvas-title { font-size: .75rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); }
+[data-theme="dark"] .creative-panel .btn-close { filter: invert(1) grayscale(1) brightness(2); }
+.cd-media { border-radius: 10px; overflow: hidden; background: var(--bg-inset); aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 2.5rem; }
+.cd-media img { width: 100%; height: 100%; object-fit: contain; }
+/* Video ads swap the still for Meta's hosted preview player (a full feed post). */
+.cd-media--player { aspect-ratio: auto; background: #fff; display: block; }
+.cd-player { display: block; width: 100%; max-width: 400px; height: 640px; margin: 0 auto; border: 0; }
+.cd-media[data-preview-url] { position: relative; }
+/* Kept invisible (but laid out, so it still loads) until Meta's player is ready. */
+.cd-player.is-pending { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; }
+.cd-media--player .cd-player { transition: opacity .25s ease; }
+.cd-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .65rem; background: rgba(0,0,0,.5); color: #fff; font-size: .8rem; font-weight: 500; letter-spacing: .02em; }
+.cd-spinner { width: 2.25rem; height: 2.25rem; border-radius: 50%; border: 3px solid rgba(255,255,255,.3); border-top-color: #fff; animation: cd-spin .8s linear infinite; }
+@keyframes cd-spin { to { transform: rotate(360deg); } }
+.cd-player-error { font-size: .8rem; color: var(--text-secondary); margin-top: .5rem; }
+.creative-video-badge { position: absolute; top: .5rem; right: .5rem; background: rgba(0,0,0,.65); color: #fff; width: 1.6rem; height: 1.6rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+.cd-name { font-size: 1.1rem; font-weight: 600; line-height: 1.3; word-break: break-word; margin: 0; }
+.cd-path { font-size: .8rem; color: var(--text-secondary); word-break: break-word; }
+.cd-section-label { font-size: .68rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .4rem; }
+.cd-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border-light); border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; margin: 0; }
+.cd-metrics > div { background: var(--bg-surface); padding: .6rem .7rem; }
+.cd-metrics dt { font-size: .65rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.cd-metrics dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cd-copy { background: var(--bg-inset); border-radius: 8px; padding: .65rem .8rem; font-size: .875rem; line-height: 1.45; word-break: break-word; }
+.cd-copy + .cd-copy { margin-top: .4rem; }
+.cd-variant { font-size: .65rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: .15rem; }
+.cd-link { word-break: break-all; font-size: .85rem; }
+.cd-note { font-size: .75rem; color: var(--text-tertiary); margin-top: .4rem; }
+.cd-members { border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; }
+.cd-member { padding: .6rem .75rem; }
+.cd-member + .cd-member { border-top: 1px solid var(--border-light); }
+.cd-member-name { font-weight: 600; font-size: .85rem; word-break: break-word; }
+.cd-member-path { font-size: .75rem; color: var(--text-secondary); word-break: break-word; }
+.cd-member-stats { font-size: .78rem; margin-top: .2rem; font-variant-numeric: tabular-nums; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width: 1200px; margin: 0 auto;">
+<div class="page-header">
+    <div>
+        <h1>Meta Ads</h1>
+        <p class="page-header-subtitle mb-0">
+            {% if connected %}{{ org.meta_ads_account_name|default:org.meta_ads_account_id }} &middot; {{ active_range_label }}{% else %}Campaign and creative performance{% endif %}
+        </p>
+    </div>
+</div>
+
+{% if not connected %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-meta"></i>
+            <p>Connect your Meta ad account to see campaign and creative performance.</p>
+            <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-primary">Connect Meta Ads</a>
+        </div>
+    </div>
+</div>
+{% else %}
+
+<div class="window-selector mb-3">
+    <div class="dropdown">
+        <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-calendar3"></i> {{ active_range_label }}
+        </button>
+        <ul class="dropdown-menu ads-range-menu">
+            {% for key, label in rolling_ranges %}
+            <li><a class="dropdown-item{% if key == active_range %} active{% endif %}" href="?range={{ key }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}">{{ label }}</a></li>
+            {% endfor %}
+            <li><hr class="dropdown-divider"></li>
+            {% for key, label in calendar_ranges %}
+            <li><a class="dropdown-item{% if key == active_range %} active{% endif %}" href="?range={{ key }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}">{{ label }}</a></li>
+            {% endfor %}
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item{% if lifetime_range.0 == active_range %} active{% endif %}" href="?range={{ lifetime_range.0 }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}">{{ lifetime_range.1 }}</a></li>
+            <li><a class="dropdown-item{% if active_range == 'custom' %} active{% endif %}" href="?{{ custom_range_query }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}">Custom</a></li>
+        </ul>
+    </div>
+    {% if active_range == 'custom' %}
+    <form class="d-flex flex-wrap align-items-center gap-2" method="get">
+        <input type="hidden" name="range" value="custom">
+        {% for name, value in creative_params.items %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <input type="date" name="start" class="form-control form-control-sm" value="{{ range_start }}" max="{{ today_iso }}" style="width:auto" aria-label="Start date">
+        <span class="text-muted small">to</span>
+        <input type="date" name="end" class="form-control form-control-sm" value="{{ range_end }}" max="{{ today_iso }}" style="width:auto" aria-label="End date">
+        <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+    </form>
+    {% endif %}
+    <a href="?{{ range_query }}{% if creative_query %}&amp;{{ creative_query }}{% endif %}&amp;refresh=1" class="btn btn-sm btn-outline-secondary" title="Data is cached for 10 minutes">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+    </a>
+</div>
+
+{% if error and rate_limited %}
+<div class="alert alert-warning">
+    <i class="bi bi-hourglass-split me-2"></i>Meta is limiting how often Cue can pull ad data right now. Wait a few minutes, then try again.
+</div>
+{% elif error %}
+<div class="alert alert-danger d-flex justify-content-between align-items-center gap-3">
+    <div><i class="bi bi-exclamation-triangle me-2"></i>Couldn't load data from Meta: {{ error }}</div>
+    <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-sm btn-outline-danger flex-shrink-0">Check connection</a>
+</div>
+{% elif not data.campaigns %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-megaphone"></i>
+            <p>No ads delivered in this period.</p>
+            <a href="?range=maximum" class="btn btn-outline-secondary">View lifetime</a>
+        </div>
+    </div>
+</div>
+{% else %}
+{% if data.stale_fetched_at %}
+<div class="alert alert-warning">
+    <i class="bi bi-hourglass-split me-2"></i>Meta is limiting how often Cue can pull ad data right now, so this is data from {{ data.stale_fetched_at|timesince }} ago. Try Refresh in a few minutes.
+</div>
+{% endif %}
+{% with t=data.totals cur=data.currency_prefix %}
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Spend</div>
+            <div class="stat-value">{{ cur }}{{ t.spend|currency }}</div>
+            <div class="text-muted small mt-1">{{ t.impressions|intcomma }} impressions</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Purchases</div>
+            <div class="stat-value">{% if t.purchases is None %}&mdash;{% else %}{{ t.purchases|intcomma }}{% endif %}</div>
+            <div class="text-muted small mt-1">{% if t.cost_per_purchase %}{{ cur }}{{ t.cost_per_purchase|currency }} per purchase{% else %}No cost per purchase{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">ROAS</div>
+            <div class="stat-value">{% if t.roas is None %}&mdash;{% else %}{{ t.roas }}x{% endif %}</div>
+            <div class="text-muted small mt-1">{% if t.purchase_value is None %}No purchase value reported{% else %}{{ cur }}{{ t.purchase_value|currency }} purchase value{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Link CTR</div>
+            <div class="stat-value">{% if t.ctr is None %}&mdash;{% else %}{{ t.ctr }}%{% endif %}</div>
+            <div class="text-muted small mt-1">{{ t.link_clicks|intcomma }} clicks{% if t.cpc %} &middot; {{ cur }}{{ t.cpc|currency }} CPC{% endif %}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4" id="campaignsCard" data-preview-count="{{ campaigns_preview_count }}">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <h5 class="mb-0">Campaigns</h5>
+            <span class="text-muted small" id="campaignsCount">{{ data.campaigns|length }} campaign{{ data.campaigns|length|pluralize }} with spend, by spend</span>
+        </div>
+        <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" role="switch" id="campaignsActiveOnly">
+            <label class="form-check-label small" for="campaignsActiveOnly">Active only</label>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover ads-table mb-0">
+                <thead>
+                    <tr>
+                        <th>Campaign</th>
+                        <th class="text-end">Spend</th>
+                        <th class="text-end">Impressions</th>
+                        <th class="text-end">Link clicks</th>
+                        <th class="text-end">CTR</th>
+                        <th class="text-end">CPC</th>
+                        <th class="text-end">Purchases</th>
+                        <th class="text-end">Cost / purchase</th>
+                        <th class="text-end">ROAS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in data.campaigns %}
+                    <tr class="campaign-row{% if forloop.counter > campaigns_preview_count %} d-none{% endif %}" data-status="{{ c.status }}">
+                        <td>
+                            {{ c.name }}
+                            {% if c.status %}<span class="badge ads-status ms-1 {% if c.status == 'ACTIVE' %}bg-success-subtle text-success-emphasis{% else %}bg-secondary-subtle text-secondary-emphasis{% endif %}">{{ c.status|lower }}</span>{% endif %}
+                        </td>
+                        <td class="text-end">{{ cur }}{{ c.spend|currency }}</td>
+                        <td class="text-end">{{ c.impressions|intcomma }}</td>
+                        <td class="text-end">{{ c.link_clicks|intcomma }}</td>
+                        <td class="text-end">{% if c.ctr is None %}&mdash;{% else %}{{ c.ctr }}%{% endif %}</td>
+                        <td class="text-end">{% if c.cpc is None %}&mdash;{% else %}{{ cur }}{{ c.cpc|currency }}{% endif %}</td>
+                        <td class="text-end">{% if c.purchases is None %}&mdash;{% else %}{{ c.purchases|intcomma }}{% endif %}</td>
+                        <td class="text-end">{% if c.cost_per_purchase is None %}&mdash;{% else %}{{ cur }}{{ c.cost_per_purchase|currency }}{% endif %}</td>
+                        <td class="text-end">{% if c.roas is None %}&mdash;{% else %}{{ c.roas }}x{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="d-none" id="campaignsEmpty"><td colspan="9" class="text-center text-muted py-4">No active campaigns spent in this period.</td></tr>
+                </tbody>
+            </table>
+        </div>
+        {% if data.campaigns|length > campaigns_preview_count %}
+        <div class="text-center border-top py-2">
+            <button type="button" class="btn btn-sm btn-link text-decoration-none" id="campaignsToggle" aria-expanded="false">Show all {{ data.campaigns|length }} campaigns</button>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <h5 class="mb-0">Top creatives</h5>
+            <span class="text-muted small">
+                Top {{ data.creatives|length }} by {% if active_sort == 'roas' or active_sort == 'ctr' %}{{ active_sort_label }}{% else %}{{ active_sort_label|lower }}{% endif %}{% if min_spend_applied %} &middot; min {{ cur }}{{ min_spend_applied|intcomma }} spend{% endif %}{% if group_creatives %} &middot; grouped by creative{% endif %} &middot; click for details
+            </span>
+        </div>
+        <form method="get" class="creative-controls d-flex flex-wrap align-items-center gap-2">
+            {% for name, value in range_params.items %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+            <div class="input-group input-group-sm w-auto">
+                <label class="input-group-text" for="creativeSort">Rank by</label>
+                <select id="creativeSort" name="sort" class="form-select form-select-sm" onchange="this.form.submit()">
+                    {% for key, label in creative_sorts %}
+                    <option value="{{ key }}"{% if key == active_sort %} selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% if active_sort != 'spend' %}
+            <div class="input-group input-group-sm w-auto">
+                <label class="input-group-text" for="creativeMinSpend">Min spend</label>
+                <select id="creativeMinSpend" name="min_spend" class="form-select form-select-sm" onchange="this.form.submit()">
+                    {% for amount in min_spend_options %}
+                    <option value="{{ amount }}"{% if amount == active_min_spend %} selected{% endif %}>{{ cur }}{{ amount|intcomma }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div class="form-check form-switch mb-0 ms-1">
+                <input type="hidden" name="group" value="0">
+                <input class="form-check-input" type="checkbox" role="switch" id="groupCreatives" name="group" value="1"{% if group_creatives %} checked{% endif %} onchange="this.form.submit()">
+                <label class="form-check-label small" for="groupCreatives">Group same creative</label>
+            </div>
+            <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Apply</button></noscript>
+        </form>
+    </div>
+    <div class="card-body">
+        {% if not data.creatives %}
+        <div class="empty-state">
+            <i class="bi bi-funnel"></i>
+            <p>No creatives spent at least {{ cur }}{{ min_spend_applied|intcomma }} in this period.</p>
+            {% if min_spend_applied > data.pool_min_spend %}
+            <a href="?{{ range_query }}&amp;sort={{ active_sort }}&amp;min_spend={{ data.pool_min_spend }}&amp;group={% if group_creatives %}1{% else %}0{% endif %}" class="btn btn-outline-secondary">Lower the minimum to {{ cur }}{{ data.pool_min_spend }}</a>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="creative-grid">
+            {% for a in data.creatives %}
+            <div class="creative-card">
+                <div class="creative-thumb">
+                    {% if a.thumbnail_url %}<img src="{{ a.thumbnail_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<i class="bi bi-image"></i>{% endif %}
+                    <span class="creative-rank">#{{ forloop.counter }}</span>
+                    {% if a.detail.is_video %}<span class="creative-video-badge" title="Video"><i class="bi bi-play-fill"></i></span>{% endif %}
+                    {% if a.ad_count > 1 %}<span class="creative-group-badge" title="Same creative used in {{ a.ad_count }} ads"><i class="bi bi-layers"></i>{{ a.ad_count }} ads</span>{% endif %}
+                </div>
+                <div class="creative-body">
+                    <div>
+                        <button type="button" class="creative-open stretched-link text-start" data-bs-toggle="offcanvas" data-bs-target="#creativePanel" aria-controls="creativePanel" data-creative="{{ forloop.counter }}">
+                            <span class="visually-hidden">View details for </span><span class="creative-name">{{ a.name }}</span>
+                        </button>
+                        <div class="creative-campaign">{% if a.ad_count > 1 %}Used in {{ a.ad_count }} ads{% else %}{{ a.campaign_name }}{% if a.adset_name %} &rsaquo; {{ a.adset_name }}{% endif %}{% endif %}</div>
+                    </div>
+                    <dl class="creative-metrics mb-0">
+                        <div><dt>Spend</dt><dd>{{ cur }}{{ a.spend|currency }}</dd></div>
+                        {% if active_sort == 'cost_per_purchase' %}
+                        <div><dt>Cost / purch.</dt><dd>{% if a.cost_per_purchase is None %}&mdash;{% else %}{{ cur }}{{ a.cost_per_purchase|currency }}{% endif %}</dd></div>
+                        {% else %}
+                        <div><dt>CTR</dt><dd>{% if a.ctr is None %}&mdash;{% else %}{{ a.ctr }}%{% endif %}</dd></div>
+                        {% endif %}
+                        <div><dt>Purchases</dt><dd>{% if a.purchases is None %}&mdash;{% else %}{{ a.purchases|intcomma }}{% endif %}</dd></div>
+                        <div><dt>ROAS</dt><dd>{% if a.roas is None %}&mdash;{% else %}{{ a.roas }}x{% endif %}</dd></div>
+                    </dl>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if data.has_more_creatives %}
+        <div class="text-center mt-3">
+            <a href="?{{ show_more_query }}" class="btn btn-sm btn-outline-secondary">Show more ({{ data.creatives|length }} of {{ data.qualifying_creatives }})</a>
+        </div>
+        {% endif %}
+        <p class="text-muted small mb-0 mt-3">
+            Ranked from ads that spent at least {{ cur }}{{ data.pool_min_spend }} in this period{% if data.ad_pool_capped %} (the top 2,000 by spend){% endif %}.
+        </p>
+        {% endif %}
+    </div>
+</div>
+
+{# One hidden detail template per creative; JS copies it into the side panel. #}
+{% for a in data.creatives %}
+<template id="creative-detail-{{ forloop.counter }}">
+    <div class="d-flex flex-column gap-4">
+        <div class="cd-media"{% if a.preview_ad_id %} data-preview-url="{% url 'tickets:meta_ads_ad_preview' a.preview_ad_id %}"{% endif %}>
+            {% if a.detail.image_url %}<img src="{{ a.detail.image_url }}" alt="" referrerpolicy="no-referrer">{% else %}<i class="bi bi-image"></i>{% endif %}
+        </div>
+
+        <div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                <span class="badge ads-status bg-dark-subtle text-body-emphasis">#{{ forloop.counter }} by {{ active_sort_label }}</span>
+                {% if a.detail.status %}<span class="badge ads-status {% if a.detail.is_active %}bg-success-subtle text-success-emphasis{% else %}bg-secondary-subtle text-secondary-emphasis{% endif %}">{{ a.detail.status }}</span>{% endif %}
+                {% if a.detail.format %}<span class="badge ads-status bg-info-subtle text-info-emphasis">{{ a.detail.format }}</span>{% endif %}
+            </div>
+            <h2 class="cd-name">{{ a.name }}</h2>
+            <div class="cd-path">{% if a.ad_count > 1 %}Same creative used in {{ a.ad_count }} ads &middot; showing the top spender{% else %}{{ a.campaign_name }}{% if a.adset_name %} &rsaquo; {{ a.adset_name }}{% endif %}{% endif %}</div>
+            {% if a.detail.preview_url %}
+            <a href="{{ a.detail.preview_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary mt-3">
+                <i class="bi bi-box-arrow-up-right me-1"></i> View ad on Facebook
+            </a>
+            {% endif %}
+        </div>
+
+        <div>
+            <div class="cd-section-label">Performance &middot; {{ active_range_label }}</div>
+            <dl class="cd-metrics">
+                <div><dt>Spend</dt><dd>{{ cur }}{{ a.spend|currency }}</dd></div>
+                <div><dt>Purchases</dt><dd>{% if a.purchases is None %}&mdash;{% else %}{{ a.purchases|intcomma }}{% endif %}</dd></div>
+                <div><dt>ROAS</dt><dd>{% if a.roas is None %}&mdash;{% else %}{{ a.roas }}x{% endif %}</dd></div>
+                <div><dt>Purchase value</dt><dd>{% if a.purchase_value is None %}&mdash;{% else %}{{ cur }}{{ a.purchase_value|currency }}{% endif %}</dd></div>
+                <div><dt>Cost / purchase</dt><dd>{% if a.cost_per_purchase is None %}&mdash;{% else %}{{ cur }}{{ a.cost_per_purchase|currency }}{% endif %}</dd></div>
+                <div><dt>Link clicks</dt><dd>{{ a.link_clicks|intcomma }}</dd></div>
+                <div><dt>CTR</dt><dd>{% if a.ctr is None %}&mdash;{% else %}{{ a.ctr }}%{% endif %}</dd></div>
+                <div><dt>CPC</dt><dd>{% if a.cpc is None %}&mdash;{% else %}{{ cur }}{{ a.cpc|currency }}{% endif %}</dd></div>
+                <div><dt>CPM</dt><dd>{% if a.cpm is None %}&mdash;{% else %}{{ cur }}{{ a.cpm|currency }}{% endif %}</dd></div>
+                <div><dt>Impressions</dt><dd>{{ a.impressions|intcomma }}</dd></div>
+                <div><dt>Reach</dt><dd>{% if a.reach %}{{ a.reach|intcomma }}{% else %}&mdash;{% endif %}</dd></div>
+                <div><dt>Frequency</dt><dd>{% if a.frequency %}{{ a.frequency }}{% else %}&mdash;{% endif %}</dd></div>
+            </dl>
+            {% if a.ad_count > 1 %}<div class="cd-note">Totals across all {{ a.ad_count }} ads. Reach and frequency aren't combined because the same person can see several ads.</div>{% endif %}
+        </div>
+
+        {% if a.ad_count > 1 %}
+        <div>
+            <div class="cd-section-label">Ads using this creative</div>
+            <div class="cd-members">
+                {% for m in a.ads %}
+                <div class="cd-member">
+                    <div class="cd-member-name">{{ m.name }}</div>
+                    <div class="cd-member-path">{{ m.campaign_name }}{% if m.adset_name %} &rsaquo; {{ m.adset_name }}{% endif %}</div>
+                    <div class="cd-member-stats">{{ cur }}{{ m.spend|currency }} spend &middot; {% if m.purchases is None %}&mdash;{% else %}{{ m.purchases|intcomma }}{% endif %} purchases &middot; {% if m.roas is None %}&mdash;{% else %}{{ m.roas }}x{% endif %} ROAS</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if a.detail.headlines or a.detail.bodies or a.detail.description %}
+        <div>
+            {% if a.detail.headlines %}
+            <div class="cd-section-label">Headline{{ a.detail.headlines|length|pluralize }}</div>
+            {% for h in a.detail.headlines %}<div class="cd-copy fw-semibold">{% if a.detail.headlines|length > 1 %}<span class="cd-variant">Variant {{ forloop.counter }}</span>{% endif %}{{ h }}</div>{% endfor %}
+            {% endif %}
+            {% if a.detail.bodies %}
+            <div class="cd-section-label mt-3">Primary text</div>
+            {% for b in a.detail.bodies %}<div class="cd-copy">{% if a.detail.bodies|length > 1 %}<span class="cd-variant">Variant {{ forloop.counter }}</span>{% endif %}{{ b|linebreaksbr }}</div>{% endfor %}
+            {% endif %}
+            {% if a.detail.description %}
+            <div class="cd-section-label mt-3">Description</div>
+            <div class="cd-copy">{{ a.detail.description }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if a.detail.cta or a.detail.link_url %}
+        <div>
+            <div class="cd-section-label">Call to action</div>
+            <div class="d-flex flex-column gap-1">
+                {% if a.detail.cta %}<div><span class="badge bg-primary-subtle text-primary-emphasis">{{ a.detail.cta }}</span></div>{% endif %}
+                {% if a.detail.link_url %}<a href="{{ a.detail.link_url }}" target="_blank" rel="noopener noreferrer" class="cd-link">{{ a.detail.link_url }}</a>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</template>
+{% endfor %}
+
+<div class="offcanvas offcanvas-end creative-panel" tabindex="-1" id="creativePanel" aria-labelledby="creativePanelLabel">
+    <div class="offcanvas-header">
+        <h5 class="offcanvas-title" id="creativePanelLabel">Creative details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body" id="creativePanelBody"></div>
+</div>
+{% endwith %}
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // Campaigns: show the top N by spend, with "Show all" and "Active only".
+    // All rows are already rendered; this only toggles visibility.
+    var campaignsCard = document.getElementById('campaignsCard');
+    if (campaignsCard) {
+        var previewCount = parseInt(campaignsCard.dataset.previewCount, 10);
+        var rows = Array.prototype.slice.call(campaignsCard.querySelectorAll('.campaign-row'));
+        var toggle = document.getElementById('campaignsToggle');
+        var activeOnly = document.getElementById('campaignsActiveOnly');
+        var emptyRow = document.getElementById('campaignsEmpty');
+        var countLabel = document.getElementById('campaignsCount');
+        var expanded = false;
+        var renderCampaigns = function () {
+            var matching = 0;
+            rows.forEach(function (row) {
+                var matches = !activeOnly.checked || row.dataset.status === 'ACTIVE';
+                if (matches) matching += 1;
+                row.classList.toggle('d-none', !matches || (!expanded && matching > previewCount));
+            });
+            emptyRow.classList.toggle('d-none', matching > 0);
+            var noun = activeOnly.checked ? ' active campaign' : ' campaign';
+            countLabel.textContent = matching + noun + (matching === 1 ? '' : 's') + ' with spend, by spend';
+            if (toggle) {
+                toggle.parentElement.classList.toggle('d-none', matching <= previewCount);
+                toggle.textContent = expanded ? 'Show top ' + previewCount : 'Show all ' + matching + noun + 's';
+                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            }
+        };
+        if (toggle) toggle.addEventListener('click', function () { expanded = !expanded; renderCampaigns(); });
+        activeOnly.addEventListener('change', renderCampaigns);
+    }
+
+    var panel = document.getElementById('creativePanel');
+    if (!panel) return;
+    // .content's fade-in animation leaves a transform on this page's wrapper,
+    // which would make position:fixed anchor to it instead of the viewport
+    // (panel opens off-screen when scrolled). Re-parent onto <body>.
+    document.body.appendChild(panel);
+    var body = document.getElementById('creativePanelBody');
+    // Bootstrap passes the clicked card's button as relatedTarget.
+    panel.addEventListener('show.bs.offcanvas', function (event) {
+        var trigger = event.relatedTarget;
+        var tpl = trigger && document.getElementById('creative-detail-' + trigger.dataset.creative);
+        if (tpl) {
+            body.replaceChildren(tpl.content.cloneNode(true));
+            body.scrollTop = 0;
+            var media = body.querySelector('[data-preview-url]');
+            if (media) loadPlayer(media);
+        }
+    });
+
+    // Video ads: swap the still for Meta's preview player so the video plays in
+    // place. The play click has to land inside Meta's (cross-origin) iframe,
+    // so load it as soon as the panel opens rather than behind a second click.
+    // The still stays up under a loading overlay until the player is ready, so
+    // the slot never sits blank while Meta's iframe boots.
+    function loadPlayer(media) {
+        var overlay = document.createElement('div');
+        overlay.className = 'cd-loading';
+        overlay.setAttribute('role', 'status');
+        overlay.innerHTML = '<span class="cd-spinner" aria-hidden="true"></span><span>Loading video</span>';
+        media.appendChild(overlay);
+
+        fetch(media.dataset.previewUrl, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+            .then(function (resp) {
+                return resp.json().then(function (data) {
+                    if (!resp.ok || !data.src) throw new Error(data.error || 'Preview unavailable');
+                    return data;
+                });
+            })
+            .then(function (data) {
+                var frame = document.createElement('iframe');
+                frame.className = 'cd-player is-pending';
+                frame.title = 'Ad video preview';
+                frame.allow = 'autoplay; encrypted-media; fullscreen; picture-in-picture';
+                frame.setAttribute('allowfullscreen', '');
+                frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+
+                var revealed = false;
+                function reveal() {
+                    if (revealed) return;
+                    revealed = true;
+                    // Remove the still + overlay around the frame; never move the
+                    // frame itself, since re-inserting an iframe reloads it.
+                    Array.prototype.slice.call(media.children).forEach(function (child) {
+                        if (child !== frame) child.remove();
+                    });
+                    media.classList.add('cd-media--player');
+                    frame.classList.remove('is-pending');
+                }
+                // 'load' fires when Meta's document loads; give its scripts a
+                // beat to paint the post. Cap the wait so a slow load still shows.
+                frame.addEventListener('load', function () { setTimeout(reveal, 400); });
+                setTimeout(reveal, 15000);
+
+                frame.src = data.src;
+                media.appendChild(frame);
+            })
+            .catch(function () {
+                overlay.remove();
+                var note = document.createElement('div');
+                note.className = 'cd-player-error';
+                note.textContent = "Couldn't load the video player. Use \"View ad on Facebook\" to watch it.";
+                media.after(note);
+            });
+    }
+});
+</script>
+{% endblock %}

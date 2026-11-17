@@ -266,8 +266,10 @@ def _month_end(d):
     return date(d.year, d.month + 1, 1) - timedelta(days=1)
 
 
-def _parse_window(request):
-    """Return (start_date, end_date, active_window) from ?window= query params.
+def _window_bounds(window, start_raw='', end_raw=''):
+    """Return (start_date, end_date) for a WINDOW_CHOICES key; (None, None) for
+    'all' or an unknown key. ``start_raw``/``end_raw`` are ISO dates used by
+    'custom' (a bad start means no lower bound; a bad end means today).
 
     "This month/quarter/year" span the full calendar period (end on the last day
     of the period, which may be in the future), so an upcoming event dated later
@@ -275,46 +277,53 @@ def _parse_window(request):
     end at today instead, for the running total so far.
     """
     today = date.today()
-    window = request.GET.get('window', 'this_year')
     if window == 'this_month':
-        return date(today.year, today.month, 1), _month_end(today), window
+        return date(today.year, today.month, 1), _month_end(today)
     if window == 'month_to_date':
-        return date(today.year, today.month, 1), today, window
+        return date(today.year, today.month, 1), today
     if window == 'last_month':
         first_this = date(today.year, today.month, 1)
         last_prev = first_this - timedelta(days=1)
-        return date(last_prev.year, last_prev.month, 1), last_prev, window
+        return date(last_prev.year, last_prev.month, 1), last_prev
     if window == 'this_year':
-        return date(today.year, 1, 1), date(today.year, 12, 31), window
+        return date(today.year, 1, 1), date(today.year, 12, 31)
     if window == 'year_to_date':
-        return date(today.year, 1, 1), today, window
+        return date(today.year, 1, 1), today
     if window == 'last_year':
-        return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31), window
+        return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
     if window == 'this_quarter':
         q = (today.month - 1) // 3 + 1
-        start, end = _quarter_bounds(today.year, q)
-        return start, end, window
+        return _quarter_bounds(today.year, q)
     if window == 'quarter_to_date':
         q = (today.month - 1) // 3 + 1
         start, _ = _quarter_bounds(today.year, q)
-        return start, today, window
+        return start, today
     if window == 'last_quarter':
         q = (today.month - 1) // 3 + 1
         prev_q = q - 1 if q > 1 else 4
         prev_year = today.year if q > 1 else today.year - 1
-        start, end = _quarter_bounds(prev_year, prev_q)
-        return start, end, window
+        return _quarter_bounds(prev_year, prev_q)
     if window == 'custom':
         try:
-            start = date.fromisoformat(request.GET.get('start', ''))
+            start = date.fromisoformat(start_raw or '')
         except ValueError:
             start = None
         try:
-            end = date.fromisoformat(request.GET.get('end', ''))
+            end = date.fromisoformat(end_raw or '')
         except ValueError:
             end = today
-        return start, end, 'custom'
-    return None, None, 'all'
+        return start, end
+    return None, None
+
+
+def _parse_window(request):
+    """Return (start_date, end_date, active_window) from ?window= query params.
+    See ``_window_bounds`` for how each window maps to dates."""
+    window = request.GET.get('window', 'this_year')
+    if window == 'all' or window not in {key for _, key in WINDOW_CHOICES}:
+        return None, None, 'all'
+    start, end = _window_bounds(window, request.GET.get('start', ''), request.GET.get('end', ''))
+    return start, end, window
 
 
 def _event_list_cache_key(org_id, search, sort, page, status_filter, external_enabled=0):

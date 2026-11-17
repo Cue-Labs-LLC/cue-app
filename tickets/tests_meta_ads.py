@@ -611,3 +611,700 @@ class MetaAdsApplyViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_client_cls.assert_not_called()
+
+
+def _ad_row(spend, impressions, clicks, purchases=None, value=None, **extra):
+    row = {'spend': spend, 'impressions': impressions, 'inline_link_clicks': clicks, **extra}
+    if purchases is not None:
+        row['actions'] = [{'action_type': 'purchase', 'value': str(purchases)}]
+        row['action_values'] = [{'action_type': 'purchase', 'value': str(value)}]
+    return row
+
+
+class MetaAdsDashboardTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='token', meta_ads_account_id='act_123',
+            meta_ads_account_name='Main Ads',
+        )
+        self.user = User.objects.create_user(username='owner', email='owner@example.com', password='pass123')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.force_login(self.user)
+        session = self.client.session
+        session['_org_id'] = str(self.org.id)
+        session.save()
+        self.url = reverse('tickets:meta_ads_dashboard')
+
+    def _mock_client(self, mock_client_cls):
+        client = mock_client_cls.return_value
+        campaign_rows = [
+            _ad_row('100.00', 10000, 200, purchases=10, value='500.00',
+                    campaign_id='c1', campaign_name='Big Campaign', account_currency='USD'),
+            _ad_row('50.00', 5000, 50, campaign_id='c2', campaign_name='Awareness'),
+        ]
+        ad_rows = [
+            _ad_row('20.00', 2000, 40, purchases=2, value='80.00',
+                    ad_id='102', ad_name='Small Ad', campaign_name='Big Campaign'),
+            _ad_row('80.00', 8000, 160, purchases=8, value='420.00',
+                    ad_id='101', ad_name='Hero Video', campaign_name='Big Campaign', adset_name='Lookalike'),
+        ]
+        client.get_account_insights.side_effect = lambda account_id, level, **kw: (
+            campaign_rows if level == 'campaign' else ad_rows
+        )
+        client.list_campaigns.return_value = [{'id': 'c1', 'status': 'ACTIVE'}, {'id': 'c2', 'status': 'PAUSED'}]
+        client.get_ad_creative_keys.return_value = {}
+        client.get_ad_details.return_value = {'101': {
+            'image_url': 'https://cdn.example.com/a1.jpg',
+            'status': 'Active', 'is_active': True, 'preview_url': 'https://fb.me/abc',
+            'format': 'Video', 'is_video': True, 'headlines': ['TEMPO!'], 'bodies': ['Join us Sept 25th'],
+            'description': 'LA - SEPT 25TH', 'cta': 'See details',
+            'link_url': 'https://www.cueup.co/t/xyz/',
+        }}
+        return client
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_dashboard_totals_campaigns_and_creatives(self, mock_client_cls):
+        client = self._mock_client(mock_client_cls)
+
+        response = self.client.get(self.url, {'range': 'last_7d', 'sort': 'spend', 'group': '0'})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.context['data']
+        totals = data['totals']
+        self.assertEqual(totals['spend'], Decimal('150.00'))
+        self.assertEqual(totals['purchases'], 10)
+        self.assertEqual(totals['purchase_value'], Decimal('500.00'))
+        self.assertEqual(totals['roas'], Decimal('3.33'))
+        self.assertEqual(totals['ctr'], Decimal('1.67'))
+        self.assertEqual(totals['cost_per_purchase'], Decimal('15.00'))
+
+        self.assertEqual([c['name'] for c in data['campaigns']], ['Big Campaign', 'Awareness'])
+        self.assertEqual(data['campaigns'][0]['status'], 'ACTIVE')
+        # A campaign Meta reported no actions for has unknown (not zero) purchases.
+        self.assertIsNone(data['campaigns'][1]['purchases'])
+        self.assertIsNone(data['campaigns'][1]['roas'])
+
+        self.assertEqual([a['id'] for a in data['creatives']], ['101', '102'])
+        self.assertEqual(data['creatives'][0]['thumbnail_url'], 'https://cdn.example.com/a1.jpg')
+        self.assertEqual(data['creatives'][1]['thumbnail_url'], '')
+        self.assertEqual(client.get_account_insights.call_args.kwargs['date_preset'], 'last_7d')
+        self.assertEqual(data['creatives'][0]['cpm'], Decimal('10.00'))
+
+        # Both insights queries ask Meta to rank by spend so the row cap drops the
+        # smallest rows; ads come from a capped pool that creatives are ranked from.
+        calls = {c.kwargs['level']: c.kwargs for c in client.get_account_insights.call_args_list}
+        self.assertEqual(calls['campaign']['sort'], 'spend_descending')
+        self.assertEqual(calls['ad']['sort'], 'spend_descending')
+        # The ad pool is every ad with $25+ spend (filtered by Meta), not a top-N.
+        self.assertEqual(calls['ad']['limit'], 2000)
+        self.assertEqual(calls['ad']['min_spend'], 25)
+
+        # The detail side panel content is rendered into a per-creative template.
+        self.assertContains(response, 'id="creativePanel"')
+        self.assertContains(response, 'id="creative-detail-1"')
+        self.assertContains(response, 'Join us Sept 25th')
+        self.assertContains(response, 'https://fb.me/abc')
+        # Only the video ad gets a player hook.
+        self.assertContains(response, 'data-preview-url="/analytics/meta-ads/ads/101/preview/"', count=1)
+        self.assertContains(response, 'Hero Video')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_dashboard_caches_until_refresh(self, mock_client_cls):
+        client = self._mock_client(mock_client_cls)
+
+        self.client.get(self.url)
+        self.client.get(self.url)
+        self.assertEqual(client.list_campaigns.call_count, 1)
+
+        self.client.get(self.url, {'refresh': '1'})
+        self.assertEqual(client.list_campaigns.call_count, 2)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_detail_failure_still_renders(self, mock_client_cls):
+        client = self._mock_client(mock_client_cls)
+        client.get_ad_details.side_effect = MetaAdsAPIError('bad field')
+
+        response = self.client.get(self.url, {'sort': 'spend'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['data']['creatives'][0]['thumbnail_url'], '')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_api_error_shows_message(self, mock_client_cls):
+        mock_client_cls.return_value.get_account_insights.side_effect = MetaAdsAPIError('Token expired')
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['data'])
+        self.assertContains(response, 'Token expired')
+
+    def test_not_connected_shows_connect_cta(self):
+        self.org.meta_ads_account_id = ''
+        self.org.save(update_fields=['meta_ads_account_id'])
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse('tickets:meta_ads_settings'))
+
+    def test_unknown_range_falls_back_to_default(self):
+        from .services.meta_ads_dashboard import preset_date_range
+        self.assertEqual(preset_date_range('bogus').date_preset, 'last_30d')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_calendar_range_sends_time_range_from_shared_window_bounds(self, mock_client_cls):
+        from .views import _window_bounds
+        client = self._mock_client(mock_client_cls)
+
+        response = self.client.get(self.url, {'range': 'last_quarter'})
+
+        start, end = _window_bounds('last_quarter')
+        kwargs = client.get_account_insights.call_args.kwargs
+        self.assertEqual(kwargs['time_range'], (start, end))
+        self.assertEqual(kwargs['date_preset'], '')
+        self.assertEqual(response.context['active_range_label'], 'Last Quarter')
+        self.assertContains(response, 'Month-To-Date')  # profitability options in the menu
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_this_year_is_capped_at_today(self, mock_client_cls):
+        from datetime import date
+        client = self._mock_client(mock_client_cls)
+
+        self.client.get(self.url, {'range': 'this_year'})
+
+        since, until = client.get_account_insights.call_args.kwargs['time_range']
+        self.assertEqual(since, date(date.today().year, 1, 1))
+        self.assertEqual(until, date.today())
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_custom_range_uses_dates_and_keeps_them_in_links(self, mock_client_cls):
+        from datetime import date
+        client = self._mock_client(mock_client_cls)
+
+        response = self.client.get(self.url, {
+            'range': 'custom', 'start': '2026-03-01', 'end': '2026-04-15', 'sort': 'purchases',
+        })
+
+        self.assertEqual(
+            client.get_account_insights.call_args.kwargs['time_range'],
+            (date(2026, 3, 1), date(2026, 4, 15)),
+        )
+        self.assertEqual(response.context['active_range_label'], 'Mar 1, 2026 \u2013 Apr 15, 2026')
+        self.assertContains(response, 'name="start" class="form-control form-control-sm" value="2026-03-01"')
+        # Refresh and creative controls carry the custom dates.
+        self.assertContains(response, 'href="?range=custom&amp;start=2026-03-01&amp;end=2026-04-15&amp;sort=purchases')
+        self.assertContains(response, '<input type="hidden" name="start" value="2026-03-01">')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_all_window_maps_to_lifetime(self, mock_client_cls):
+        client = self._mock_client(mock_client_cls)
+        response = self.client.get(self.url, {'range': 'all'})
+        self.assertEqual(client.get_account_insights.call_args.kwargs['date_preset'], 'maximum')
+        self.assertEqual(response.context['active_range'], 'maximum')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_ranges_are_cached_separately(self, mock_client_cls):
+        client = self._mock_client(mock_client_cls)
+        self.client.get(self.url, {'range': 'last_month'})
+        self.client.get(self.url, {'range': 'last_year'})
+        self.client.get(self.url, {'range': 'last_month'})
+        self.assertEqual(client.get_account_insights.call_count, 4)  # 2 ranges x (campaign + ad)
+
+    def test_calendar_date_range_clamps_to_meta_limits(self):
+        from datetime import date
+        from .services.meta_ads_dashboard import calendar_date_range
+        today = date(2026, 11, 17)
+
+        future = calendar_date_range('this_month', 'This Month', date(2026, 11, 1), date(2026, 11, 30), today)
+        self.assertEqual((future.since, future.until), (date(2026, 11, 1), today))
+
+        ancient = calendar_date_range('custom', '', date(2015, 1, 1), date(2016, 1, 1), today)
+        self.assertEqual(ancient.since, date(2023, 11, 1))  # Meta's ~37-month history floor
+        self.assertEqual(ancient.until, date(2023, 11, 1))  # whole range predates it
+
+        open_start = calendar_date_range('custom', '', None, date(2026, 5, 1), today)
+        self.assertEqual(open_start.since, date(2023, 11, 1))
+        self.assertEqual(open_start.label, 'Nov 1, 2023 \u2013 May 1, 2026')
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_ad_details_reads_copy_from_each_creative_shape(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            # Video ad: copy lives in object_story_spec.video_data.
+            'a1': {
+                'effective_status': 'CAMPAIGN_PAUSED',
+                'preview_shareable_link': 'https://fb.me/a1',
+                'creative': {
+                    'thumbnail_url': 'thumb.jpg', 'object_type': 'VIDEO',
+                    'object_story_spec': {'video_data': {
+                        'title': 'TEMPO!', 'message': 'Join us', 'link_description': 'LA',
+                        'call_to_action': {'type': 'SEE_DETAILS', 'value': {'link': 'https://cueup.co/t/1/'}},
+                    }},
+                },
+            },
+            # Dynamic creative: several variants in asset_feed_spec; the creative's
+            # own title duplicates the first variant and must not repeat.
+            'a2': {
+                'effective_status': 'ACTIVE',
+                'creative': {
+                    'image_url': 'https://cdn/full.jpg', 'thumbnail_url': 'https://cdn/thumb.jpg',
+                    'title': 'Party',
+                    'asset_feed_spec': {
+                        'titles': [{'text': 'Party'}, {'text': 'Party 2'}],
+                        'bodies': [{'text': 'Body A'}, {'text': 'Body B'}],
+                        'call_to_action_types': ['BUY_TICKETS'],
+                        'link_urls': [{'website_url': 'javascript:alert(1)'}],
+                    },
+                },
+            },
+            'a3': {},
+        }
+        mock_get.return_value = response
+
+        result = MetaAdsClient('token').get_ad_details(['a1', 'a2', 'a3'])
+
+        self.assertEqual(mock_get.call_args.kwargs['params']['ids'], 'a1,a2,a3')
+        video = result['a1']
+        self.assertEqual(video['status'], 'Campaign paused')
+        self.assertFalse(video['is_active'])
+        self.assertEqual(video['format'], 'Video')
+        self.assertEqual(video['headlines'], ['TEMPO!'])
+        self.assertEqual(video['bodies'], ['Join us'])
+        self.assertEqual(video['description'], 'LA')
+        self.assertEqual(video['cta'], 'See details')
+        self.assertEqual(video['link_url'], 'https://cueup.co/t/1/')
+        self.assertEqual(video['preview_url'], 'https://fb.me/a1')
+        self.assertTrue(video['is_video'])
+        # Relative/non-http URLs are dropped rather than rendered as links.
+        self.assertEqual(video['image_url'], '')
+
+        dynamic = result['a2']
+        self.assertTrue(dynamic['is_active'])
+        self.assertEqual(dynamic['image_url'], 'https://cdn/full.jpg')
+        self.assertEqual(dynamic['headlines'], ['Party', 'Party 2'])
+        self.assertEqual(dynamic['bodies'], ['Body A', 'Body B'])
+        self.assertEqual(dynamic['cta'], 'Buy tickets')
+        self.assertEqual(dynamic['link_url'], '')
+        self.assertFalse(dynamic['is_video'])
+
+        self.assertEqual(result['a3']['headlines'], [])
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_ad_preview_extracts_and_unescapes_iframe_src(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            'account_id': '123',
+            'previews': {'data': [{'body': (
+                '<iframe src="https://business.facebook.com/ads/api/preview_iframe.php?d=AQ&amp;t=AQ" '
+                'width="335" height="450"></iframe>'
+            )}]},
+        }
+        mock_get.return_value = response
+
+        preview = MetaAdsClient('token').get_ad_preview('987')
+
+        self.assertEqual(preview, {
+            'account_id': '123',
+            'src': 'https://business.facebook.com/ads/api/preview_iframe.php?d=AQ&t=AQ',
+        })
+        self.assertIn('/987', mock_get.call_args.args[0])
+        self.assertIn('previews.ad_format(MOBILE_FEED_STANDARD)', mock_get.call_args.kwargs['params']['fields'])
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_ad_preview_rejects_non_meta_iframe(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'account_id': '123', 'previews': {'data': [
+            {'body': '<iframe src="https://evil.example.com/x"></iframe>'},
+        ]}}
+        mock_get.return_value = response
+
+        with self.assertRaises(MetaAdsAPIError):
+            MetaAdsClient('token').get_ad_preview('987')
+
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
+    def test_ad_preview_returns_src_and_caches(self, mock_client_cls):
+        src = 'https://business.facebook.com/ads/api/preview_iframe.php?d=1'
+        mock_client_cls.return_value.get_ad_preview.return_value = {'account_id': '123', 'src': src}
+        url = reverse('tickets:meta_ads_ad_preview', kwargs={'ad_id': 987})
+
+        first = self.client.get(url)
+        second = self.client.get(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json(), {'src': src})
+        self.assertEqual(second.json(), {'src': src})
+        mock_client_cls.return_value.get_ad_preview.assert_called_once_with('987')
+
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
+    def test_ad_preview_404s_for_ads_in_another_account(self, mock_client_cls):
+        mock_client_cls.return_value.get_ad_preview.return_value = {
+            'account_id': '999', 'src': 'https://business.facebook.com/ads/api/preview_iframe.php?d=1',
+        }
+
+        response = self.client.get(reverse('tickets:meta_ads_ad_preview', kwargs={'ad_id': 987}))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn('src', response.json())
+
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
+    def test_ad_preview_surfaces_meta_errors(self, mock_client_cls):
+        mock_client_cls.return_value.get_ad_preview.side_effect = MetaAdsAPIError('Token expired')
+
+        response = self.client.get(reverse('tickets:meta_ads_ad_preview', kwargs={'ad_id': 987}))
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()['error'], 'Token expired')
+
+    def test_ad_preview_requires_connection(self):
+        self.org.meta_ads_access_token = ''
+        self.org.save(update_fields=['meta_ads_access_token'])
+
+        response = self.client.get(reverse('tickets:meta_ads_ad_preview', kwargs={'ad_id': 987}))
+
+        self.assertEqual(response.status_code, 400)
+
+
+class _MetaAdsDashboardFixtures:
+    """Connected org + logged-in owner, and a mocked Meta client with a small ad pool."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='token', meta_ads_account_id='act_123',
+        )
+        self.user = User.objects.create_user(username='owner', email='owner@example.com', password='pass123')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.force_login(self.user)
+        session = self.client.session
+        session['_org_id'] = str(self.org.id)
+        session.save()
+        self.url = reverse('tickets:meta_ads_dashboard')
+
+    def _mock(self, mock_client_cls, ad_rows, keys=None):
+        client = mock_client_cls.return_value
+        campaign_rows = [_ad_row('1000.00', 100000, 1000, campaign_id='c1', campaign_name='C')]
+        client.get_account_insights.side_effect = lambda account_id, level, **kw: (
+            campaign_rows if level == 'campaign' else ad_rows
+        )
+        client.list_campaigns.return_value = []
+        client.get_ad_details.return_value = {}
+        client.get_ad_creative_keys.return_value = keys or {}
+        return client
+
+    ADS = [
+        # Big spender, middling ROAS.
+        _ad_row('500.00', 50000, 500, purchases=20, value='1000.00', ad_id='1', ad_name='Big', reach='30000'),
+        # Efficient mid spender.
+        _ad_row('150.00', 15000, 300, purchases=15, value='900.00', ad_id='2', ad_name='Efficient'),
+        # Tiny spend, huge ROAS: should be excluded by the default $100 floor.
+        _ad_row('5.00', 500, 10, purchases=1, value='200.00', ad_id='3', ad_name='Lucky'),
+        # No conversion data at all.
+        _ad_row('300.00', 30000, 100, ad_id='4', ad_name='NoPixel'),
+        # A copy of "Efficient" (same video) with its own spend.
+        _ad_row('60.00', 6000, 120, purchases=3, value='120.00', ad_id='5', ad_name='Efficient - Copy', reach='4000'),
+    ]
+
+    def _ids(self, response):
+        return [c['id'] for c in response.context['data']['creatives']]
+
+
+class MetaAdsCreativeRankingTests(_MetaAdsDashboardFixtures, TestCase):
+    """Sort / min-spend / grouping of the Top creatives grid."""
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_defaults_rank_by_roas_with_grouping_on(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS, keys={'2': 'video:B', '5': 'video:B'})
+        response = self.client.get(self.url)
+        self.assertEqual(response.context['active_sort'], 'roas')
+        self.assertTrue(response.context['group_creatives'])
+        self.assertEqual(response.context['min_spend_applied'], 100)
+        # "Efficient" + its copy merge ($210, 4.86x) and lead; NoPixel has no ROAS.
+        self.assertEqual(self._ids(response), ['2', '1', '4'])
+        self.assertEqual(response.context['data']['creatives'][0]['ad_count'], 2)
+        # Defaults stay out of links.
+        self.assertEqual(response.context['creative_query'], '')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_spend_sort_has_no_floor(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'spend', 'group': '0'})
+        self.assertEqual(self._ids(response), ['1', '4', '2', '5', '3'])
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_group_toggle_off_and_on(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS, keys={'2': 'video:B', '5': 'video:B'})
+        off = self.client.get(self.url, {'group': '0'})
+        # The form submits a hidden 0 plus the checked box's 1; the last value wins.
+        on = self.client.get(self.url + '?group=0&group=1')
+        self.assertFalse(off.context['group_creatives'])
+        self.assertEqual(off.context['creative_query'], 'group=0')
+        self.assertTrue(on.context['group_creatives'])
+        self.assertContains(on, '<input type="hidden" name="group" value="0">', html=True)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_roas_sort_applies_default_min_spend_and_puts_unknowns_last(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'roas', 'group': '0'})
+        # $5 "Lucky" and $60 copy are under the $100 default floor; NoPixel has no ROAS.
+        self.assertEqual(self._ids(response), ['2', '1', '4'])
+        self.assertEqual(response.context['min_spend_applied'], 100)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_lowest_min_spend_is_the_pool_floor(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'roas', 'min_spend': '25', 'group': '0'})
+        # The $60 copy now qualifies; the $5 ad is under the $25 pool floor. Big and
+        # the copy tie at 2.00x, broken by spend.
+        self.assertEqual(self._ids(response), ['2', '1', '5', '4'])
+        self.assertContains(response, 'Ranked from ads that spent at least $25 in this period.')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_retired_any_min_spend_falls_back_to_default(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'roas', 'min_spend': '0'})
+        self.assertEqual(response.context['min_spend_applied'], 100)
+        self.assertNotContains(response, '>Any<')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_show_more_adds_a_page_of_creatives(self, mock_client_cls):
+        many = [
+            _ad_row(f'{1000 - i}.00', 10000, 100, purchases=10, value='500.00', ad_id=str(1000 + i), ad_name=f'Ad {i}')
+            for i in range(60)
+        ]
+        client = self._mock(mock_client_cls, many)
+        client.get_ad_details.side_effect = lambda ids: {i: {'image_url': ''} for i in ids}
+
+        first = self.client.get(self.url, {'sort': 'spend', 'group': '0'})
+        second = self.client.get(self.url, {'sort': 'spend', 'group': '0', 'shown': '48'})
+        last = self.client.get(self.url, {'sort': 'spend', 'group': '0', 'shown': '72'})
+
+        self.assertEqual(len(self._ids(first)), 24)
+        self.assertContains(first, 'Show more (24 of 60)')
+        self.assertContains(first, 'shown=48')
+        self.assertEqual(len(self._ids(second)), 48)
+        self.assertEqual(len(self._ids(last)), 60)
+        self.assertFalse(last.context['data']['has_more_creatives'])
+        # Details for the extra page are fetched; already-cached cards aren't re-fetched.
+        fetched = [c.args[0] for c in client.get_ad_details.call_args_list]
+        self.assertEqual([len(ids) for ids in fetched], [24, 24, 12])
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_show_more_is_clamped(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        self.assertEqual(self.client.get(self.url, {'shown': '5000'}).context['data']['has_more_creatives'], False)
+        from .services.meta_ads_dashboard import resolve_creatives_shown
+        self.assertEqual(resolve_creatives_shown('5000'), 96)
+        self.assertEqual(resolve_creatives_shown('junk'), 24)
+        self.assertEqual(resolve_creatives_shown('30'), 24)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_campaign_table_previews_top_20(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS)
+        campaigns = [
+            _ad_row(f'{100 - i}.00', 1000, 10, campaign_id=f'c{i}', campaign_name=f'Campaign {i}')
+            for i in range(25)
+        ]
+        client.get_account_insights.side_effect = lambda account_id, level, **kw: (
+            campaigns if level == 'campaign' else self.ADS
+        )
+        client.list_campaigns.return_value = [{'id': 'c0', 'status': 'ACTIVE'}]
+
+        response = self.client.get(self.url)
+
+        html = response.content.decode()
+        self.assertEqual(html.count('class="campaign-row"'), 20)
+        self.assertEqual(html.count('class="campaign-row d-none"'), 5)
+        self.assertContains(response, 'Show all 25 campaigns')
+        self.assertContains(response, 'data-status="ACTIVE"', count=1)
+        self.assertContains(response, 'id="campaignsActiveOnly"')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_cost_per_purchase_sorts_ascending(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'cost_per_purchase', 'min_spend': '25'})
+        # $10 (Efficient), $20 (Copy), $25 (Big); NoPixel (no purchases) last.
+        self.assertEqual(self._ids(response), ['2', '5', '1', '4'])
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_unknown_sort_and_min_spend_fall_back(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'bogus', 'min_spend': '7'})
+        self.assertEqual(response.context['active_sort'], 'roas')
+        response = self.client.get(self.url, {'sort': 'ctr', 'min_spend': '7'})
+        self.assertEqual(response.context['min_spend_applied'], 100)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_grouping_merges_ads_sharing_a_creative(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS, keys={
+            '1': 'video:A', '2': 'video:B', '3': 'video:C', '4': 'video:D', '5': 'video:B',
+        })
+        response = self.client.get(self.url, {'group': '1', 'sort': 'spend'})
+
+        creatives = response.context['data']['creatives']
+        self.assertEqual([c['id'] for c in creatives], ['1', '4', '2', '3'])
+        grouped = creatives[2]
+        # Represented by its top spender; metrics summed across both ads.
+        self.assertEqual(grouped['name'], 'Efficient')
+        self.assertEqual(grouped['ad_count'], 2)
+        self.assertEqual([m['id'] for m in grouped['ads']], ['2', '5'])
+        self.assertEqual(grouped['spend'], Decimal('210.00'))
+        self.assertEqual(grouped['purchases'], 18)
+        self.assertEqual(grouped['roas'], Decimal('4.86'))
+        # Reach isn't additive across ads.
+        self.assertIsNone(grouped['reach'])
+        self.assertEqual(creatives[0]['reach'], 30000)
+        self.assertContains(response, 'Ads using this creative')
+        self.assertContains(response, 'Efficient - Copy')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_min_spend_applies_to_group_totals(self, mock_client_cls):
+        # Two $60 copies: each under $100, together over it.
+        ads = [
+            _ad_row('60.00', 6000, 60, purchases=6, value='600.00', ad_id='1', ad_name='A'),
+            _ad_row('60.00', 6000, 60, purchases=6, value='600.00', ad_id='2', ad_name='A - Copy'),
+        ]
+        self._mock(mock_client_cls, ads, keys={'1': 'video:A', '2': 'video:A'})
+
+        ungrouped = self.client.get(self.url, {'sort': 'roas', 'group': '0'})
+        grouped = self.client.get(self.url, {'sort': 'roas', 'group': '1'})
+
+        self.assertEqual(self._ids(ungrouped), [])
+        self.assertContains(ungrouped, 'No creatives spent at least')
+        self.assertEqual(self._ids(grouped), ['1'])
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_grouping_falls_back_to_ungrouped_when_keys_fail(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS)
+        client.get_ad_creative_keys.side_effect = MetaAdsAPIError('rate limited')
+        response = self.client.get(self.url, {'group': '1', 'sort': 'spend'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self._ids(response)), 5)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_changing_controls_reuses_cached_insights_and_keys(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS, keys={'1': 'video:A'})
+
+        self.client.get(self.url, {'group': '1'})
+        self.client.get(self.url, {'group': '1', 'sort': 'roas'})
+        self.client.get(self.url, {'sort': 'purchases'})
+
+        # One campaign + one ad Insights call total; keys fetched once.
+        self.assertEqual(client.get_account_insights.call_count, 2)
+        self.assertEqual(client.get_ad_creative_keys.call_count, 1)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_range_links_keep_creative_controls(self, mock_client_cls):
+        self._mock(mock_client_cls, self.ADS)
+        response = self.client.get(self.url, {'sort': 'purchases', 'min_spend': '250', 'group': '0'})
+        self.assertContains(response, 'href="?range=last_7d&amp;sort=purchases&amp;min_spend=250&amp;group=0"')
+
+    def test_creative_key_prefers_video_then_image_then_creative_id(self):
+        from .services.meta_ads import _creative_key
+        self.assertEqual(_creative_key({'id': 'c', 'object_story_spec': {'video_data': {'video_id': 'v'}}}), 'video:v')
+        self.assertEqual(_creative_key({'id': 'c', 'asset_feed_spec': {'videos': [{'video_id': 'fv'}]}}), 'video:fv')
+        self.assertEqual(_creative_key({'id': 'c', 'object_story_spec': {'link_data': {'image_hash': 'h'}}}), 'image:h')
+        self.assertEqual(_creative_key({'id': 'c', 'asset_feed_spec': {'images': [{'hash': 'fh'}]}}), 'image:fh')
+        self.assertEqual(_creative_key({'id': 'c'}), 'creative:c')
+        self.assertEqual(_creative_key({}), '')
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_ad_creative_keys_uses_filtered_ads_edge_then_falls_back(self, mock_get):
+        import json as _json
+
+        def respond(url, params, timeout):
+            resp = MagicMock(status_code=200)
+            video = lambda i: {'creative': {'object_story_spec': {'video_data': {'video_id': f'v{i}'}}}}
+            if '/act_123/ads' in url:
+                wanted = _json.loads(params['filtering'])[0]['value']
+                # The /ads edge omits archived ad '7'.
+                resp.json.return_value = {'data': [{'id': i, **video(i)} for i in wanted if i != '7']}
+            else:
+                resp.json.return_value = {i: video(i) for i in params['ids'].split(',')}
+            return resp
+        mock_get.side_effect = respond
+
+        keys = MetaAdsClient('token').get_ad_creative_keys('act_123', [str(i) for i in range(200)])
+
+        urls = [c.args[0] for c in mock_get.call_args_list]
+        self.assertEqual(sum('/act_123/ads' in u for u in urls), 2)  # 150 + 50
+        self.assertEqual(len(urls), 3)  # + one direct lookup for the archived ad
+        self.assertEqual(mock_get.call_args_list[-1].kwargs['params']['ids'], '7')
+        self.assertEqual(keys['7'], 'video:v7')
+        self.assertEqual(keys['199'], 'video:v199')
+
+
+class MetaAdsRateLimitTests(_MetaAdsDashboardFixtures, TestCase):
+    """Rate-limit handling: friendly message, and last-good data when we have it."""
+
+    def _rate_limit(self):
+        return MetaAdsAPIError('too many calls', code=4, subcode=1504022)
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_rate_limit_without_backup_shows_wait_message(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS)
+        client.get_account_insights.side_effect = self._rate_limit()
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, 'Meta is limiting how often Cue can pull ad data')
+        self.assertNotContains(response, 'Check connection')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_rate_limited_refresh_serves_last_good_data(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS)
+        self.client.get(self.url)  # populates fresh + backup caches
+
+        client.get_account_insights.side_effect = self._rate_limit()
+        response = self.client.get(self.url, {'refresh': '1', 'sort': 'spend', 'group': '0'})
+
+        self.assertEqual(len(response.context['data']['creatives']), 5)
+        self.assertIsNotNone(response.context['data']['stale_fetched_at'])
+        self.assertContains(response, 'so this is data from')
+
+    @patch('tickets.services.meta_ads_dashboard.MetaAdsClient')
+    def test_other_errors_do_not_fall_back(self, mock_client_cls):
+        client = self._mock(mock_client_cls, self.ADS)
+        self.client.get(self.url)
+
+        client.get_account_insights.side_effect = MetaAdsAPIError('Token expired', code=190)
+        response = self.client.get(self.url, {'refresh': '1'})
+
+        self.assertIsNone(response.context['data'])
+        self.assertContains(response, 'Check connection')
+
+
+class MetaAdsClientBatchingTests(TestCase):
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_ad_details_batches_50_ids_per_call(self, mock_get):
+        def respond(url, params, timeout):
+            resp = MagicMock(status_code=200)
+            resp.json.return_value = {i: {'creative': {}} for i in params['ids'].split(',')}
+            return resp
+        mock_get.side_effect = respond
+
+        details = MetaAdsClient('token').get_ad_details([str(i) for i in range(96)])
+
+        self.assertEqual(len(details), 96)
+        self.assertEqual(sorted(len(c.kwargs['params']['ids'].split(',')) for c in mock_get.call_args_list), [46, 50])
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_insights_min_spend_becomes_a_meta_filter(self, mock_get):
+        import json as _json
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': []}
+        mock_get.return_value = response
+
+        MetaAdsClient('token').get_account_insights('act_1', level='ad', fields='spend', date_preset='last_7d', min_spend=25)
+
+        self.assertEqual(
+            _json.loads(mock_get.call_args.kwargs['params']['filtering']),
+            [{'field': 'spend', 'operator': 'GREATER_THAN_OR_EQUAL', 'value': 25.0}],
+        )
