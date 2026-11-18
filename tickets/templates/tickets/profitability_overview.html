@@ -44,6 +44,7 @@
     <ul class="dropdown-menu">
       {% for label, key in window_choices %}
       <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}{{ window_query_suffix }}">{{ label }}</a></li>
+      {% if key == '180d' %}<li><hr class="dropdown-divider"></li>{% endif %}
       {% endfor %}
     </ul>
   </div>

@@ -1060,6 +1060,37 @@ class MarketEntityReportingTests(TestCase):
         scoped = {row['event'].name for row in response.context['event_rows']}
         self.assertEqual(scoped, {'Austin Report Show', 'Dallas Report Show'})
 
+    def test_profitability_rolling_windows_scope_to_last_n_days(self):
+        today = date.today()
+        for name, days_ago in [('Rolling 10d', 10), ('Rolling 45d', 45),
+                               ('Rolling 100d', 100), ('Rolling 200d', 200)]:
+            d = today - timedelta(days=days_ago)
+            Event.objects.create(
+                organization=self.org, name=name, venue=self.venue,
+                start_date=d, start_time=time(20, 0), end_date=d, end_time=time(22, 0),
+            )
+        expected = {
+            '30d': {'Rolling 10d'},
+            '60d': {'Rolling 10d', 'Rolling 45d'},
+            '90d': {'Rolling 10d', 'Rolling 45d'},
+            '180d': {'Rolling 10d', 'Rolling 45d', 'Rolling 100d'},
+        }
+        for window, names in expected.items():
+            response = self.client.get(reverse('tickets:profitability_overview'), {'window': window})
+            self.assertEqual(response.context['active_window'], window)
+            scoped = {row['event'].name for row in response.context['event_rows']}
+            self.assertEqual(scoped, names, window)
+
+        response = self.client.get(reverse('tickets:profitability_overview'), {'window': '30d'})
+        self.assertContains(response, 'Last 30 days')
+        self.assertContains(response, 'Last 6 months')
+
+    def test_rolling_window_bounds_end_today(self):
+        from tickets.views import _window_bounds
+        today = date.today()
+        self.assertEqual(_window_bounds('30d'), (today - timedelta(days=29), today))
+        self.assertEqual(_window_bounds('180d'), (today - timedelta(days=179), today))
+
     def test_survey_analytics_filter_and_breakdown_use_market_id(self):
         upload = ExternalSurveyUpload.objects.create(
             organization=self.org,
