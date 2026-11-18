@@ -23744,6 +23744,125 @@ class _MarketDemandFixtures:
         Ticket.objects.bulk_create(tickets)
         return order
 
+    def _ad_spend(self, event, amount):
+        if amount:
+            EventExpense.objects.create(
+                event=event, category='marketing', description='Ads', amount=Decimal(str(amount)),
+            )
+
+    def _spend_history(self, markets_with_base, lift=20):
+        """Seed past events (outside the current + prior 90-day windows) where
+        sold = market base + lift * ln(1 + spend), so the spend model has
+        enough history to fit. Spend tracks the market (bigger base, bigger
+        budget is not modeled here, bases just differ)."""
+        import math
+        spends = [0, 50, 100, 200, 400, 800, 1600, 0]
+        for market, base in markets_with_base:
+            for i, spend in enumerate(spends):
+                e = self._event('{} hist {}'.format(market.name, i), 200 + i * 30, market)
+                self._sell(e, paid=base + round(lift * math.log1p(spend)))
+                self._ad_spend(e, spend)
+
+
+class SpendEffectModelTests(TestCase):
+    """Unit tests for the spend-adjusted demand model (no DB)."""
+
+    @staticmethod
+    def _rows(market, pairs):
+        return [{'market_id': market, 'sold': sold, 'ad_spend': Decimal(str(spend))} for spend, sold in pairs]
+
+    def test_recovers_lift_within_markets(self):
+        import math
+        from tickets.services.market_demand import fit_spend_effect
+        spends = [0, 50, 100, 200, 400, 800, 1600, 0]
+        # Market B is bigger AND spends more on average: a pooled fit would
+        # credit its size to ads. Fixed effects should still recover ~20.
+        rows = self._rows('a', [(s, 40 + 20 * math.log1p(s)) for s in spends])
+        rows += self._rows('b', [(s * 3, 300 + 20 * math.log1p(s * 3)) for s in spends])
+        model = fit_spend_effect(rows)
+        self.assertTrue(model['available'])
+        self.assertAlmostEqual(model['beta'], 20.0, places=6)
+        self.assertEqual(model['tickets_per_doubling'], round(20 * math.log(2), 1))
+        self.assertEqual(model['events'], 16)
+        self.assertEqual(model['spend_events'], 12)
+
+    def test_unavailable_without_enough_history(self):
+        from tickets.services.market_demand import fit_spend_effect
+        model = fit_spend_effect(self._rows('a', [(100, 50)] * 10))
+        self.assertFalse(model['available'])
+        self.assertEqual(model['reason'], 'not_enough_history')
+        model = fit_spend_effect(self._rows('a', [(0, 50)] * 18 + [(100, 60)] * 2))
+        self.assertFalse(model['available'])  # only 2 events with spend
+
+    def test_unavailable_when_spend_never_varies_within_a_market(self):
+        from tickets.services.market_demand import fit_spend_effect
+        rows = self._rows('a', [(0, 40)] * 8) + self._rows('b', [(500, 90)] * 8)
+        model = fit_spend_effect(rows)
+        self.assertFalse(model['available'])
+        self.assertEqual(model['reason'], 'no_spend_variation')
+
+    def test_negative_slope_clamped_to_zero(self):
+        from tickets.services.market_demand import fit_spend_effect
+        # More spend on weaker shows (boosting slow sellers): no negative credit.
+        rows = self._rows('a', [(s, 100 - s / 10) for s in (0, 100, 200, 300, 400, 500, 600, 700)] * 2)
+        model = fit_spend_effect(rows)
+        self.assertTrue(model['available'])
+        self.assertEqual(model['beta'], 0.0)
+
+    def test_adjusted_sold(self):
+        import math
+        from tickets.services.market_demand import adjusted_sold
+        self.assertEqual(adjusted_sold(120, Decimal('0'), 20), 120.0)  # no spend: unchanged
+        self.assertAlmostEqual(adjusted_sold(200, Decimal('100'), 20), 200 - 20 * math.log(101))
+        self.assertEqual(adjusted_sold(5, Decimal('5000'), 20), 0.0)  # floored at 0
+
+
+class MarketDemandSpendAdjustedTests(_MarketDemandFixtures, TestCase):
+    """Spend-adjusted mode: same sales on less spend ranks as higher demand."""
+
+    def setUp(self):
+        self._setup_org(slug='demand-adj-org')
+        self.austin = self._market('Austin')
+        self.dallas = self._market('Dallas')
+        self._spend_history([(self.austin, 40), (self.dallas, 40)])
+        # Current window: both sell 200, Austin on $100, Dallas on $1,000.
+        a = self._event('Austin Now', 10, self.austin)
+        self._sell(a, paid=200)
+        self._ad_spend(a, 100)
+        d = self._event('Dallas Now', 12, self.dallas)
+        self._sell(d, paid=200)
+        self._ad_spend(d, 1000)
+
+    def _calc(self, demand_mode):
+        from tickets.services.market_demand import MarketDemandCalculator
+        start = self.today - timedelta(days=89)
+        return MarketDemandCalculator(self.org, start, self.today, demand_mode=demand_mode).calculate()
+
+    def test_lower_spend_ranks_higher(self):
+        result = self._calc('adjusted')
+        self.assertEqual(result['demand_mode'], 'adjusted')
+        self.assertTrue(result['spend_model']['available'])
+        self.assertGreater(result['spend_model']['beta'], 0)
+        markets = {m['label']: m for m in result['markets']}
+        self.assertEqual(markets['Austin']['avg_per_event'], markets['Dallas']['avg_per_event'])
+        self.assertGreater(markets['Austin']['adjusted_avg'], markets['Dallas']['adjusted_avg'])
+        self.assertEqual(markets['Austin']['display_avg'], markets['Austin']['adjusted_avg'])
+        self.assertEqual([m['label'] for m in result['markets']], ['Austin', 'Dallas'])
+        self.assertLess(result['summary']['display_avg'], result['summary']['raw_avg'])
+
+    def test_raw_mode_shows_raw_counts(self):
+        result = self._calc('raw')
+        self.assertEqual(result['demand_mode'], 'raw')
+        markets = {m['label']: m for m in result['markets']}
+        self.assertEqual(markets['Austin']['display_avg'], 200.0)
+        self.assertEqual(markets['Dallas']['display_avg'], 200.0)
+        self.assertEqual(result['summary']['display_avg'], result['summary']['raw_avg'])
+
+    def test_cost_per_ticket(self):
+        markets = {m['label']: m for m in self._calc('adjusted')['markets']}
+        self.assertEqual(markets['Austin']['cost_per_ticket'], 0.5)
+        self.assertEqual(markets['Dallas']['cost_per_ticket'], 5.0)
+
 
 class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
     """Average tickets sold per event, per market, over a trailing window."""
@@ -23821,7 +23940,7 @@ class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(result['prior_end'], self.today - timedelta(days=30))
         self.assertEqual(result['prior_start'], self.today - timedelta(days=59))
         # Summary: 40 tickets / 2 events now vs 20 / 1 before => 0% change.
-        self.assertEqual(result['summary']['avg_per_event'], 20.0)
+        self.assertEqual(result['summary']['display_avg'], 20.0)
         self.assertEqual(result['summary']['change_pct'], 0.0)
 
     def test_ticket_filter_paid_and_free(self):
@@ -23900,6 +24019,22 @@ class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
         top_event = self._by_label(self._calc())['Austin']['top_event']
         self.assertEqual(top_event['name'], 'Big Night')
         self.assertEqual(top_event['start_date'], self.today - timedelta(days=12))
+
+    def test_falls_back_to_raw_without_spend_history(self):
+        e = self._event('Solo', 5, self.austin)
+        self._sell(e, paid=30)
+        self._expense(e, '300.00')
+        result = self._calc()  # adjusted requested by default
+        self.assertEqual(result['demand_mode'], 'raw')
+        self.assertFalse(result['spend_model']['available'])
+        austin = self._by_label(result)['Austin']
+        self.assertEqual(austin['display_avg'], 30.0)
+        self.assertEqual(austin['cost_per_ticket'], 10.0)
+
+    def test_cost_per_ticket_none_without_spend(self):
+        e = self._event('Organic', 5, self.austin)
+        self._sell(e, paid=30)
+        self.assertIsNone(self._by_label(self._calc())['Austin']['cost_per_ticket'])
 
 
 class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
@@ -23983,6 +24118,38 @@ class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
     def test_hub_links_to_page(self):
         resp = self.client.get(reverse('tickets:analytics_overview'))
         self.assertContains(resp, self.url)
+
+    def test_adjusted_toggle_disabled_without_history(self):
+        market = self._market('Austin')
+        e = self._event('Show', 10, market)
+        self._sell(e, paid=12)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.context['demand_mode'], 'raw')
+        self.assertFalse(resp.context['is_adjusted'])
+        self.assertContains(resp, 'Spend-adjusted demand needs at least 15 past events')
+        self.assertContains(resp, 'aria-disabled="true"')
+
+    def test_adjusted_mode_renders_and_links_keep_state(self):
+        austin = self._market('Austin')
+        self._spend_history([(austin, 40)])
+        self._spend_history([(self._market('Dallas'), 60)])
+        e = self._event('Now', 10, austin)
+        self._sell(e, paid=150)
+        self._ad_spend(e, 300)
+
+        resp = self.client.get(self.url, {'tickets': 'paid'})
+        self.assertEqual(resp.context['demand_mode'], 'adjusted')
+        self.assertContains(resp, 'Adj. avg / event')
+        self.assertContains(resp, 'each doubling of ad spend added about')
+        self.assertContains(resp, 'Ad $ / ticket')
+        # Ticket-type links carry the demand mode; demand links carry the ticket type.
+        self.assertContains(resp, 'tickets=free&amp;demand=adjusted')
+        self.assertContains(resp, 'tickets=paid&amp;demand=raw')
+
+        resp = self.client.get(self.url, {'demand': 'raw'})
+        self.assertEqual(resp.context['demand_mode'], 'raw')
+        self.assertNotContains(resp, 'Adj. avg / event')
+        self.assertContains(resp, 'Switch to <strong>Spend-adjusted</strong>')
 
     def test_requires_login(self):
         self.client.logout()
