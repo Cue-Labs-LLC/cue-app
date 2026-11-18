@@ -4382,32 +4382,62 @@ def market_trends(request):
 @require_org
 @require_host
 def market_demand(request):
-    """Analytics page: recent avg tickets sold per event, by market."""
-    from tickets.services.market_demand import MarketDemandCalculator, normalize_ticket_filter
+    """Analytics page: recent avg tickets sold per event, by market.
+
+    ?demand=adjusted (default) leads with spend-adjusted demand — estimated
+    tickets each event would have sold with no ad spend — falling back to raw
+    counts when the org lacks the history to fit the spend model.
+    """
+    from tickets.services.market_demand import (
+        DEMAND_MODE_ADJUSTED, SPEND_MODEL_MIN_EVENTS, SPEND_MODEL_MIN_SPEND_EVENTS,
+        MarketDemandCalculator, normalize_demand_mode, normalize_ticket_filter,
+    )
 
     org = get_organization(request)
     start_date, end_date, active_window = _parse_demand_window(request)
     ticket_filter = normalize_ticket_filter(request.GET.get('tickets', 'all'))
+    requested_mode = normalize_demand_mode(request.GET.get('demand', DEMAND_MODE_ADJUSTED))
 
     result = MarketDemandCalculator(
-        org, start_date, end_date, ticket_filter=ticket_filter,
+        org, start_date, end_date, ticket_filter=ticket_filter, demand_mode=requested_mode,
     ).calculate()
     markets = result['markets']
+    demand_mode = result['demand_mode']
+    is_adjusted = demand_mode == DEMAND_MODE_ADJUSTED
 
-    # Query string for the active window, so the ticket-type toggle keeps it.
+    # Each control rebuilds the query string from the other controls' state, so
+    # switching one (window / ticket type / demand mode) keeps the rest.
     window_params = {'window': active_window}
     if active_window == 'custom':
         window_params.update(start=start_date.isoformat(), end=end_date.isoformat())
 
+    ticket_noun = {'all': 'tickets', 'paid': 'paid tickets', 'free': 'free tickets'}[ticket_filter]
+    metric_label = ('Spend-adjusted ' if is_adjusted else 'Avg ') + ticket_noun
+
     return render(request, 'tickets/market_demand.html', {
         'window_qs': urlencode(window_params),
+        'tickets_qs': urlencode({'tickets': ticket_filter}),
+        'demand_qs': urlencode({'demand': requested_mode}),
         'markets': markets,
         'summary': result['summary'],
         'chart_json': json.dumps(markets, default=str),
+        'chart_config_json': json.dumps({
+            'metric_label': metric_label + ' / event',
+            'noun': ticket_noun,
+            'adjusted': is_adjusted,
+        }),
         'has_data': bool(markets),
         'ticket_filter': ticket_filter,
         'ticket_filter_choices': [('All tickets', 'all'), ('Paid', 'paid'), ('Free', 'free')],
-        'ticket_noun': {'all': 'tickets', 'paid': 'paid tickets', 'free': 'free tickets'}[ticket_filter],
+        'ticket_noun': ticket_noun,
+        'metric_label': metric_label,
+        'demand_mode': demand_mode,
+        'requested_demand_mode': requested_mode,
+        'is_adjusted': is_adjusted,
+        'demand_mode_choices': [('Spend-adjusted', 'adjusted'), ('Raw', 'raw')],
+        'spend_model': result['spend_model'],
+        'spend_model_min_events': SPEND_MODEL_MIN_EVENTS,
+        'spend_model_min_spend_events': SPEND_MODEL_MIN_SPEND_EVENTS,
         'active_window': active_window,
         'window_start': start_date.isoformat() if active_window == 'custom' else '',
         'window_end': end_date.isoformat() if active_window == 'custom' else '',
