@@ -176,6 +176,17 @@ WINDOW_CHOICES = [
     ('Custom',          'custom'),
 ]
 
+# Trailing last-N-days windows (end today). Key -> days back, inclusive of today.
+_ROLLING_WINDOW_DAYS = {'30d': 30, '60d': 60, '90d': 90, '180d': 180}
+
+# The Profitability page offers the trailing windows on top of the calendar ones.
+PROFITABILITY_WINDOW_CHOICES = [
+    ('Last 30 days',  '30d'),
+    ('Last 60 days',  '60d'),
+    ('Last 90 days',  '90d'),
+    ('Last 6 months', '180d'),
+] + WINDOW_CHOICES
+
 
 def _is_e2e_test_mode():
     from django.conf import settings as django_settings
@@ -274,9 +285,12 @@ def _window_bounds(window, start_raw='', end_raw=''):
     "This month/quarter/year" span the full calendar period (end on the last day
     of the period, which may be in the future), so an upcoming event dated later
     in the current period still falls inside the window. The "*-to-date" variants
-    end at today instead, for the running total so far.
+    end at today instead, for the running total so far. The trailing
+    ``_ROLLING_WINDOW_DAYS`` keys ('30d', ...) cover the last N days ending today.
     """
     today = date.today()
+    if window in _ROLLING_WINDOW_DAYS:
+        return today - timedelta(days=_ROLLING_WINDOW_DAYS[window] - 1), today
     if window == 'this_month':
         return date(today.year, today.month, 1), _month_end(today)
     if window == 'month_to_date':
@@ -316,11 +330,12 @@ def _window_bounds(window, start_raw='', end_raw=''):
     return None, None
 
 
-def _parse_window(request):
+def _parse_window(request, choices=WINDOW_CHOICES):
     """Return (start_date, end_date, active_window) from ?window= query params.
+    ``choices`` is the page's allowed window list (unknown keys mean 'all').
     See ``_window_bounds`` for how each window maps to dates."""
     window = request.GET.get('window', 'this_year')
-    if window == 'all' or window not in {key for _, key in WINDOW_CHOICES}:
+    if window == 'all' or window not in {key for _, key in choices}:
         return None, None, 'all'
     start, end = _window_bounds(window, request.GET.get('start', ''), request.GET.get('end', ''))
     return start, end, window
@@ -9467,7 +9482,7 @@ def _breakdown_series(ordered_buckets, revenue_source_labels, category_choices):
 def profitability_overview(request):
     """Analytics page: org-wide P&L stats, chart, and sortable table."""
     org = get_organization(request)
-    start_date, end_date, active_window = _parse_window(request)
+    start_date, end_date, active_window = _parse_window(request, PROFITABILITY_WINDOW_CHOICES)
 
     events_qs = Event.objects.filter(organization=org)
     if start_date:
@@ -9755,7 +9770,7 @@ def profitability_overview(request):
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',
-        'window_choices': WINDOW_CHOICES,
+        'window_choices': PROFITABILITY_WINDOW_CHOICES,
         'market_choices': market_choices,
         'has_no_market': has_no_market,
         'no_market_value': NO_MARKET_VALUE,
