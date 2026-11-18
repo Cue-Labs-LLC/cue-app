@@ -4397,64 +4397,63 @@ def market_trends(request):
 @require_org
 @require_host
 def market_demand(request):
-    """Analytics page: recent avg tickets sold per event, by market.
+    """Analytics page: recent ticket demand per market.
 
-    ?demand=adjusted (default) leads with spend-adjusted demand — estimated
-    tickets each event would have sold with no ad spend — falling back to raw
-    counts when the org lacks the history to fit the spend model.
+    Shows tickets per event alongside two first-party demand signals —
+    returning audience (buyers back from an earlier show in that city) and new
+    buyers per $1k of ad spend — with ?rank= choosing which one orders the
+    table and chart.
     """
     from tickets.services.market_demand import (
-        DEMAND_MODE_ADJUSTED, SPEND_ADJUSTMENT_CAP, SPEND_MODEL_MIN_EVENTS,
-        SPEND_MODEL_MIN_SPEND_EVENTS,
-        MarketDemandCalculator, normalize_demand_mode, normalize_ticket_filter,
+        RANK_NEW_PER_1K, RANK_RETURNING, RANK_TICKETS,
+        MarketDemandCalculator, normalize_rank, normalize_ticket_filter,
     )
 
     org = get_organization(request)
     start_date, end_date, active_window = _parse_demand_window(request)
     ticket_filter = normalize_ticket_filter(request.GET.get('tickets', 'all'))
-    requested_mode = normalize_demand_mode(request.GET.get('demand', DEMAND_MODE_ADJUSTED))
+    rank = normalize_rank(request.GET.get('rank', RANK_TICKETS))
 
     result = MarketDemandCalculator(
-        org, start_date, end_date, ticket_filter=ticket_filter, demand_mode=requested_mode,
+        org, start_date, end_date, ticket_filter=ticket_filter, rank=rank,
     ).calculate()
     markets = result['markets']
-    demand_mode = result['demand_mode']
-    is_adjusted = demand_mode == DEMAND_MODE_ADJUSTED
 
     # Each control rebuilds the query string from the other controls' state, so
-    # switching one (window / ticket type / demand mode) keeps the rest.
+    # switching one (window / ticket type / rank) keeps the rest.
     window_params = {'window': active_window}
     if active_window == 'custom':
         window_params.update(start=start_date.isoformat(), end=end_date.isoformat())
 
     ticket_noun = {'all': 'tickets', 'paid': 'paid tickets', 'free': 'free tickets'}[ticket_filter]
-    metric_label = ('Spend-adjusted ' if is_adjusted else 'Avg ') + ticket_noun
+    rank_labels = {
+        RANK_TICKETS: 'Avg ' + ticket_noun + ' / event',
+        RANK_RETURNING: 'Returning audience / event',
+        RANK_NEW_PER_1K: 'New-buyer ' + ticket_noun + ' / $1k ads',
+    }
 
     return render(request, 'tickets/market_demand.html', {
         'window_qs': urlencode(window_params),
         'tickets_qs': urlencode({'tickets': ticket_filter}),
-        'demand_qs': urlencode({'demand': requested_mode}),
+        'rank_qs': urlencode({'rank': rank}),
         'markets': markets,
         'summary': result['summary'],
         'chart_json': json.dumps(markets, default=str),
         'chart_config_json': json.dumps({
-            'metric_label': metric_label + ' / event',
-            'noun': ticket_noun,
-            'adjusted': is_adjusted,
+            'metric_label': rank_labels[rank],
+            'is_rate': rank == RANK_NEW_PER_1K,
         }),
         'has_data': bool(markets),
         'ticket_filter': ticket_filter,
         'ticket_filter_choices': [('All tickets', 'all'), ('Paid', 'paid'), ('Free', 'free')],
         'ticket_noun': ticket_noun,
-        'metric_label': metric_label,
-        'demand_mode': demand_mode,
-        'requested_demand_mode': requested_mode,
-        'is_adjusted': is_adjusted,
-        'demand_mode_choices': [('Spend-adjusted', 'adjusted'), ('Raw', 'raw')],
-        'spend_model': result['spend_model'],
-        'spend_model_min_events': SPEND_MODEL_MIN_EVENTS,
-        'spend_model_min_spend_events': SPEND_MODEL_MIN_SPEND_EVENTS,
-        'spend_adjustment_cap_pct': round(SPEND_ADJUSTMENT_CAP * 100),
+        'rank': rank,
+        'rank_label': rank_labels[rank],
+        'rank_choices': [
+            ('Tickets', RANK_TICKETS),
+            ('Returning audience', RANK_RETURNING),
+            ('New buyers / $1k', RANK_NEW_PER_1K),
+        ],
         'active_window': active_window,
         'window_start': start_date.isoformat() if active_window == 'custom' else '',
         'window_end': end_date.isoformat() if active_window == 'custom' else '',
