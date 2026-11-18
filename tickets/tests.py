@@ -20323,6 +20323,30 @@ class WebhookTests(TestCase):
             # Should swallow + log, not raise.
             dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
 
+    def test_enqueue_failure_records_failed_delivery_row(self):
+        # Delivery rows are otherwise only written by the worker, so a broker
+        # failure (e.g. kombu/redis-py VersionMismatch) left no trace in admin.
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        payload = build_event_payload(self.event)
+        with patch('tickets.tasks.deliver_webhook_task.delay', side_effect=RuntimeError('broker down')):
+            dispatch(EVENT_CREATED, self.org, payload)
+        row = WebhookDelivery.objects.get()
+        self.assertFalse(row.success)
+        self.assertEqual(row.endpoint_id, self.endpoint.id)
+        self.assertEqual(row.organization_id, self.org.id)
+        self.assertEqual(row.event_type, 'event.created')
+        self.assertIsNotNone(row.delivery_id)
+        self.assertEqual(row.payload, payload)
+        self.assertIn('Enqueue failed', row.error_message)
+        self.assertIn('broker down', row.error_message)
+
+    def test_enqueue_failure_record_error_does_not_raise(self):
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        with patch('tickets.tasks.deliver_webhook_task.delay', side_effect=RuntimeError('broker down')), \
+                patch('tickets.models.WebhookDelivery.objects.create', side_effect=RuntimeError('db down')):
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+
     # --- signing ------------------------------------------------------------
 
     def test_signature_covers_timestamp_event_type_and_delivery_id(self):
@@ -20543,6 +20567,30 @@ class WebhookTests(TestCase):
         else:
             self.skipTest(f"event_create form did not validate (status {resp.status_code}); "
                           "on_commit wiring is covered by test_fire_event_created_dispatches_on_commit")
+
+    def test_event_duplicate_view_fires_event_created(self):
+        # Regression: duplicating an event created it without firing event.created,
+        # so Zapier never heard about duplicated events.
+        from django.contrib.auth.models import User
+        from .models import WebhookDelivery, UserProfile
+        user = User.objects.create_superuser('duper', 'duper@example.com', 'pw')
+        UserProfile.objects.update_or_create(user=user, defaults={'organization': self.org})
+        client = Client()
+        client.force_login(user)
+        start = timezone.localdate() + timedelta(days=30)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = client.post(
+                    reverse('tickets:event_duplicate', args=[self.event.id]),
+                    {'start': f"{start.isoformat()}T20:00", 'name': 'Hook Event Copy'},
+                )
+        self.assertRedirects(resp, reverse('tickets:event_list'))
+        copy = Event.objects.get(organization=self.org, name='Hook Event Copy')
+        self.assertEqual(mock_post.call_count, 1)
+        row = WebhookDelivery.objects.get(event_type='event.created')
+        self.assertTrue(row.success)
+        self.assertEqual(row.payload['id'], str(copy.id))
+        self.assertEqual(row.payload['status'], 'draft')
 
     def test_bulk_create_does_not_fire(self):
         """No post_save signal is wired: ORM/bulk_create paths (e.g. CSV import)

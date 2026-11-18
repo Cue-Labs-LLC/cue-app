@@ -7343,11 +7343,14 @@ def event_duplicate(request, event_id):
 
     try:
         with transaction.atomic():
-            _duplicate_event(
+            new_event = _duplicate_event(
                 source, org, request.user, name,
                 start_date, start_time, end_date, end_time,
                 request.FILES.get('flyer'),
             )
+            # Deferred via on_commit inside fire_event_created, so a rolled-back
+            # duplicate never fires.
+            fire_event_created(new_event)
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
         messages.success(request, f"Duplicated '{source.name}'. The copy is saved as a draft.")
