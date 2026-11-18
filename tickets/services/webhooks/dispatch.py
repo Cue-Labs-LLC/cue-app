@@ -50,13 +50,42 @@ def dispatch(event_type, organization, payload):
         delivery_id = str(uuid.uuid4())
         try:
             deliver_webhook_task.delay(str(endpoint.id), event_type, delivery_id, payload)
-        except Exception:
+        except Exception as exc:
             # Broker outage / serialization error. The business action already
             # committed; without an outbox this delivery is lost, so make it loud.
             logger.error(
                 "Webhook enqueue failed (delivery lost) endpoint=%s event=%s delivery_id=%s",
                 endpoint.id, event_type, delivery_id, exc_info=True,
             )
+            _record_enqueue_failure(endpoint, event_type, delivery_id, payload, exc)
+
+
+def _record_enqueue_failure(endpoint, event_type, delivery_id, payload, exc):
+    """Write a failed WebhookDelivery row for a delivery that never reached the queue.
+
+    Delivery rows are normally written only by the worker, so an enqueue failure
+    otherwise leaves no trace in the admin delivery log. Recording it here makes
+    the lost delivery visible (and its payload available for replay). Best-effort:
+    must never raise into the caller's request path.
+    """
+    from tickets.models import WebhookDelivery
+
+    try:
+        WebhookDelivery.objects.create(
+            endpoint=endpoint,
+            organization_id=endpoint.organization_id,
+            event_type=event_type,
+            delivery_id=delivery_id,
+            payload=payload,
+            attempt=1,
+            success=False,
+            error_message=f"Enqueue failed (not sent): {type(exc).__name__}: {exc}"[:1000],
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record webhook enqueue failure endpoint=%s delivery_id=%s",
+            endpoint.id, delivery_id,
+        )
 
 
 # --- Convenience triggers -------------------------------------------------
