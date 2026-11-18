@@ -4404,7 +4404,8 @@ def market_demand(request):
     counts when the org lacks the history to fit the spend model.
     """
     from tickets.services.market_demand import (
-        DEMAND_MODE_ADJUSTED, SPEND_MODEL_MIN_EVENTS, SPEND_MODEL_MIN_SPEND_EVENTS,
+        DEMAND_MODE_ADJUSTED, SPEND_ADJUSTMENT_CAP, SPEND_MODEL_MIN_EVENTS,
+        SPEND_MODEL_MIN_SPEND_EVENTS,
         MarketDemandCalculator, normalize_demand_mode, normalize_ticket_filter,
     )
 
@@ -4453,6 +4454,7 @@ def market_demand(request):
         'spend_model': result['spend_model'],
         'spend_model_min_events': SPEND_MODEL_MIN_EVENTS,
         'spend_model_min_spend_events': SPEND_MODEL_MIN_SPEND_EVENTS,
+        'spend_adjustment_cap_pct': round(SPEND_ADJUSTMENT_CAP * 100),
         'active_window': active_window,
         'window_start': start_date.isoformat() if active_window == 'custom' else '',
         'window_end': end_date.isoformat() if active_window == 'custom' else '',
