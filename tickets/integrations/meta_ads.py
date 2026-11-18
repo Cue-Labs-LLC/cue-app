@@ -12,6 +12,7 @@ from django.http import JsonResponse
 from ..services.meta_ads import MetaAdsAPIError
 from ..services.meta_ads import MetaAdsClient
 from ..services.meta_campaign_matcher import MetaCampaignMatcher
+from ..services.meta_ads_sync import reset_meta_ads_sync, synced_account_differs
 from django.core.cache import cache as django_cache
 from django.utils import timezone as django_tz
 from ..services.meta_ads import exchange_for_long_lived_token
@@ -131,6 +132,7 @@ def meta_ads_callback(request):
         django_tz.now() + timedelta(seconds=int(expires_in))
         if expires_in else None
     )
+    # Synced history is kept: a routine token renewal re-picks the same account.
     org.save(update_fields=[
         'meta_ads_access_token',
         'meta_ads_user_id',
@@ -166,9 +168,15 @@ def meta_ads_select_account(request):
             messages.error(request, 'Please choose a valid Meta ad account.')
             return redirect('tickets:meta_ads_select_account')
 
+        update_fields = ['meta_ads_account_id', 'meta_ads_account_name']
+        if synced_account_differs(org, selected.get('id', '')):
+            # Synced history belongs to another account; the next scheduled
+            # sync rebuilds it for this one.
+            reset_meta_ads_sync(org)
+            update_fields += ['meta_ads_synced_since', 'meta_ads_synced_at']
         org.meta_ads_account_id = selected.get('id', '')
         org.meta_ads_account_name = selected.get('name', '')
-        org.save(update_fields=['meta_ads_account_id', 'meta_ads_account_name'])
+        org.save(update_fields=update_fields)
         messages.success(request, f'Meta Ads account "{org.meta_ads_account_name}" connected.')
         return redirect('tickets:meta_ads_settings')
 
@@ -191,12 +199,15 @@ def meta_ads_disconnect(request):
     org.meta_ads_account_id = ''
     org.meta_ads_account_name = ''
     org.meta_ads_token_expires_at = None
+    reset_meta_ads_sync(org)
     org.save(update_fields=[
         'meta_ads_access_token',
         'meta_ads_user_id',
         'meta_ads_account_id',
         'meta_ads_account_name',
         'meta_ads_token_expires_at',
+        'meta_ads_synced_since',
+        'meta_ads_synced_at',
     ])
     messages.success(request, 'Meta Ads disconnected.')
     return redirect('tickets:meta_ads_settings')
@@ -514,3 +525,162 @@ def event_meta_ads_metrics_edit(request, event_id, expense_id):
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
     messages.success(request, 'Updated ad attribution.')
     return _marketing_tab_redirect(event)
+
+
+def _resolve_ads_date_range(request):
+    """Map ``?range=`` (+ ``start``/``end`` for custom) to an AdsDateRange.
+
+    Accepts the rolling Meta presets plus the same calendar windows as the
+    Profitability page (WINDOW_CHOICES), whose dates come from the shared
+    ``_window_bounds`` so both pages agree on what "last quarter" means.
+    """
+    from datetime import date
+
+    from ..services.meta_ads_dashboard import (
+        LIFETIME_PRESET,
+        calendar_date_range,
+        preset_date_range,
+    )
+    from ..views import WINDOW_CHOICES, _window_bounds
+
+    key = request.GET.get('range') or ''
+    if key == 'all':  # the Profitability page's name for "everything"
+        key = LIFETIME_PRESET[0]
+    calendar_labels = {k: label for label, k in WINDOW_CHOICES if k != 'all'}
+    if key not in calendar_labels:
+        return preset_date_range(key)
+    start, end = _window_bounds(key, request.GET.get('start', ''), request.GET.get('end', ''))
+    return calendar_date_range(key, calendar_labels[key], start, end, date.today())
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["GET"])
+def meta_ads_dashboard(request):
+    """Campaign and creative performance for the org's connected Meta ad account."""
+    from ..services.meta_ads_dashboard import (
+        CREATIVE_SORTS,
+        DEFAULT_CREATIVE_SORT,
+        DEFAULT_GROUP_CREATIVES,
+        CREATIVES_PAGE_SIZE,
+        DEFAULT_MIN_SPEND,
+        LIFETIME_PRESET,
+        MIN_SPEND_OPTIONS,
+        ROLLING_DATE_PRESETS,
+        MetaAdsDashboardCalculator,
+    )
+    from ..views import WINDOW_CHOICES
+
+    org = get_organization(request)
+    date_range = _resolve_ads_date_range(request)
+    calculator = MetaAdsDashboardCalculator(
+        org,
+        date_range=date_range,
+        sort=request.GET.get('sort'),
+        min_spend=request.GET.get('min_spend'),
+        # Grouping defaults on, so "off" is an explicit group=0 (the toggle form
+        # sends a hidden 0 that a checked box's 1 overrides).
+        group={'1': True, '0': False}.get(request.GET.get('group'), DEFAULT_GROUP_CREATIVES),
+        shown=request.GET.get('shown'),
+    )
+    connected = bool(org.meta_ads_access_token and org.meta_ads_account_id)
+
+    data, error, rate_limited = None, None, False
+    refresh = bool(request.GET.get('refresh'))
+    if connected and refresh and calculator.uses_synced_data():
+        # Synced numbers refresh by re-syncing recent days from Meta in the
+        # background; the page keeps reading the (soon updated) local rows.
+        from ..tasks import sync_meta_ads_insights_task
+        sync_meta_ads_insights_task.delay(str(org.pk), start_backfill=False)
+        messages.info(request, 'Syncing the latest numbers from Meta. Reload in a minute to see them.')
+    if connected:
+        try:
+            data = calculator.calculate(refresh=refresh)
+        except MetaAdsAPIError as exc:
+            error = str(exc)
+            rate_limited = exc.is_rate_limited
+
+    # Query-string fragments so the date and creative controls preserve each other.
+    range_params = {'range': date_range.key}
+    if date_range.key == 'custom':
+        range_params.update(start=date_range.since.isoformat(), end=date_range.until.isoformat())
+    # Only non-default settings go in links, to keep URLs short.
+    creative_params = {}
+    if calculator.sort != DEFAULT_CREATIVE_SORT:
+        creative_params['sort'] = calculator.sort
+    if calculator.sort != 'spend' and calculator.min_spend != DEFAULT_MIN_SPEND:
+        creative_params['min_spend'] = calculator.min_spend
+    if calculator.group != DEFAULT_GROUP_CREATIVES:
+        creative_params['group'] = '1' if calculator.group else '0'
+
+    # "Custom" opens on the last 30 days, ready to adjust (an open-ended custom
+    # range would mean pulling ~3 years of Insights).
+    from datetime import date, timedelta
+    today = date.today()
+    custom_range_query = urlencode({
+        'range': 'custom',
+        'start': (today - timedelta(days=29)).isoformat(),
+        'end': today.isoformat(),
+    })
+
+    return render(request, 'tickets/meta_ads_dashboard.html', {
+        'connected': connected,
+        'data': data,
+        'error': error,
+        'rate_limited': rate_limited,
+        'today_iso': today.isoformat(),
+        'custom_range_query': custom_range_query,
+        'rolling_ranges': ROLLING_DATE_PRESETS,
+        'calendar_ranges': [(k, label) for label, k in WINDOW_CHOICES if k not in ('all', 'custom')],
+        'lifetime_range': LIFETIME_PRESET,
+        'active_range': date_range.key,
+        'active_range_label': date_range.label,
+        'range_start': date_range.since.isoformat() if date_range.since else '',
+        'range_end': date_range.until.isoformat() if date_range.until else '',
+        'range_params': range_params,
+        'range_query': urlencode(range_params),
+        'creative_sorts': CREATIVE_SORTS,
+        'active_sort': calculator.sort,
+        'active_sort_label': calculator.sort_label,
+        'min_spend_options': MIN_SPEND_OPTIONS,
+        'active_min_spend': calculator.min_spend if calculator.sort != 'spend' else DEFAULT_MIN_SPEND,
+        'min_spend_applied': calculator.min_spend,
+        'group_creatives': calculator.group,
+        'creative_params': creative_params,
+        'creative_query': urlencode(creative_params),
+        # "Show more" adds a page of cards; it isn't carried by other links, so
+        # changing range/sort/grouping starts back at the first page.
+        'show_more_query': urlencode({
+            **range_params, **creative_params, 'shown': calculator.shown + CREATIVES_PAGE_SIZE,
+        }),
+        'campaigns_preview_count': 20,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["GET"])
+def meta_ads_ad_preview(request, ad_id):
+    """JSON: Meta's preview-player URL for one ad, for in-dashboard video playback."""
+    org = get_organization(request)
+    if not (org.meta_ads_access_token and org.meta_ads_account_id):
+        return JsonResponse({'error': 'Meta Ads is not connected.'}, status=400)
+
+    account_id = str(org.meta_ads_account_id).removeprefix('act_')
+    cache_key = f'meta_ads_preview:{org.pk}:{account_id}:{ad_id}'
+    src = django_cache.get(cache_key)
+    if src is None:
+        try:
+            preview = MetaAdsClient(org.meta_ads_access_token).get_ad_preview(str(ad_id))
+        except MetaAdsAPIError as exc:
+            return JsonResponse({'error': str(exc)}, status=502)
+        # The token's user may manage other businesses' ad accounts; only serve
+        # previews for ads in the account this org connected.
+        if preview['account_id'].removeprefix('act_') != account_id:
+            return JsonResponse({'error': 'Ad not found.'}, status=404)
+        src = preview['src']
+        # Preview URLs are signed and expire after a while; keep this short.
+        django_cache.set(cache_key, src, 600)
+    return JsonResponse({'src': src})

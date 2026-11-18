@@ -252,6 +252,11 @@ class Organization(BaseModel):
     meta_ads_account_id = models.CharField(max_length=64, blank=True, default='')
     meta_ads_account_name = models.CharField(max_length=255, blank=True, default='')
     meta_ads_token_expires_at = models.DateTimeField(null=True, blank=True)
+    # Daily Insights sync (MetaAdDailyInsight) for the Meta Ads dashboard. Rows
+    # cover meta_ads_synced_since..the last sync with no gaps; both are reset
+    # when the ad account changes or is disconnected.
+    meta_ads_synced_since = models.DateField(null=True, blank=True)
+    meta_ads_synced_at = models.DateTimeField(null=True, blank=True)
     # Instagram DM support agent (Meta Instagram Messaging API). Distinct from the
     # social-link `instagram_url` field below.
     instagram_page_access_token = models.CharField(max_length=512, blank=True, default='')
@@ -1801,6 +1806,47 @@ class ScannerSession(BaseModel):
 
     def __str__(self):
         return f"ScannerSession {self.token} ({'active' if self.is_active else 'inactive'})"
+
+
+class MetaAdDailyInsight(BaseModel):
+    """One Meta ad's metrics for one day, synced from the Insights API.
+
+    The Meta Ads dashboard sums these for any date range instead of querying
+    Meta live, which is slow for long ranges and rate-limited (especially on
+    the Limited Marketing API tier). Kept fresh by sync_meta_ads_insights_task;
+    the trailing ~28 days are re-synced each run because Meta revises
+    conversions within its attribution window. Reach/frequency aren't stored:
+    they aren't additive across days.
+    """
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='meta_ad_daily_insights',
+    )
+    ad_account_id = models.CharField(max_length=64)
+    date = models.DateField()
+    ad_id = models.CharField(max_length=64)
+    ad_name = models.CharField(max_length=512, blank=True, default='')
+    adset_name = models.CharField(max_length=512, blank=True, default='')
+    campaign_id = models.CharField(max_length=64, blank=True, default='')
+    campaign_name = models.CharField(max_length=512, blank=True, default='')
+    currency = models.CharField(max_length=3, blank=True, default='')
+    spend = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    impressions = models.PositiveBigIntegerField(default=0)
+    link_clicks = models.PositiveIntegerField(default=0)
+    # Null = Meta reported no conversion data (no pixel/actions) for the day.
+    purchases = models.PositiveIntegerField(null=True, blank=True)
+    purchase_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'ad_account_id', 'ad_id', 'date'],
+                name='uniq_meta_ad_daily_insight',
+            ),
+        ]
+        indexes = [models.Index(fields=['organization', 'ad_account_id', 'date'])]
+
+    def __str__(self):
+        return f"MetaAdDailyInsight {self.ad_id} {self.date}"
 
 
 class EventExpenseQuerySet(models.QuerySet):
