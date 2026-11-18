@@ -23718,11 +23718,20 @@ class _MarketDemandFixtures:
             geography_level='city', geography_value=name,
         )
 
-    def _event(self, name, days_ago, market=None, org=None, **kwargs):
+    def _event(self, name, days_ago, market=None, org=None, venue=None, **kwargs):
         org = org or self.org
-        venue = self.venue if org == self.org else Venue.objects.create(
-            organization=org, name='Other Hall', city='Elsewhere',
-        )
+        if venue is None and org == self.org and market is not None:
+            # One venue per market, like a real org playing the same room in each city.
+            venues = self.__dict__.setdefault('_market_venues', {})
+            if market.pk not in venues:
+                venues[market.pk] = Venue.objects.create(
+                    organization=org, name=market.name + ' Hall', city=market.name,
+                )
+            venue = venues[market.pk]
+        if venue is None:
+            venue = self.venue if org == self.org else Venue.objects.create(
+                organization=org, name='Other Hall', city='Elsewhere',
+            )
         return Event.objects.create(
             organization=org, name=name, venue=venue, market=market,
             start_date=self.today - timedelta(days=days_ago), **kwargs
@@ -23809,12 +23818,133 @@ class SpendEffectModelTests(TestCase):
         self.assertTrue(model['available'])
         self.assertEqual(model['beta'], 0.0)
 
-    def test_adjusted_sold(self):
+    def test_venue_fixed_effects_remove_size_bias(self):
+        import math
+        from tickets.services.market_demand import fit_spend_effect
+        # One market, two rooms. The big room gets bigger budgets AND sells far
+        # more; within each room, ads add exactly 10 * ln(1 + spend).
+        rows = []
+        for venue, base, spends in (('small', 50, (100, 200, 300, 400)), ('big', 600, (3000, 4000, 5000, 6000))):
+            for spend in spends:
+                for _ in range(2):
+                    rows.append({'market_id': 'm', 'venue_id': venue, 'ad_spend': Decimal(spend),
+                                 'sold': base + 10 * math.log1p(spend)})
+        no_venue = [dict(r, venue_id=None) for r in rows]
+        self.assertGreater(fit_spend_effect(no_venue)['beta'], 100)  # market-only: size credited to ads
+        model = fit_spend_effect(rows)
+        self.assertAlmostEqual(model['beta'], 10.0, places=6)
+        self.assertEqual(model['venue_events'], 16)
+
+    def _capacity_rows(self, coverage=1.0):
+        import math
+        # One market, every event at a different venue (so no venue grouping).
+        # Bigger rooms get bigger budgets; true ad lift is 10 * ln(1 + spend),
+        # room size adds 150 * ln(capacity).
+        rows = []
+        i = 0
+        for cap, budget in ((200, 100), (500, 400), (1000, 1500), (3000, 5000)):
+            for mult in (0.5, 1, 2, 4):
+                spend = budget * mult
+                rows.append({
+                    'market_id': 'm', 'venue_id': 'v{}'.format(i), 'ad_spend': Decimal(str(spend)),
+                    'fit_capacity': cap if i < coverage * 16 else None,
+                    'sold': 150 * math.log(cap) + 10 * math.log1p(spend),
+                })
+                i += 1
+        return rows
+
+    def test_capacity_control_removes_room_size_bias(self):
+        from tickets.services.market_demand import fit_spend_effect
+        without = fit_spend_effect([dict(r, fit_capacity=None) for r in self._capacity_rows()])
+        self.assertFalse(without['capacity_controlled'])
+        self.assertGreater(without['beta'], 50)  # room size credited to ads
+        model = fit_spend_effect(self._capacity_rows())
+        self.assertTrue(model['capacity_controlled'])
+        self.assertAlmostEqual(model['beta'], 10.0, places=6)
+
+    def test_capacity_ignored_when_coverage_is_low(self):
+        from tickets.services.market_demand import fit_spend_effect
+        model = fit_spend_effect(self._capacity_rows(coverage=0.5))
+        self.assertFalse(model['capacity_controlled'])
+
+    def test_capacity_constant_within_groups_falls_back(self):
+        import math
+        from tickets.services.market_demand import fit_spend_effect
+        spends = [0, 50, 100, 200, 400, 800, 1600, 0]
+        rows = [{'market_id': 'a', 'ad_spend': Decimal(sp), 'fit_capacity': 500,
+                 'sold': 40 + 20 * math.log1p(sp)} for sp in spends * 2]
+        model = fit_spend_effect(rows)
+        self.assertFalse(model['capacity_controlled'])  # nothing to control within the market
+        self.assertAlmostEqual(model['beta'], 20.0, places=6)
+
+    def test_one_off_venues_fall_back_to_market(self):
+        import math
+        from tickets.services.market_demand import fit_spend_effect
+        spends = [0, 50, 100, 200, 400, 800, 1600, 0]
+        rows = [{'market_id': 'a', 'venue_id': 'v{}'.format(i), 'ad_spend': Decimal(s),
+                 'sold': 40 + 20 * math.log1p(s)} for i, s in enumerate(spends * 2)]
+        model = fit_spend_effect(rows)
+        self.assertEqual(model['venue_events'], 0)
+        self.assertAlmostEqual(model['beta'], 20.0, places=6)
+
+    def _calibration_rows(self, meta_orders):
+        import math
+        spends = [100, 200, 400, 800, 1600, 3200, 100, 200, 400, 800, 1600, 3200, 0, 0, 0, 0]
+        return [{'market_id': 'a', 'ad_spend': Decimal(s), 'sold': 100 + 20 * math.log1p(s),
+                 'orders': 50, 'meta_attributed_orders': meta_orders if s else None} for s in spends]
+
+    def test_meta_purchases_cap_beta(self):
+        from tickets.services.market_demand import _spend_x, fit_spend_effect
+        rows = self._calibration_rows(meta_orders=5)
+        model = fit_spend_effect(rows)
+        self.assertTrue(model['calibrated'])
+        self.assertAlmostEqual(model['uncalibrated_beta'], 20.0, places=6)
+        # After the cap, implied ad tickets on Meta-tracked events == Meta's claim.
+        calib = [r for r in rows if r['meta_attributed_orders'] is not None]
+        implied = sum(model['beta'] * _spend_x(r['ad_spend']) for r in calib)
+        claimed = sum(5 * float(r['sold']) / 50 for r in calib)
+        self.assertAlmostEqual(implied, claimed, places=6)
+        self.assertLess(model['beta'], 20.0)
+
+    def test_meta_cap_not_applied_when_claim_is_larger_or_data_thin(self):
+        from tickets.services.market_demand import fit_spend_effect
+        model = fit_spend_effect(self._calibration_rows(meta_orders=500))
+        self.assertFalse(model['calibrated'])
+        self.assertAlmostEqual(model['beta'], 20.0, places=6)
+        rows = self._calibration_rows(meta_orders=5)
+        for r in rows[4:]:
+            r['meta_attributed_orders'] = None  # only 4 events with Meta data
+        model = fit_spend_effect(rows)
+        self.assertFalse(model['calibrated'])
+        self.assertAlmostEqual(model['beta'], 20.0, places=6)
+
+    def test_adjusted_sold_relative_to_typical_spend(self):
         import math
         from tickets.services.market_demand import adjusted_sold
-        self.assertEqual(adjusted_sold(120, Decimal('0'), 20), 120.0)  # no spend: unchanged
+        typical = 1000
+        # Spending exactly the typical amount: unchanged.
+        self.assertAlmostEqual(adjusted_sold(300, Decimal('1000'), 20, typical), 300.0)
+        # Spending more than typical docks tickets; less credits them.
+        self.assertAlmostEqual(
+            adjusted_sold(300, Decimal('2000'), 20, typical), 300 - 20 * (math.log(2001) - math.log(1001)))
+        self.assertAlmostEqual(
+            adjusted_sold(300, Decimal('500'), 20, typical), 300 + 20 * (math.log(1001) - math.log(501)))
+        # Zero reference = the old "vs. $0" behavior.
         self.assertAlmostEqual(adjusted_sold(200, Decimal('100'), 20), 200 - 20 * math.log(101))
-        self.assertEqual(adjusted_sold(5, Decimal('5000'), 20), 0.0)  # floored at 0
+
+    def test_adjusted_sold_capped_at_half_of_raw(self):
+        from tickets.services.market_demand import adjusted_sold
+        # A huge beta can move an event at most 50% either way.
+        self.assertEqual(adjusted_sold(250, Decimal('4000'), 70, 100), 125.0)
+        self.assertEqual(adjusted_sold(250, Decimal('0'), 70, 4000), 375.0)
+        self.assertEqual(adjusted_sold(0, Decimal('0'), 70, 4000), 0.0)  # nothing sold, nothing credited
+
+    def test_reference_spend_is_median_including_zero_spend_events(self):
+        from tickets.services.market_demand import fit_spend_effect
+        rows = self._rows('a', [(0, 10), (100, 20), (300, 30), (900, 40)])
+        self.assertEqual(fit_spend_effect(rows)['reference_spend'], 200.0)
+        rows = self._rows('a', [(0, 10), (100, 20), (300, 30)])
+        self.assertEqual(fit_spend_effect(rows)['reference_spend'], 100.0)
 
 
 class MarketDemandSpendAdjustedTests(_MarketDemandFixtures, TestCase):
@@ -23848,7 +23978,11 @@ class MarketDemandSpendAdjustedTests(_MarketDemandFixtures, TestCase):
         self.assertGreater(markets['Austin']['adjusted_avg'], markets['Dallas']['adjusted_avg'])
         self.assertEqual(markets['Austin']['display_avg'], markets['Austin']['adjusted_avg'])
         self.assertEqual([m['label'] for m in result['markets']], ['Austin', 'Dallas'])
-        self.assertLess(result['summary']['display_avg'], result['summary']['raw_avg'])
+        # Typical spend sits between the two: Austin ($100) is credited, Dallas ($1,000) docked.
+        reference = result['spend_model']['reference_spend']
+        self.assertTrue(100 < reference < 1000)
+        self.assertGreater(markets['Austin']['adjusted_avg'], 200)
+        self.assertLess(markets['Dallas']['adjusted_avg'], 200)
 
     def test_raw_mode_shows_raw_counts(self):
         result = self._calc('raw')
@@ -23862,6 +23996,21 @@ class MarketDemandSpendAdjustedTests(_MarketDemandFixtures, TestCase):
         markets = {m['label']: m for m in self._calc('adjusted')['markets']}
         self.assertEqual(markets['Austin']['cost_per_ticket'], 0.5)
         self.assertEqual(markets['Dallas']['cost_per_ticket'], 5.0)
+
+    def test_meta_attributed_purchases_cap_the_effect(self):
+        before = self._calc('adjusted')['spend_model']
+        self.assertFalse(before['calibrated'])
+        # Meta reports no purchases from these ads (each fixture event is a single
+        # order, so even 1 purchase would convert to the whole event's tickets).
+        EventExpense.objects.filter(event__organization=self.org, category='marketing').update(
+            api_attributed_orders=0,
+        )
+        after = self._calc('adjusted')['spend_model']
+        self.assertTrue(after['calibrated'])
+        self.assertEqual(after['beta'], 0.0)
+        self.assertAlmostEqual(after['uncalibrated_beta'], before['beta'], places=6)
+        # Each test market plays one venue repeatedly, so comparisons are within-venue.
+        self.assertEqual(after['venue_events'], after['events'])
 
 
 class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
@@ -24031,6 +24180,15 @@ class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(austin['display_avg'], 30.0)
         self.assertEqual(austin['cost_per_ticket'], 10.0)
 
+    def test_event_rows_use_event_capacity_else_venue(self):
+        from tickets.services.market_demand import MarketDemandCalculator
+        roomy = Venue.objects.create(organization=self.org, name='Roomy', city='Austin', capacity=800)
+        self._event('Own cap', 5, self.austin, venue=roomy, capacity=300)
+        self._event('Venue cap', 6, self.austin, venue=roomy)
+        calc = MarketDemandCalculator(self.org, self.today - timedelta(days=30), self.today)
+        caps = {r['name']: r['fit_capacity'] for r in calc._event_rows(calc.start_date, calc.end_date)}
+        self.assertEqual(caps, {'Own cap': 300, 'Venue cap': 800})
+
     def test_cost_per_ticket_none_without_spend(self):
         e = self._event('Organic', 5, self.austin)
         self._sell(e, paid=30)
@@ -24141,6 +24299,7 @@ class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(resp.context['demand_mode'], 'adjusted')
         self.assertContains(resp, 'Adj. avg / event')
         self.assertContains(resp, 'each doubling of ad spend added about')
+        self.assertContains(resp, 'as if it had spent your typical')
         self.assertContains(resp, 'Ad $ / ticket')
         # Ticket-type links carry the demand mode; demand links carry the ticket type.
         self.assertContains(resp, 'tickets=free&amp;demand=adjusted')

@@ -28,7 +28,7 @@
         <h1>Market Demand</h1>
         <p class="page-header-subtitle">
             {% if is_adjusted %}
-            Spend-adjusted {{ ticket_noun }} per event in each market: estimated sales with ad spend factored out, for events held in the selected window.
+            Spend-adjusted {{ ticket_noun }} per event in each market: estimated sales at your typical ad spend, for events held in the selected window.
             {% else %}
             Average {{ ticket_noun }} sold per event in each market, for events held in the selected window.
             {% endif %}
@@ -87,7 +87,16 @@
     {% if spend_model.tickets_per_doubling %}
     Across your last {{ spend_model.events }} events, each doubling of ad spend added about
     <strong>{{ spend_model.tickets_per_doubling|floatformat:1 }} {{ ticket_noun }}</strong> per event.
-    Each event is credited with what it would likely have sold with no ads, so a show that sold well on a small budget ranks above one that needed heavy spend.
+    Each event is scored as if it had spent your typical <strong>${{ spend_model.reference_spend|floatformat:0|intcomma }}</strong> on ads:
+    events that spent more are docked, events that spent less are credited (by at most {{ spend_adjustment_cap_pct }}% of their sales),
+    so a show that sold well on a small budget ranks above one that needed heavy spend.
+    {% if spend_model.venue_events or spend_model.capacity_controlled %}
+    The ad effect is measured
+    {% if spend_model.venue_events %}against other events at the same venue{% endif %}{% if spend_model.venue_events and spend_model.capacity_controlled %} and{% endif %}
+    {% if spend_model.capacity_controlled %}with event capacity held constant{% endif %},
+    so bigger shows getting bigger budgets don't inflate it.
+    {% endif %}
+    {% if spend_model.calibrated %}The ad effect is also capped at what Meta reports your ads drove.{% endif %}
     {% else %}
     Across your last {{ spend_model.events }} events, ad spend showed no measurable lift in {{ ticket_noun }}, so spend-adjusted numbers match raw counts.
     {% endif %}
@@ -95,7 +104,7 @@
     Spend-adjusted demand needs at least {{ spend_model_min_events }} past events, {{ spend_model_min_spend_events }} of them with ad spend
     (you have {{ spend_model.events }}, {{ spend_model.spend_events }} with spend{% if spend_model.reason == 'no_spend_variation' %}, but spend never varies within a market{% endif %}). Showing raw ticket counts.
   {% else %}
-    Showing raw ticket counts. Switch to <strong>Spend-adjusted</strong> to factor out the tickets ad spend likely bought.
+    Showing raw ticket counts. Switch to <strong>Spend-adjusted</strong> to compare events as if each had spent your typical ad budget.
   {% endif %}
 </p>
 
@@ -161,7 +170,7 @@
                         <th>Market</th>
                         <th class="text-end">Events</th>
                         <th class="text-end" title="{{ ticket_noun|capfirst }} sold">Sold</th>
-                        <th class="text-end"{% if is_adjusted %} title="Estimated {{ ticket_noun }} per event with ad spend factored out (raw average below)"{% endif %}>{% if is_adjusted %}Adj. avg / event{% else %}Avg / event{% endif %}</th>
+                        <th class="text-end"{% if is_adjusted %} title="Estimated {{ ticket_noun }} per event at your typical ad spend (raw average below)"{% endif %}>{% if is_adjusted %}Adj. avg / event{% else %}Avg / event{% endif %}</th>
                         <th class="text-end" title="Median per event">Median</th>
                         <th class="text-end">vs. prior</th>
                         <th class="text-end" title="Average marketing expenses (manual + Meta Ads) per event held in this market during the window">Avg ad spend</th>
