@@ -4405,7 +4405,7 @@ def market_demand(request):
     table and chart.
     """
     from tickets.services.market_demand import (
-        RANK_NEW_PER_1K, RANK_RETURNING, RANK_TICKETS,
+        RANK_FILL_RATE, RANK_NEW_PER_1K, RANK_RETURNING, RANK_TICKETS,
         MarketDemandCalculator, normalize_rank, normalize_ticket_filter,
     )
 
@@ -4430,6 +4430,7 @@ def market_demand(request):
         RANK_TICKETS: 'Avg ' + ticket_noun + ' / event',
         RANK_RETURNING: 'Returning audience / event',
         RANK_NEW_PER_1K: 'New-buyer ' + ticket_noun + ' / $1k ads',
+        RANK_FILL_RATE: 'Fill rate (paid tickets, % of capacity)',
     }
 
     return render(request, 'tickets/market_demand.html', {
@@ -4441,7 +4442,7 @@ def market_demand(request):
         'chart_json': json.dumps(markets, default=str),
         'chart_config_json': json.dumps({
             'metric_label': rank_labels[rank],
-            'is_rate': rank == RANK_NEW_PER_1K,
+            'is_percent': rank == RANK_FILL_RATE,
         }),
         'has_data': bool(markets),
         'ticket_filter': ticket_filter,
@@ -4453,6 +4454,7 @@ def market_demand(request):
             ('Tickets', RANK_TICKETS),
             ('Returning audience', RANK_RETURNING),
             ('New buyers / $1k', RANK_NEW_PER_1K),
+            ('Fill rate', RANK_FILL_RATE),
         ],
         'active_window': active_window,
         'window_start': start_date.isoformat() if active_window == 'custom' else '',

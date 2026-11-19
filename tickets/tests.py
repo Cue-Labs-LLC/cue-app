@@ -24022,6 +24022,73 @@ class MarketDemandCalculatorTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(self._by_label(result)['Austin']['display_value'], 30.0)
 
 
+class MarketDemandFillRateTests(_MarketDemandFixtures, TestCase):
+    """Fill rate: tickets sold / capacity, averaged per event."""
+
+    def setUp(self):
+        self._setup_org(slug='demand-fill-org')
+        self.austin = self._market('Austin')
+        self.dallas = self._market('Dallas')
+
+    def _calc(self, **kwargs):
+        from tickets.services.market_demand import MarketDemandCalculator
+        return MarketDemandCalculator(
+            self.org, self.today - timedelta(days=89), self.today, **kwargs
+        ).calculate()
+
+    def _by_label(self, result):
+        return {m['label']: m for m in result['markets']}
+
+    def test_average_of_per_event_fill_rates(self):
+        e1 = self._event('A1', 10, self.austin, capacity=100)
+        self._sell(e1, paid=50)                         # 50%
+        e2 = self._event('A2', 20, self.austin, capacity=400)
+        self._sell(e2, paid=400)                        # 100%
+        austin = self._by_label(self._calc())['Austin']
+        self.assertEqual(austin['fill_rate'], 75.0)     # mean of per-event rates, not 450/500
+        self.assertEqual(austin['capacity_events'], 2)
+
+    def test_venue_capacity_used_when_event_has_none(self):
+        hall = Venue.objects.create(organization=self.org, name='Big Hall', city='Austin', capacity=200)
+        e = self._event('A1', 10, self.austin, venue=hall)
+        self._sell(e, paid=50)
+        self.assertEqual(self._by_label(self._calc())['Austin']['fill_rate'], 25.0)
+
+    def test_events_without_capacity_excluded_and_none_when_no_capacity(self):
+        e1 = self._event('A1', 10, self.austin, capacity=100)
+        self._sell(e1, paid=80)
+        e2 = self._event('A2', 20, self.austin)         # no capacity anywhere
+        self._sell(e2, paid=999)
+        self._sell(self._event('D1', 5, self.dallas), paid=10)
+        markets = self._by_label(self._calc())
+        self.assertEqual(markets['Austin']['fill_rate'], 80.0)
+        self.assertEqual(markets['Austin']['capacity_events'], 1)
+        self.assertIsNone(markets['Dallas']['fill_rate'])
+
+    def test_oversold_not_capped_and_always_paid_only(self):
+        e = self._event('A1', 10, self.austin, capacity=100)
+        self._sell(e, paid=110, free=20)
+        # Free RSVPs never count toward fill rate, whatever the ticket filter.
+        for ticket_filter in ('all', 'paid', 'free'):
+            self.assertEqual(
+                self._by_label(self._calc(ticket_filter=ticket_filter))['Austin']['fill_rate'], 110.0,
+            )
+
+    def test_free_only_event_has_zero_fill(self):
+        e = self._event('Free Party', 10, self.austin, capacity=200)
+        self._sell(e, free=180)
+        self.assertEqual(self._by_label(self._calc())['Austin']['fill_rate'], 0.0)
+
+    def test_rank_by_fill_rate_and_summary(self):
+        a = self._event('A1', 10, self.austin, capacity=1000)
+        self._sell(a, paid=500)                         # 50%, more tickets
+        d = self._event('D1', 10, self.dallas, capacity=100)
+        self._sell(d, paid=90)                          # 90%
+        result = self._calc(rank='fill_rate')
+        self.assertEqual([m['label'] for m in result['markets']], ['Dallas', 'Austin'])
+        self.assertEqual(result['summary']['fill_rate'], 70.0)
+
+
 class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
     """Tests for the market_demand analytics page."""
 
@@ -24110,6 +24177,16 @@ class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
         self.assertContains(resp, 'tickets=paid&amp;rank=returning')
         resp = self.client.get(self.url, {'rank': 'bogus'})
         self.assertEqual(resp.context['rank'], 'tickets')
+
+    def test_fill_rate_rendered(self):
+        market = self._market('Austin')
+        e = self._event('Show', 10, market, capacity=40)
+        self._sell(e, paid=30)
+        resp = self.client.get(self.url, {'rank': 'fill_rate'})
+        self.assertEqual(resp.context['rank'], 'fill_rate')
+        self.assertEqual(resp.context['rank_label'], 'Fill rate (paid tickets, % of capacity)')
+        self.assertContains(resp, '>75%<')
+        self.assertContains(resp, 'Fill rate')
 
     def test_empty_state(self):
         resp = self.client.get(self.url)
