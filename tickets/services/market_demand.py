@@ -36,6 +36,15 @@ ads", the page reports two first-party measures:
 "New" means new to *that market*. In-person orders carry no real buyer
 identity, so they are left out of the returning/new split (but still count in
 tickets sold).
+
+Fill rate
+---------
+Per event: *paid* tickets sold / capacity (the event's own capacity, else its
+venue's). Always paid, whatever the ticket filter: free RSVPs are overbooked on
+purpose and mostly don't show (on production ~20% of free tickets are scanned
+vs. ~77% of paid), so counting them reads as 130%+ "full" rooms. A market's
+fill rate is the average of its events' fill rates; events with no capacity are
+left out. Not capped at 100% -- an oversold show reads above 100%.
 """
 from datetime import date, timedelta
 
@@ -57,7 +66,8 @@ VALID_TICKET_FILTERS = (TICKET_FILTER_ALL, TICKET_FILTER_PAID, TICKET_FILTER_FRE
 RANK_TICKETS = 'tickets'
 RANK_RETURNING = 'returning'
 RANK_NEW_PER_1K = 'new_per_1k'
-VALID_RANKS = (RANK_TICKETS, RANK_RETURNING, RANK_NEW_PER_1K)
+RANK_FILL_RATE = 'fill_rate'
+VALID_RANKS = (RANK_TICKETS, RANK_RETURNING, RANK_NEW_PER_1K, RANK_FILL_RATE)
 
 
 def normalize_ticket_filter(value):
@@ -94,6 +104,8 @@ def _group_metrics(rows):
     new = sum(r['new'] for r in rows)
     identified = returning + new
     spend = float(sum(r['ad_spend'] for r in rows))
+    fills = [r['paid_sold'] / r['capacity'] * 100 for r in rows if r['capacity'] and r['capacity'] > 0]
+    fill_rate = round(sum(fills) / len(fills), 1) if fills else None
     return {
         'event_count': n,
         'tickets_sold': sum(sold),
@@ -106,7 +118,9 @@ def _group_metrics(rows):
             RANK_RETURNING: round(returning / n, 1) if n else None,
             # Undefined without spend: nothing to be efficient with.
             RANK_NEW_PER_1K: round(new / (spend / 1000), 1) if spend > 0 else None,
+            RANK_FILL_RATE: fill_rate,
         },
+        'capacity_events': len(fills),
         'returning_share': round(returning / identified * 100, 1) if identified else None,
     }
 
@@ -126,11 +140,12 @@ class MarketDemandCalculator:
         self.prior_end = self.start_date - timedelta(days=1)
         self.prior_start = self.prior_end - timedelta(days=max(length, 1) - 1)
 
-    def _tickets_subquery(self, ref_field):
-        """Count of (filtered) tickets for the row OuterRef('pk') points at."""
+    def _tickets_subquery(self, ref_field, ticket_filter=None):
+        """Count of tickets (under the page's ticket filter, unless one is given)
+        for the row OuterRef('pk') points at."""
         return Subquery(
             Ticket.objects.filter(**{ref_field: OuterRef('pk')})
-            .filter(_ticket_filter_q(self.ticket_filter))
+            .filter(_ticket_filter_q(ticket_filter or self.ticket_filter))
             .order_by()
             .values(ref_field)
             .annotate(c=Count('id'))
@@ -153,9 +168,17 @@ class MarketDemandCalculator:
             .annotate(
                 sold=Coalesce(self._tickets_subquery('ticket_order__event'), 0),
                 ad_spend=_marketing_spend_expr(),
+                # Fill rate is always paid tickets / capacity (event's, else venue's).
+                paid_sold=Coalesce(self._tickets_subquery('ticket_order__event', TICKET_FILTER_PAID), 0),
+                capacity_or_venue=Coalesce('capacity', 'venue__capacity'),
             )
-            .values('id', 'name', 'start_date', 'market_id', 'market__name', 'sold', 'ad_spend')
+            .values(
+                'id', 'name', 'start_date', 'market_id', 'market__name', 'sold', 'ad_spend',
+                'paid_sold', 'capacity_or_venue',
+            )
         )
+        for r in rows:
+            r['capacity'] = r.pop('capacity_or_venue')
         self._attach_buyer_split(rows)
         return rows
 
@@ -248,6 +271,8 @@ class MarketDemandCalculator:
                 'returning_per_event': cur['metrics'][RANK_RETURNING],
                 'returning_share': cur['returning_share'],
                 'new_per_1k': cur['metrics'][RANK_NEW_PER_1K],
+                'fill_rate': cur['metrics'][RANK_FILL_RATE],
+                'capacity_events': cur['capacity_events'],
                 # The ranked metric, its prior-window value, and the change.
                 'display_value': display,
                 'prior_value': prior_display,
@@ -281,6 +306,11 @@ class MarketDemandCalculator:
             'new_per_1k': (
                 round(sum(m['new_tickets'] for m in spent) / (sum(m['ad_spend'] for m in spent) / 1000), 1)
                 if spent else None
+            ),
+            'fill_rate': cur_all['metrics'][RANK_FILL_RATE] if cur_all else None,
+            'fill_rate_change_pct': _pct_change(
+                cur_all['metrics'][RANK_FILL_RATE] if cur_all else None,
+                prev_all['metrics'][RANK_FILL_RATE] if prev_all else None,
             ),
             'event_count': len(current_rows),
             'tickets_sold': sum(r['sold'] for r in current_rows),

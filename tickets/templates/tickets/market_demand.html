@@ -8,6 +8,9 @@
 <style>
   .md-table td.text-end, .md-table th.text-end { text-align: right; }
   .md-table .md-num { font-variant-numeric: tabular-nums; }
+  /* Ten columns: tighter horizontal padding keeps the table from scrolling sideways. */
+  .md-table > :not(caption) > * > * { padding-left: 0.55rem; padding-right: 0.55rem; }
+  .md-table > :not(caption) > * > *:first-child { padding-left: 1rem; }
   .md-table th.md-ranked { color: var(--text-primary); }
   .md-change { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .md-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
@@ -80,12 +83,13 @@
   <i class="bi bi-info-circle"></i>
   <strong>Returning audience</strong>: {{ ticket_noun }} bought by people who already came to an earlier show in that city, our best proxy for built-up organic demand (some may have clicked an ad).
   <strong>New buyers / $1k</strong>: {{ ticket_noun }} from first-timers in that city per $1,000 of ad spend, i.e. how efficiently ads grow the market.
+  <strong>Fill rate</strong>: paid tickets as a share of each event's capacity (or its venue's), averaged across events. Always paid only, since most free RSVPs don't show up.
   Door (in-person) sales have no buyer identity, so they're left out of both.
 </p>
 
 {% if has_data %}
-<div class="row mb-4 g-3">
-    <div class="col-md-3 col-6">
+<div class="row row-cols-2 row-cols-md-5 mb-4 g-3">
+    <div class="col">
         <div class="stat-card">
             <div class="stat-label">Avg {{ ticket_noun }} / event</div>
             <div class="stat-value">{{ summary.avg_per_event|floatformat:0|intcomma }}</div>
@@ -100,21 +104,34 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3 col-6">
+    <div class="col">
         <div class="stat-card">
             <div class="stat-label">Returning audience</div>
             <div class="stat-value">{% if summary.returning_share is not None %}{{ summary.returning_share|floatformat:0 }}%{% else %}&mdash;{% endif %}</div>
             <div class="md-sub">{{ summary.returning_per_event|floatformat:0|intcomma }} {{ ticket_noun }} / event from past buyers</div>
         </div>
     </div>
-    <div class="col-md-3 col-6">
+    <div class="col">
         <div class="stat-card">
             <div class="stat-label">New buyers / $1k ads</div>
             <div class="stat-value">{% if summary.new_per_1k is not None %}{{ summary.new_per_1k|floatformat:0|intcomma }}{% else %}&mdash;{% endif %}</div>
             <div class="md-sub">{% if summary.new_per_1k is not None %}first-time {{ ticket_noun }} per $1,000 spent{% else %}No ad spend recorded{% endif %}</div>
         </div>
     </div>
-    <div class="col-md-3 col-6">
+    <div class="col">
+        <div class="stat-card">
+            <div class="stat-label">Fill rate (paid)</div>
+            <div class="stat-value">{% if summary.fill_rate is not None %}{{ summary.fill_rate|floatformat:0 }}%{% else %}&mdash;{% endif %}</div>
+            <div class="md-sub">
+                {% if summary.fill_rate_change_pct is not None %}
+                <span class="md-change {% if summary.fill_rate_change_pct > 0 %}text-success{% elif summary.fill_rate_change_pct < 0 %}text-danger{% else %}text-muted{% endif %}">
+                    {% if summary.fill_rate_change_pct > 0 %}<i class="bi bi-arrow-up-short"></i>+{% elif summary.fill_rate_change_pct < 0 %}<i class="bi bi-arrow-down-short"></i>{% endif %}{{ summary.fill_rate_change_pct|floatformat:1 }}%
+                </span> vs. prior period
+                {% elif summary.fill_rate is None %}No capacity set on these events{% else %}of capacity sold (paid) per event{% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col">
         <div class="stat-card">
             <div class="stat-label">Events held</div>
             <div class="stat-value">{{ summary.event_count|intcomma }}</div>
@@ -150,6 +167,7 @@
                         <th class="text-end{% if rank == 'tickets' %} md-ranked{% endif %}" title="Average {{ ticket_noun }} per event (median below)">Avg / event</th>
                         <th class="text-end{% if rank == 'returning' %} md-ranked{% endif %}" title="{{ ticket_noun|capfirst }} per event bought by people who came to an earlier show in this city (share of identified buyers below)">Returning</th>
                         <th class="text-end{% if rank == 'new_per_1k' %} md-ranked{% endif %}" title="{{ ticket_noun|capfirst }} from first-timers in this city per $1,000 of ad spend">New / $1k ads</th>
+                        <th class="text-end{% if rank == 'fill_rate' %} md-ranked{% endif %}" title="Average share of each event's capacity sold as paid tickets (free RSVPs excluded, whatever the ticket filter)">Fill rate</th>
                         <th class="text-end" title="Change in the ranked measure vs. the prior period">vs. prior</th>
                         <th class="text-end" title="Average marketing expenses (manual + Meta Ads) per event held in this market during the window">Avg ad spend</th>
                         <th>Top event</th>
@@ -179,10 +197,17 @@
                             <span class="text-muted" title="No ad spend recorded">&mdash;</span>
                             {% endif %}
                         </td>
+                        <td class="text-end md-num{% if rank == 'fill_rate' %} fw-semibold{% endif %}">
+                            {% if m.fill_rate is not None %}
+                            <span title="Paid tickets / capacity, averaged across {{ m.capacity_events }} event{{ m.capacity_events|pluralize }} with a capacity">{{ m.fill_rate|floatformat:0 }}%</span>
+                            {% else %}
+                            <span class="text-muted" title="No capacity set on these events or their venues">&mdash;</span>
+                            {% endif %}
+                        </td>
                         <td class="text-end">
                             {% if m.change_pct is not None %}
                             <span class="md-change {% if m.change_pct > 0 %}text-success{% elif m.change_pct < 0 %}text-danger{% else %}text-muted{% endif %}"
-                                  title="Prior period: {{ m.prior_value|floatformat:0 }} over {{ m.prior_event_count }} event{{ m.prior_event_count|pluralize }}">
+                                  title="Prior period: {{ m.prior_value|floatformat:0 }}{% if rank == 'fill_rate' %}%{% endif %} over {{ m.prior_event_count }} event{{ m.prior_event_count|pluralize }}">
                                 {% if m.change_pct > 0 %}<i class="bi bi-arrow-up-short"></i>+{% elif m.change_pct < 0 %}<i class="bi bi-arrow-down-short"></i>{% endif %}{{ m.change_pct|floatformat:1 }}%
                             </span>
                             {% else %}
@@ -228,7 +253,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Size the chart to the number of markets so bars stay readable.
     document.getElementById('mdChartWrap').style.height = Math.max(200, markets.length * 44 + 60) + 'px';
 
-    var fmt = function(v) { return Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }); };
+    var fmt = function(v) {
+        return Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }) + (cfg.is_percent ? '%' : '');
+    };
 
     new Chart(document.getElementById('marketDemandChart').getContext('2d'), {
         type: 'bar',
