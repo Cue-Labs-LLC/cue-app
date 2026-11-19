@@ -23736,16 +23736,23 @@ class _MarketDemandFixtures:
             email='demand-{}@example.com'.format(self._seq), name='Buyer {}'.format(self._seq),
         )
 
-    def _sell(self, event, paid=0, free=0, price=Decimal('25.00'), customer=None, in_person=False):
+    def _sell(self, event, paid=0, free=0, price=Decimal('25.00'), customer=None, in_person=False,
+              days_before=None):
         """One order at `event` holding `paid` priced tickets and `free` $0 tickets.
 
         A fresh customer per order unless `customer` is given (to model a
         returning buyer)."""
         customer = customer or self._customer(event.organization)
         self._seq += 1
+        if days_before is None:
+            order_date = timezone.now()
+        else:  # midday local time, `days_before` days before the event
+            order_date = timezone.make_aware(
+                datetime.combine(event.start_date - timedelta(days=days_before), time(12, 0))
+            )
         order = TicketOrder.objects.create(
             customer=customer, event=event, order_number='DEM-{}'.format(self._seq),
-            order_date=timezone.now(), total_amount=price * paid, is_in_person=in_person,
+            order_date=order_date, total_amount=price * paid, is_in_person=in_person,
         )
         tickets = [Ticket(ticket_order=order, ticket_type='GA', price=price) for _ in range(paid)]
         tickets += [Ticket(ticket_order=order, ticket_type='Comp', price=Decimal('0.00')) for _ in range(free)]
@@ -24079,6 +24086,26 @@ class MarketDemandFillRateTests(_MarketDemandFixtures, TestCase):
         self._sell(e, free=180)
         self.assertEqual(self._by_label(self._calc())['Austin']['fill_rate'], 0.0)
 
+    def test_fill_one_week_out(self):
+        e = self._event('A1', 20, self.austin, capacity=100)
+        self._sell(e, paid=40, days_before=10)   # well before: counts
+        self._sell(e, paid=10, days_before=7)    # exactly a week out: counts
+        self._sell(e, paid=20, days_before=6)    # inside the last week: doesn't
+        self._sell(e, free=50, days_before=30)   # free never counts
+        austin = self._by_label(self._calc())['Austin']
+        self.assertEqual(austin['fill_week_out'], 50.0)
+        self.assertEqual(austin['fill_rate'], 70.0)
+
+    def test_fill_one_week_out_averages_events_and_summary(self):
+        a1 = self._event('A1', 20, self.austin, capacity=100)
+        self._sell(a1, paid=60, days_before=14)  # 60% a week out
+        a2 = self._event('A2', 30, self.austin, capacity=200)
+        self._sell(a2, paid=200, days_before=2)  # 0% a week out (all late)
+        self._event('A3', 15, self.austin)        # no capacity: excluded
+        result = self._calc()
+        self.assertEqual(self._by_label(result)['Austin']['fill_week_out'], 30.0)
+        self.assertEqual(result['summary']['fill_week_out'], 30.0)
+
     def test_rank_by_fill_rate_and_summary(self):
         a = self._event('A1', 10, self.austin, capacity=1000)
         self._sell(a, paid=500)                         # 50%, more tickets
@@ -24187,6 +24214,7 @@ class MarketDemandViewTests(_MarketDemandFixtures, TestCase):
         self.assertEqual(resp.context['rank_label'], 'Fill rate (paid tickets, % of capacity)')
         self.assertContains(resp, '>75%<')
         self.assertContains(resp, 'Fill rate')
+        self.assertContains(resp, '1 wk out')
 
     def test_empty_state(self):
         resp = self.client.get(self.url)
