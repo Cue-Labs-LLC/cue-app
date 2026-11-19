@@ -26,7 +26,7 @@
   .md-toggle-label { font-size: 12px; color: var(--text-tertiary); }
   .md-note { font-size: 13px; color: var(--text-secondary); }
   .md-note i { color: var(--text-tertiary); }
-  .md-top-event { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+  .md-top-event { max-width: 135px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
 </style>
 {% endblock %}
 
@@ -84,6 +84,7 @@
   <strong>Returning audience</strong>: {{ ticket_noun }} bought by people who already came to an earlier show in that city, our best proxy for built-up organic demand (some may have clicked an ad).
   <strong>New buyers / $1k</strong>: {{ ticket_noun }} from first-timers in that city per $1,000 of ad spend, i.e. how efficiently ads grow the market.
   <strong>Fill rate</strong>: paid tickets as a share of each event's capacity (or its venue's), averaged across events. Always paid only, since most free RSVPs don't show up.
+  <strong>1 wk out</strong>: the same, counting only paid tickets ordered by a week before the show.
   Door (in-person) sales have no buyer identity, so they're left out of both.
 </p>
 
@@ -128,6 +129,7 @@
                     {% if summary.fill_rate_change_pct > 0 %}<i class="bi bi-arrow-up-short"></i>+{% elif summary.fill_rate_change_pct < 0 %}<i class="bi bi-arrow-down-short"></i>{% endif %}{{ summary.fill_rate_change_pct|floatformat:1 }}%
                 </span> vs. prior period
                 {% elif summary.fill_rate is None %}No capacity set on these events{% else %}of capacity sold (paid) per event{% endif %}
+                {% if summary.fill_week_out is not None %}<div>{{ summary.fill_week_out|floatformat:0 }}% sold 1 week out</div>{% endif %}
             </div>
         </div>
     </div>
@@ -168,6 +170,7 @@
                         <th class="text-end{% if rank == 'returning' %} md-ranked{% endif %}" title="{{ ticket_noun|capfirst }} per event bought by people who came to an earlier show in this city (share of identified buyers below)">Returning</th>
                         <th class="text-end{% if rank == 'new_per_1k' %} md-ranked{% endif %}" title="{{ ticket_noun|capfirst }} from first-timers in this city per $1,000 of ad spend">New / $1k ads</th>
                         <th class="text-end{% if rank == 'fill_rate' %} md-ranked{% endif %}" title="Average share of each event's capacity sold as paid tickets (free RSVPs excluded, whatever the ticket filter)">Fill rate</th>
+                        <th class="text-end" title="Fill rate counting only paid tickets ordered by 7 days before each event">1 wk out</th>
                         <th class="text-end" title="Change in the ranked measure vs. the prior period">vs. prior</th>
                         <th class="text-end" title="Average marketing expenses (manual + Meta Ads) per event held in this market during the window">Avg ad spend</th>
                         <th>Top event</th>
@@ -202,6 +205,13 @@
                             <span title="Paid tickets / capacity, averaged across {{ m.capacity_events }} event{{ m.capacity_events|pluralize }} with a capacity">{{ m.fill_rate|floatformat:0 }}%</span>
                             {% else %}
                             <span class="text-muted" title="No capacity set on these events or their venues">&mdash;</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end md-num">
+                            {% if m.fill_week_out is not None %}
+                            <span title="Paid tickets ordered by 7 days before each event / capacity, averaged across {{ m.capacity_events }} event{{ m.capacity_events|pluralize }}">{{ m.fill_week_out|floatformat:0 }}%</span>
+                            {% else %}
+                            <span class="text-muted">&mdash;</span>
                             {% endif %}
                         </td>
                         <td class="text-end">

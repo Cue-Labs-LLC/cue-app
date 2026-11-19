@@ -45,11 +45,15 @@ purpose and mostly don't show (on production ~20% of free tickets are scanned
 vs. ~77% of paid), so counting them reads as 130%+ "full" rooms. A market's
 fill rate is the average of its events' fill rates; events with no capacity are
 left out. Not capped at 100% -- an oversold show reads above 100%.
+
+Fill rate one week out is the same ratio using only paid tickets ordered on or
+before the date 7 days before the event (order date in the site timezone): how
+full the room was a week ahead -- an early-demand signal next to the final.
 """
 from datetime import date, timedelta
 
 from django.db.models import (
-    Count, Exists, IntegerField, Min, OuterRef, Q, Subquery,
+    Count, DateField, Exists, ExpressionWrapper, F, IntegerField, Min, OuterRef, Q, Subquery,
 )
 from django.db.models.functions import Coalesce
 
@@ -67,6 +71,8 @@ RANK_TICKETS = 'tickets'
 RANK_RETURNING = 'returning'
 RANK_NEW_PER_1K = 'new_per_1k'
 RANK_FILL_RATE = 'fill_rate'
+# "Fill one week out": paid tickets ordered at least this many days before the event.
+EARLY_FILL_DAYS = 7
 VALID_RANKS = (RANK_TICKETS, RANK_RETURNING, RANK_NEW_PER_1K, RANK_FILL_RATE)
 
 
@@ -106,6 +112,8 @@ def _group_metrics(rows):
     spend = float(sum(r['ad_spend'] for r in rows))
     fills = [r['paid_sold'] / r['capacity'] * 100 for r in rows if r['capacity'] and r['capacity'] > 0]
     fill_rate = round(sum(fills) / len(fills), 1) if fills else None
+    early = [r['paid_week_out'] / r['capacity'] * 100 for r in rows if r['capacity'] and r['capacity'] > 0]
+    fill_week_out = round(sum(early) / len(early), 1) if early else None
     return {
         'event_count': n,
         'tickets_sold': sum(sold),
@@ -121,6 +129,7 @@ def _group_metrics(rows):
             RANK_FILL_RATE: fill_rate,
         },
         'capacity_events': len(fills),
+        'fill_week_out': fill_week_out,
         'returning_share': round(returning / identified * 100, 1) if identified else None,
     }
 
@@ -171,16 +180,37 @@ class MarketDemandCalculator:
                 # Fill rate is always paid tickets / capacity (event's, else venue's).
                 paid_sold=Coalesce(self._tickets_subquery('ticket_order__event', TICKET_FILTER_PAID), 0),
                 capacity_or_venue=Coalesce('capacity', 'venue__capacity'),
+                week_out=ExpressionWrapper(
+                    F('start_date') - timedelta(days=EARLY_FILL_DAYS), output_field=DateField(),
+                ),
             )
+            # Separate annotate so the subquery can reference week_out.
+            .annotate(paid_week_out=Coalesce(self._paid_by_week_out_subquery(), 0))
             .values(
                 'id', 'name', 'start_date', 'market_id', 'market__name', 'sold', 'ad_spend',
-                'paid_sold', 'capacity_or_venue',
+                'paid_sold', 'paid_week_out', 'capacity_or_venue',
             )
         )
         for r in rows:
             r['capacity'] = r.pop('capacity_or_venue')
         self._attach_buyer_split(rows)
         return rows
+
+    @staticmethod
+    def _paid_by_week_out_subquery():
+        """Paid tickets for the outer event ordered on/before its week_out date."""
+        return Subquery(
+            Ticket.objects.filter(
+                ticket_order__event=OuterRef('pk'),
+                price__gt=0,
+                ticket_order__order_date__date__lte=OuterRef('week_out'),
+            )
+            .order_by()
+            .values('ticket_order__event')
+            .annotate(c=Count('id'))
+            .values('c')[:1],
+            output_field=IntegerField(),
+        )
 
     def _attach_buyer_split(self, rows):
         """Add 'returning' / 'new' ticket counts to each event row.
@@ -272,6 +302,7 @@ class MarketDemandCalculator:
                 'returning_share': cur['returning_share'],
                 'new_per_1k': cur['metrics'][RANK_NEW_PER_1K],
                 'fill_rate': cur['metrics'][RANK_FILL_RATE],
+                'fill_week_out': cur['fill_week_out'],
                 'capacity_events': cur['capacity_events'],
                 # The ranked metric, its prior-window value, and the change.
                 'display_value': display,
@@ -308,6 +339,7 @@ class MarketDemandCalculator:
                 if spent else None
             ),
             'fill_rate': cur_all['metrics'][RANK_FILL_RATE] if cur_all else None,
+            'fill_week_out': cur_all['fill_week_out'] if cur_all else None,
             'fill_rate_change_pct': _pct_change(
                 cur_all['metrics'][RANK_FILL_RATE] if cur_all else None,
                 prev_all['metrics'][RANK_FILL_RATE] if prev_all else None,
