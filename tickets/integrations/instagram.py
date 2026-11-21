@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import (
     Case, Count, IntegerField, OuterRef, Q, Subquery, Value, When,
@@ -526,6 +527,18 @@ def instagram_content_insights(request):
         (key, label, link(format=key)) for key, label in FORMAT_LABELS.items()
     ]
 
+    # Paginate the posts list. Each filter/sort link resets to page 1 naturally because
+    # it doesn't include 'page'; only the pagination controls pass 'page'.
+    per_page = 25
+    all_posts = data['posts'] if data else []
+    paginator = Paginator(all_posts, per_page)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    # Build a base URL for pagination links: current state params without 'page',
+    # terminated with '&' so the template can append 'page=N' directly.
+    page_params = {k: v for k, v in request.GET.items() if k != 'page'}
+    pagination_base = ('?' + urlencode(page_params) + '&') if page_params else '?'
+
     return render(request, 'tickets/instagram_content.html', {
         'connected': connected,
         'data': data,
@@ -547,6 +560,9 @@ def instagram_content_insights(request):
         'refresh_url': link() + ('&' if link() != '?' else '') + 'refresh=1',
         'all_formats_url': link(format=''),
         'has_chart': bool(data and data['chart']['labels']),
+        'page_obj': page_obj,
+        'pagination_base': pagination_base,
+        'total_posts': len(all_posts),
     })
 
 
