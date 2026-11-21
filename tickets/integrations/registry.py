@@ -76,11 +76,11 @@ INTEGRATIONS = [
     },
     {
         'key': 'instagram',
-        'label': 'Instagram DMs',
+        'label': 'Instagram',
         'icon': 'bi-instagram',
-        'category': 'Support',
+        'category': 'Social',
         'settings_url': 'tickets:instagram_settings',
-        'description': 'Auto-answer routine Instagram DMs from your FAQ and escalate the rest.',
+        'description': 'Track organic reach and engagement for your Instagram posts and reels.',
         'is_connected': lambda org: bool(
             org.instagram_page_access_token and org.instagram_business_account_id
         ),
@@ -129,4 +129,5 @@ def marketing_providers(org):
         {**entry, 'connected': True}
         for entry in INTEGRATIONS
         if entry.get('marketing_card') and entry['is_connected'](org)
+        and (entry.get('feature_enabled') is None or entry['feature_enabled'](org))
     ]

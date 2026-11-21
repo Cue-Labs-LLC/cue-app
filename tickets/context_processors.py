@@ -5,6 +5,7 @@ from .feature_flags import (
     browse_events_enabled as browse_events_enabled_flag,
     loyalty_enabled as loyalty_enabled_flag,
     external_events_enabled as external_events_enabled_flag,
+    instagram_dm_agent_enabled as instagram_dm_agent_enabled_flag,
     instagram_feature_enabled as instagram_feature_enabled_flag,
 )
 
@@ -104,4 +105,5 @@ def feature_flags_context(request):
         'loyalty_feature_enabled': loyalty_enabled_flag(org),
         'external_events_enabled': external_events_enabled_flag(org),
         'instagram_feature_enabled': instagram_feature_enabled_flag(org),
+        'instagram_dm_agent_enabled': instagram_dm_agent_enabled_flag(org),
     }

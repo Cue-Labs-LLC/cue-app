@@ -137,7 +137,7 @@
                             <i class="bi bi-chat-dots"></i> SMS
                         </a>
                     </li>
-                    {% if is_org_admin and instagram_feature_enabled %}
+                    {% if is_org_admin and instagram_dm_agent_enabled %}
                     <li>
                         <a href="{% url 'tickets:instagram_inbox' %}" class="sidebar-link{% if '/inbox/instagram/' in request.path %} active{% endif %}">
                             <i class="bi bi-inbox"></i> Inbox

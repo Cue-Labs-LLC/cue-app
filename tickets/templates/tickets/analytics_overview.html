@@ -28,6 +28,13 @@
         <span class="hub-link-title">Meta Ads</span>
         <p class="hub-link-copy">See spend, purchases, and ROAS by campaign and creative.</p>
     </a>
+    {% if instagram_feature_enabled %}
+    <a href="{% url 'tickets:instagram_content_insights' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-instagram"></i></span>
+        <span class="hub-link-title">Instagram Content</span>
+        <p class="hub-link-copy">Compare organic reach and engagement across your posts and reels.</p>
+    </a>
+    {% endif %}
 </div>
 {% endif %}
 

@@ -1,0 +1,90 @@
+{% comment %}
+Instagram card for the event detail Marketing → Instagram sub-tab (included by
+event_detail.html when Instagram is connected, the org's Instagram feature is on, and
+the viewer is an admin); inherits the event_detail context (event, org).
+The body is fetched from event_instagram_card the first time the sub-tab is shown, so
+the event page never waits on Instagram. Link/unlink buttons in the fetched body
+post to instagram_post_event_link and then re-fetch the body.
+{% endcomment %}
+{% if is_org_admin %}
+<style>
+.igev-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+.igev-stat { border: 1px solid var(--border-light); border-radius: 8px; padding: .6rem .75rem; }
+.igev-stat-label { font-size: .65rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; }
+.igev-stat-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.3; }
+.igev-stat-sub { font-size: .72rem; color: var(--text-tertiary); }
+.igev-post { display: flex; align-items: center; gap: .6rem; min-width: 240px; }
+.igev-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; background: var(--bg-inset); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); }
+.igev-caption { font-size: .82rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text-primary); text-decoration: none; }
+.igev-sub { font-size: .72rem; color: var(--text-secondary); }
+.igev-table td, .igev-table th { vertical-align: middle; white-space: nowrap; }
+.igev-table td:first-child { white-space: normal; }
+.igev-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.igev-section-title { font-size: .72rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; margin: 1.25rem 0 .5rem; }
+.igev-candidates { max-height: 340px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: 8px; }
+.igev-candidate { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .5rem .75rem; }
+.igev-candidate + .igev-candidate { border-top: 1px solid var(--border-light); }
+.igev-reason { font-size: .7rem; color: var(--success); }
+</style>
+<div class="card mb-4" id="eventInstagramCard" data-card-url="{% url 'tickets:event_instagram_card' event.id %}">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-instagram me-1"></i> Instagram posts</h5>
+        <a href="{% url 'tickets:instagram_content_insights' %}" class="btn btn-sm btn-outline-secondary">All content</a>
+    </div>
+    <div class="card-body" id="eventInstagramBody">
+        <div class="text-body-secondary small d-flex align-items-center gap-2">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading Instagram posts&hellip;
+        </div>
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var card = document.getElementById('eventInstagramCard');
+    var body = document.getElementById('eventInstagramBody');
+    var tabBtn = document.getElementById('tab-marketing-btn');
+    if (!card || !body) return;
+    var loaded = false;
+
+    function load() {
+        loaded = true;
+        return fetch(card.dataset.cardUrl, { credentials: 'same-origin' })
+            .then(function (r) { return r.text().then(function (html) { return { ok: r.ok, html: html }; }); })
+            .then(function (res) {
+                body.innerHTML = res.ok ? res.html : '<p class="text-danger mb-0">Couldn\'t load Instagram posts. Reload to try again.</p>';
+            })
+            .catch(function () { body.innerHTML = '<p class="text-danger mb-0">Couldn\'t load Instagram posts. Reload to try again.</p>'; });
+    }
+
+    var section = card.closest('[data-marketing-section]');
+    function maybeLoad() {
+        var tabShown = !tabBtn || tabBtn.classList.contains('active');
+        if (!loaded && tabShown && !(section && section.hidden)) load();
+    }
+    maybeLoad();
+    if (tabBtn) tabBtn.addEventListener('shown.bs.tab', maybeLoad);
+    document.addEventListener('marketing:view', maybeLoad);
+
+    // Link / unlink buttons inside the fetched body.
+    body.addEventListener('click', function (event) {
+        var btn = event.target.closest('[data-ig-action]');
+        if (!btn) return;
+        event.preventDefault();
+        var token = body.querySelector('input[name=csrfmiddlewaretoken]');
+        var data = new FormData();
+        data.append('action', btn.dataset.igAction);
+        data.append('event_id', btn.dataset.eventId);
+        if (token) data.append('csrfmiddlewaretoken', token.value);
+        btn.disabled = true;
+        fetch(btn.dataset.url, {
+            method: 'POST', body: data, credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) { return r.json(); })
+          .then(function (res) {
+              if (!res.ok) { btn.disabled = false; alert(res.error || 'Could not save. Try again.'); return; }
+              load();
+          })
+          .catch(function () { btn.disabled = false; alert('Could not save. Try again.'); });
+    });
+});
+</script>
+{% endif %}

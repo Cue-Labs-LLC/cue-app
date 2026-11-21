@@ -1836,11 +1836,14 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 4: Marketing ===== -->
 <div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
-{% if org.sms_marketing_enabled and is_org_host %}
+{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}
 <div class="marketing-subnav" role="tablist">
-    <button type="button" class="marketing-subnav-btn active" data-marketing-view="native">SMS</button>
+    {% if org.sms_marketing_enabled and is_org_host %}<button type="button" class="marketing-subnav-btn active" data-marketing-view="native">SMS</button>{% endif %}
+    {% if is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}<button type="button" class="marketing-subnav-btn" data-marketing-view="instagram">Instagram</button>{% endif %}
     <button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Integrations</button>
 </div>
+{% endif %}
+{% if org.sms_marketing_enabled and is_org_host %}
 <div class="marketing-section" data-marketing-section="native">
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -1944,7 +1947,13 @@ document.addEventListener('DOMContentLoaded', function() {
 </div><!-- /SMS view -->
 {% endif %}
 
-<div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host %} hidden{% endif %}>
+{% if is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}
+<div class="marketing-section" data-marketing-section="instagram" hidden>
+{% include 'tickets/marketing/_provider_instagram.html' %}
+</div><!-- /Instagram view -->
+{% endif %}
+
+<div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %} hidden{% endif %}>
     <h5 class="mb-3">Integrations</h5>
     {% regroup marketing_providers by category as provider_groups %}
     {% for group in provider_groups %}
@@ -3297,23 +3306,35 @@ if (document.readyState === 'loading') {
 })();
 </script>
 <script>
-// Marketing tab sub-view toggle: SMS vs Linked campaigns. Hidden sections stay in
-// the DOM so the SlickText/Meta refresh + confirm handlers keep working.
+// Marketing tab sub-views: SMS / Instagram / Integrations (whichever apply). Hidden
+// sections stay in the DOM so the SlickText/Meta refresh + confirm handlers keep
+// working. ?mview=<view> opens a specific one (e.g. links from Instagram Content);
+// a 'marketing:view' event lets lazy sections (Instagram) load on first reveal.
 (function() {
     var nav = document.querySelector('.marketing-subnav');
     if (!nav) return;
+    var buttons = Array.prototype.slice.call(nav.querySelectorAll('.marketing-subnav-btn'));
     var sections = document.querySelectorAll('[data-marketing-section]');
-    nav.querySelectorAll('.marketing-subnav-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            var view = btn.getAttribute('data-marketing-view');
-            nav.querySelectorAll('.marketing-subnav-btn').forEach(function(b) {
-                b.classList.toggle('active', b === btn);
-            });
-            sections.forEach(function(sec) {
-                sec.hidden = sec.getAttribute('data-marketing-section') !== view;
-            });
+    function show(view, remember) {
+        buttons.forEach(function(b) {
+            b.classList.toggle('active', b.getAttribute('data-marketing-view') === view);
         });
+        sections.forEach(function(sec) {
+            sec.hidden = sec.getAttribute('data-marketing-section') !== view;
+        });
+        if (remember) {
+            var url = new URL(window.location.href);
+            url.searchParams.set('mview', view);
+            window.history.replaceState(null, '', url);
+        }
+        document.dispatchEvent(new CustomEvent('marketing:view', { detail: { view: view } }));
+    }
+    buttons.forEach(function(btn) {
+        btn.addEventListener('click', function() { show(btn.getAttribute('data-marketing-view'), true); });
     });
+    var wanted = new URLSearchParams(window.location.search).get('mview');
+    var initial = buttons.filter(function(b) { return b.getAttribute('data-marketing-view') === wanted; })[0] || buttons[0];
+    if (initial) show(initial.getAttribute('data-marketing-view'), false);
 })();
 </script>
 <script>

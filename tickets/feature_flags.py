@@ -38,10 +38,22 @@ def external_events_enabled(organization):
 
 
 def instagram_feature_enabled(organization):
-    """Return True if the org can see/use the Instagram DM agent UX (rollout gate)."""
+    """Return True if the org can see/use the Instagram integration (rollout gate):
+    connection settings + organic content analytics."""
     if organization is None:
         return False
     return bool(organization.instagram_feature_enabled)
+
+
+def instagram_dm_agent_enabled(organization):
+    """Return True if the Instagram DM support agent (inbox, FAQs, auto-answer) is on
+    for the org: the global INSTAGRAM_DM_AGENT_ENABLED switch AND the org's Instagram
+    rollout gate."""
+    from django.conf import settings
+
+    if not getattr(settings, 'INSTAGRAM_DM_AGENT_ENABLED', False):
+        return False
+    return instagram_feature_enabled(organization)
 
 
 def browse_events_enabled():

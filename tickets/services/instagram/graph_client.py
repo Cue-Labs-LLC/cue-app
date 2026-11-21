@@ -9,7 +9,8 @@ into a diagnosable ``InstagramGraphAPIError`` and logged.
 
 OAuth (Business Login for Instagram):
   1. dialog → ``https://www.instagram.com/oauth/authorize`` (Instagram App ID + scopes
-     ``instagram_business_basic,instagram_business_manage_messages``)
+     ``instagram_business_basic,instagram_business_manage_insights``, plus
+     ``instagram_business_manage_messages`` while the DM agent is enabled)
   2. ``exchange_instagram_code_for_token`` → short-lived token + the IG-scoped ``user_id``
   3. ``exchange_for_long_lived_instagram_token`` → 60-day token
 
@@ -38,9 +39,50 @@ AUTHORIZE_URL = 'https://www.instagram.com/oauth/authorize'
 _SHORT_LIVED_TOKEN_URL = 'https://api.instagram.com/oauth/access_token'
 _LONG_LIVED_TOKEN_URL = 'https://graph.instagram.com/access_token'
 
-# Scopes for the Instagram Login messaging use case (legacy Facebook-Login scopes retired
-# 2025-01-27). instagram_business_manage_messages is the one that unlocks DM read/send.
-OAUTH_SCOPES = 'instagram_business_basic,instagram_business_manage_messages'
+# Scopes for the Instagram Login use case (legacy Facebook-Login scopes retired
+# 2025-01-27). instagram_business_manage_insights unlocks per-post organic metrics
+# (reach, views, saves, shares, follows) for the content analytics page;
+# instagram_business_manage_messages (DM read/send) is only requested while the DM
+# agent is enabled (settings.INSTAGRAM_DM_AGENT_ENABLED). Accounts connected before
+# the insights scope was added must reconnect to grant it.
+BASE_OAUTH_SCOPES = ('instagram_business_basic', 'instagram_business_manage_insights')
+MESSAGING_OAUTH_SCOPE = 'instagram_business_manage_messages'
+
+
+def oauth_scopes(include_messaging: bool) -> str:
+    """Comma-joined OAuth scopes for the connect dialog."""
+    scopes = list(BASE_OAUTH_SCOPES)
+    if include_messaging:
+        scopes.insert(1, MESSAGING_OAUTH_SCOPE)
+    return ','.join(scopes)
+
+# Meta rate-limit codes (app / user / BUC throttling).
+RATE_LIMIT_CODES = {4, 17, 32, 613}
+# "Application does not have permission" / "Permissions error" — the token lacks a scope.
+PERMISSION_CODES = {10, 200}
+# OAuth token invalid / expired.
+TOKEN_ERROR_CODE = 190
+
+
+MEDIA_FIELDS = (
+    "id,caption,media_type,media_product_type,media_url,thumbnail_url,"
+    "permalink,timestamp,like_count,comments_count"
+)
+
+
+def _parse_insight_rows(rows) -> dict:
+    """``{metric_name: value}`` from an insights ``data`` array."""
+    values = {}
+    for row in rows or []:
+        name = row.get("name")
+        points = row.get("values") or []
+        if points:
+            value = points[0].get("value")
+        else:
+            value = (row.get("total_value") or {}).get("value")
+        if name and isinstance(value, (int, float)):
+            values[name] = value
+    return values
 
 
 class InstagramGraphAPIError(Exception):
@@ -60,6 +102,23 @@ class InstagramGraphAPIError(Exception):
         # Code 10 is overloaded (also the "Human Agent not approved" error), so require the
         # message to actually be about the messaging window to distinguish them.
         return self.code == OUT_OF_WINDOW_CODE and 'window' in str(self).lower()
+
+    @property
+    def is_rate_limited(self) -> bool:
+        return self.code in RATE_LIMIT_CODES
+
+    @property
+    def is_permission_error(self) -> bool:
+        # Code 10 is overloaded; exclude the messaging-window and story "not enough
+        # viewers" flavours so only a genuinely missing scope reads as a permission gap.
+        if self.code not in PERMISSION_CODES:
+            return False
+        text = str(self).lower()
+        return 'window' not in text and 'not enough viewers' not in text
+
+    @property
+    def is_token_error(self) -> bool:
+        return self.code == TOKEN_ERROR_CODE
 
 
 def _graph_base() -> str:
@@ -131,7 +190,89 @@ class InstagramGraphClient:
             body["tag"] = tag
         return self._post(f"/{ig_id}/messages", json_body=body)
 
+    # -- organic content insights -------------------------------------------
+
+    def get_account_profile(self) -> dict:
+        """Public profile counters for the connected account."""
+        return self._get("/me", {
+            "fields": "user_id,username,followers_count,media_count,profile_picture_url",
+        })
+
+    def list_media(self, *, since=None, until=None, max_items: int = 100,
+                   page_size: int = 50) -> list:
+        """Feed posts + reels, newest first (stories are a separate edge).
+
+        ``since`` / ``until`` are aware datetimes; Meta filters server-side and paging
+        stops at ``max_items``. Callers still filter by timestamp defensively.
+        """
+        return self._paged_media(MEDIA_FIELDS, since, until, max_items, page_size)
+
+    def list_media_with_insights(self, *, metrics, since=None, until=None,
+                                 max_items: int = 1000, page_size: int = 50) -> list:
+        """Posts with their lifetime insights inlined via field expansion.
+
+        One request per page instead of one insights call per post. Given the union of
+        format-specific metrics, Meta returns only the ones each post's type supports
+        (follows/profile_visits on feed posts, watch time on reels), so callers can ask
+        for everything at once. Each item's ``insights`` is replaced by a
+        ``{metric: value}`` dict, or ``None`` when Meta returned no insights for it.
+        """
+        fields = f"{MEDIA_FIELDS},insights.metric({','.join(metrics)})"
+        items = self._paged_media(fields, since, until, max_items, page_size)
+        for item in items:
+            rows = (item.get("insights") or {}).get("data")
+            item["insights"] = _parse_insight_rows(rows) if rows else None
+        return items
+
+    def get_media_with_insights(self, media_id: str, metrics) -> dict:
+        """One post (any age) with its insights inlined, shaped like
+        ``list_media_with_insights`` items."""
+        item = self._get(f"/{media_id}", {
+            "fields": f"{MEDIA_FIELDS},insights.metric({','.join(metrics)})",
+        })
+        rows = (item.get("insights") or {}).get("data")
+        item["insights"] = _parse_insight_rows(rows) if rows else None
+        return item
+
+    def get_media_children(self, media_id: str) -> list:
+        """A carousel's slides: ``[{id, media_type, media_url, thumbnail_url}]``."""
+        payload = self._get(f"/{media_id}", {
+            "fields": "children{media_type,media_url,thumbnail_url}",
+        })
+        return (payload.get("children") or {}).get("data") or []
+
+    def get_media_insights(self, media_id: str, metrics) -> dict:
+        """Lifetime insights for one post as ``{metric_name: value}``."""
+        payload = self._get(f"/{media_id}/insights", {"metric": ",".join(metrics)})
+        return _parse_insight_rows(payload.get("data") or [])
+
+    def _paged_media(self, fields, since, until, max_items, page_size) -> list:
+        params = {"fields": fields, "limit": page_size}
+        if since is not None:
+            params["since"] = int(since.timestamp())
+        if until is not None:
+            params["until"] = int(until.timestamp())
+        payload = self._get("/me/media", params)
+        items = []
+        while True:
+            items.extend(payload.get("data") or [])
+            next_url = (payload.get("paging") or {}).get("next")
+            if len(items) >= max_items or not next_url:
+                break
+            payload = self._get_url(next_url)
+        return items[:max_items]
+
     # -- transport -----------------------------------------------------------
+
+    def _get_url(self, url: str) -> dict:
+        """GET a fully-formed paging URL (Meta embeds the access token in it)."""
+        try:
+            response = requests.get(url, timeout=_TIMEOUT)
+        except requests.RequestException as exc:
+            raise InstagramGraphAPIError(f"Instagram Graph request failed: {exc}") from exc
+        if not 200 <= response.status_code < 300:
+            raise _error_from_response(response)
+        return response.json()
 
     def _get(self, path: str, params: dict) -> dict:
         request_params = {"access_token": self.access_token, **params}

@@ -1447,6 +1447,11 @@ def process_instagram_inbound_task(self, organization_id, normalized):
         classify_escalation, decide_autosend, get_sender,
     )
 
+    from django.conf import settings
+
+    if not settings.INSTAGRAM_DM_AGENT_ENABLED:
+        # Agent switched off globally — drain anything already queued without acting.
+        return
     try:
         org = Organization.objects.get(id=organization_id)
     except Organization.DoesNotExist:
