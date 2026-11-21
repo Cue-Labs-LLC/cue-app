@@ -1,0 +1,121 @@
+{% load tickets_extras %}
+{% comment %}
+Post-detail side panel body for the Instagram Content page, fetched by
+instagram_post_detail when a post row/card is clicked. The Events section's
+link/unlink controls are wired by the page's panel JS.
+{% endcomment %}
+<div class="igd" data-post-id="{{ post.id }}">
+    {% if slides %}
+    <div class="igd-slides" aria-label="Carousel slides">
+        {% for slide in slides %}
+        <div class="igd-slide">
+            {% if slide.is_video and slide.media_url %}
+            <video src="{{ slide.media_url }}" poster="{{ slide.thumbnail_url }}" controls playsinline preload="metadata"></video>
+            {% elif slide.media_url or slide.thumbnail_url %}
+            <img src="{% if slide.is_video %}{{ slide.thumbnail_url }}{% else %}{{ slide.media_url }}{% endif %}" alt="Slide {{ forloop.counter }}" referrerpolicy="no-referrer">
+            {% endif %}
+            <span class="igd-slide-count">{{ forloop.counter }} / {{ slides|length }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% elif post.media_type == 'VIDEO' and post.media_url %}
+    <div class="igd-media">
+        <video src="{{ post.media_url }}" poster="{{ post.thumbnail }}" controls playsinline preload="metadata"></video>
+    </div>
+    {% elif post.thumbnail or post.media_url %}
+    <div class="igd-media">
+        <img src="{% if post.media_type == 'VIDEO' %}{{ post.thumbnail }}{% else %}{{ post.media_url|default:post.thumbnail }}{% endif %}" alt="" referrerpolicy="no-referrer">
+        {% if post.media_type == 'VIDEO' %}
+        <a class="igd-media-note" href="{{ post.permalink }}" target="_blank" rel="noopener"><i class="bi bi-play-circle me-1"></i>Watch on Instagram</a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="igd-meta">
+        <span><span class="ig-dot ig-dot--{{ post.format }}"></span>{{ post.format_label }}</span>
+        <span>{{ post.published_at|date:"D, M j, Y \a\t g:i A" }}</span>
+        {% if post.permalink %}<a href="{{ post.permalink }}" target="_blank" rel="noopener">View on Instagram <i class="bi bi-box-arrow-up-right"></i></a>{% endif %}
+    </div>
+
+    <section class="igd-section">
+        <div class="igd-label">Events</div>
+        <div class="js-post-events">
+            {% for e in post.events %}
+            <div class="igd-event d-flex justify-content-between align-items-center gap-2" data-event-id="{{ e.id }}">
+                <a href="{% url 'tickets:event_detail' e.id %}?tab=marketing&amp;mview=instagram">{{ e.name }}</a>
+                <span class="d-flex align-items-center gap-2">
+                    <span class="igd-sub">{{ e.start_date|date:"M j, Y" }}</span>
+                    <button type="button" class="ig-type-edit js-event-unlink" data-url="{% url 'tickets:instagram_post_event_link' post.id %}" data-event-id="{{ e.id }}" title="Unlink from this event"><i class="bi bi-x-lg"></i><span class="visually-hidden">Unlink</span></button>
+                </span>
+            </div>
+            {% empty %}
+            <p class="igd-sub mb-0 js-no-events">Not linked to an event. Link it to count its reach and engagement on the event's Marketing tab.</p>
+            {% endfor %}
+        </div>
+        {% if near_events or other_events %}
+        <form class="js-event-link-form d-flex gap-2 mt-2" method="post" action="{% url 'tickets:instagram_post_event_link' post.id %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="link">
+            <input type="hidden" name="next" value="{% url 'tickets:instagram_content_insights' %}{{ next_url }}">
+            <select name="event_id" class="form-select form-select-sm" aria-label="Event to link" required>
+                <option value="">Link to an event&hellip;</option>
+                {% if near_events %}<optgroup label="Around this post">{% for e in near_events %}<option value="{{ e.id }}">{{ e.name }} &middot; {{ e.start_date|date:"M j, Y" }}</option>{% endfor %}</optgroup>{% endif %}
+                {% if other_events %}<optgroup label="Other events">{% for e in other_events %}<option value="{{ e.id }}">{{ e.name }} &middot; {{ e.start_date|date:"M j, Y" }}</option>{% endfor %}</optgroup>{% endif %}
+            </select>
+            <button type="submit" class="btn btn-sm btn-outline-primary flex-shrink-0">Link</button>
+        </form>
+        <div class="small text-danger mt-1 js-event-error"></div>
+        {% endif %}
+    </section>
+
+    <section class="igd-section">
+        <div class="igd-label">Caption</div>
+        <div class="igd-caption">{{ post.caption|default:"No caption" }}</div>
+    </section>
+
+    <section class="igd-section">
+        <div class="igd-label">Performance <span class="text-muted fw-normal text-lowercase">&middot; lifetime</span></div>
+        {% if not post.has_insights %}
+        <p class="small text-muted mb-2">Instagram didn't return insights for this post, so only likes and comments are available.</p>
+        {% endif %}
+        <dl class="igd-metrics">
+            <div><dt>Reach</dt><dd>{{ post.reach|intcomma_or_dash }}</dd>{% if post.reach_rate is not None %}<span class="igd-sub">{{ post.reach_rate }}% of followers</span>{% endif %}</div>
+            <div><dt>Views</dt><dd>{{ post.views|intcomma_or_dash }}</dd></div>
+            <div><dt>vs typical post</dt><dd>{% if post.reach_index is None %}&mdash;{% else %}<span class="ig-index{% if post.reach_index >= 1.5 %} ig-index--up{% elif post.reach_index < 0.75 %} ig-index--down{% endif %}">{{ post.reach_index }}x</span>{% endif %}</dd></div>
+            <div><dt>Eng. rate</dt><dd>{% if post.engagement_rate is None %}&mdash;{% else %}{{ post.engagement_rate }}%{% endif %}</dd></div>
+            <div><dt>Interactions</dt><dd>{{ post.interactions|intcomma_or_dash }}</dd></div>
+            <div><dt>Likes</dt><dd>{{ post.likes|intcomma_or_dash }}</dd></div>
+            <div><dt>Comments</dt><dd>{{ post.comments|intcomma_or_dash }}</dd></div>
+            <div><dt>Shares</dt><dd>{{ post.shares|intcomma_or_dash }}</dd></div>
+            <div><dt>Saves</dt><dd>{{ post.saves|intcomma_or_dash }}</dd></div>
+            {% if post.format == 'reel' %}
+            <div><dt>Avg watch</dt><dd>{% if post.avg_watch_seconds %}{{ post.avg_watch_seconds }}s{% else %}&mdash;{% endif %}</dd></div>
+            {% else %}
+            <div><dt>Follows</dt><dd>{{ post.follows|intcomma_or_dash }}</dd></div>
+            <div><dt>Profile visits</dt><dd>{{ post.profile_visits|intcomma_or_dash }}</dd></div>
+            {% endif %}
+        </dl>
+    </section>
+
+    {% if benchmarks %}
+    <section class="igd-section">
+        <div class="igd-label">How it compares <span class="text-muted fw-normal text-lowercase">&middot; {{ window_label|lower }}</span></div>
+        <table class="table table-sm igd-bench mb-0">
+            <thead>
+                <tr><th>Against</th><th class="text-end">Typical reach</th><th class="text-end">This post</th><th class="text-end">Typical eng.</th></tr>
+            </thead>
+            <tbody>
+                {% for b in benchmarks %}
+                <tr>
+                    <td>{{ b.label }} <span class="text-muted small">({{ b.peers }})</span></td>
+                    <td class="text-end">{{ b.median_reach|intcomma }}</td>
+                    <td class="text-end">{% if b.reach_ratio is None %}&mdash;{% else %}<span class="ig-index{% if b.reach_ratio >= 1.2 %} ig-index--up{% elif b.reach_ratio < 0.8 %} ig-index--down{% endif %}">{{ b.reach_ratio }}x</span>{% endif %}</td>
+                    <td class="text-end">{% if b.median_engagement_rate is None %}&mdash;{% else %}{{ b.median_engagement_rate }}%{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p class="igd-sub mt-1 mb-0">Typical = the median of the other posts in each group, so one outlier doesn't skew it.</p>
+    </section>
+    {% endif %}
+</div>

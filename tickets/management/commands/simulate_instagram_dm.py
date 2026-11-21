@@ -30,6 +30,12 @@ class Command(BaseCommand):
         except Organization.DoesNotExist:
             raise CommandError(f"No organization with slug '{options['org']}'.")
 
+        from django.conf import settings
+        if not settings.INSTAGRAM_DM_AGENT_ENABLED:
+            self.stdout.write(self.style.WARNING(
+                "INSTAGRAM_DM_AGENT_ENABLED is False — the task will no-op. Set "
+                "INSTAGRAM_DM_AGENT_ENABLED=True to exercise the pipeline."
+            ))
         if not org.instagram_support_agent_enabled:
             self.stdout.write(self.style.WARNING(
                 "instagram_support_agent_enabled is False for this org — the task will "

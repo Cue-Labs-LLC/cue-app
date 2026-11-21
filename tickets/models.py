@@ -3516,6 +3516,38 @@ class InstagramMessage(BaseModel):
         return f"[{self.direction}/{self.author}] {self.content[:50]}"
 
 
+class InstagramPostEvent(BaseModel):
+    """Links one of an org's organic Instagram posts to an event it promoted or recapped.
+
+    Many-to-many by design: a multi-city lineup post promotes several events. The post
+    itself isn't stored (it lives in Instagram / the content page's cache), only its
+    media id; the event Marketing tab sums the linked posts' live metrics.
+    """
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='instagram_post_events',
+    )
+    event = models.ForeignKey(
+        'Event', on_delete=models.CASCADE, related_name='instagram_posts',
+    )
+    ig_media_id = models.CharField(max_length=64, db_index=True)
+    linked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['event', 'ig_media_id'], name='uniq_instagram_post_event',
+            ),
+        ]
+        indexes = [models.Index(fields=['organization', 'ig_media_id'])]
+
+    def __str__(self):
+        return f"InstagramPostEvent {self.ig_media_id} -> {self.event_id}"
+
+
 class SaleableTicketType(BaseModel):
     """Organizer-configured, per-event product catalog for direct ticket selling."""
     event = models.ForeignKey(

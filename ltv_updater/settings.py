@@ -413,6 +413,13 @@ INSTAGRAM_APP_SECRET = os.environ.get('INSTAGRAM_APP_SECRET', '')
 # graph.instagram.com reject versioned paths (e.g. /me) with "Unsupported request".
 INSTAGRAM_GRAPH_API_VERSION = os.environ.get('INSTAGRAM_GRAPH_API_VERSION', 'v23.0')
 
+# Global switch for the Instagram DM support agent (inbox, FAQ editor, auto-answer,
+# inbound DM processing). Off by default: Instagram stays connectable for organic
+# content analytics, but Cue neither requests the messaging scope nor subscribes to /
+# processes inbound DMs. Set 'True' to bring the agent back (per-org
+# instagram_feature_enabled + instagram_support_agent_enabled still apply).
+INSTAGRAM_DM_AGENT_ENABLED = os.environ.get('INSTAGRAM_DM_AGENT_ENABLED', 'False') == 'True'
+
 # Instagram DM support agent — minimum classifier confidence for a routine, grounded
 # answer to auto-send instead of being queued for human review (D14/auto-send gate).
 IG_AGENT_AUTOSEND_MIN_CONFIDENCE = float(

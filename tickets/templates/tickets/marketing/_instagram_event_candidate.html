@@ -1,0 +1,12 @@
+{% load tickets_extras %}
+<div class="igev-candidate">
+    <div class="igev-post">
+        {% if c.thumbnail %}<img src="{{ c.thumbnail }}" alt="" class="igev-thumb" loading="lazy" referrerpolicy="no-referrer">{% else %}<span class="igev-thumb"><i class="bi bi-{% if c.format == 'reel' %}camera-reels{% else %}image{% endif %}"></i></span>{% endif %}
+        <div>
+            <div class="igev-caption">{{ c.caption|default:"No caption" }}</div>
+            <div class="igev-sub">{{ c.published_at|date:"M j" }} &middot; {{ c.timing }}{% if c.reach is not None %} &middot; {{ c.reach|intcomma }} reach{% endif %}</div>
+            {% if c.reason %}<div class="igev-reason">{{ c.reason }}</div>{% endif %}
+        </div>
+    </div>
+    <button type="button" class="btn btn-sm btn-outline-primary flex-shrink-0" data-ig-action="link" data-event-id="{{ event.id }}" data-url="{% url 'tickets:instagram_post_event_link' c.id %}">Link</button>
+</div>

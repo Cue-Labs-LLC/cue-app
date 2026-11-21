@@ -1,0 +1,121 @@
+{% load tickets_extras %}
+{% comment %}
+Body of the event Marketing tab's Instagram card, fetched by event_instagram_card.
+Buttons carrying data-ig-action are wired by _provider_instagram.html.
+{% endcomment %}
+{% csrf_token %}
+{% if not_connected %}
+<p class="text-body-secondary mb-0">Instagram isn't connected. <a href="{% url 'tickets:instagram_settings' %}">Connect it</a> to link posts to this event.</p>
+{% elif error == 'expired' %}
+<p class="text-danger mb-0">Your Instagram connection has expired. <a href="{% url 'tickets:instagram_settings' %}">Reconnect</a> to see post metrics.</p>
+{% elif error == 'rate_limited' %}
+<p class="text-warning mb-0">Instagram is limiting requests right now. Try again in a few minutes.</p>
+{% elif error %}
+<p class="text-danger mb-0">Couldn't load data from Instagram: {{ error }}</p>
+{% else %}
+
+{% if data.posts %}
+{% with t=data.totals %}
+<div class="igev-stats">
+    <div class="igev-stat">
+        <div class="igev-stat-label">Posts</div>
+        <div class="igev-stat-value">{{ t.posts }}</div>
+        <div class="igev-stat-sub">{% for label, n in t.formats %}{{ n }} {{ label|lower }}{% if not forloop.last %} &middot; {% endif %}{% endfor %}</div>
+    </div>
+    <div class="igev-stat">
+        <div class="igev-stat-label">Total reach</div>
+        <div class="igev-stat-value">{{ t.reach|intcomma_or_dash }}</div>
+        <div class="igev-stat-sub" title="Reach is added up per post, so someone who saw two posts counts twice">{% if t.views is not None %}{{ t.views|intcomma }} views{% else %}Summed per post{% endif %}</div>
+    </div>
+    <div class="igev-stat">
+        <div class="igev-stat-label">Engagement rate</div>
+        <div class="igev-stat-value">{% if t.engagement_rate is None %}&mdash;{% else %}{{ t.engagement_rate }}%{% endif %}</div>
+        <div class="igev-stat-sub">{{ t.interactions|intcomma_or_dash }} interactions</div>
+    </div>
+    <div class="igev-stat">
+        <div class="igev-stat-label">Shares &amp; saves</div>
+        <div class="igev-stat-value">{{ t.shares_saves|intcomma_or_dash }}</div>
+        <div class="igev-stat-sub">{{ t.shares|intcomma_or_dash }} shares &middot; {{ t.saves|intcomma_or_dash }} saves</div>
+    </div>
+    <div class="igev-stat">
+        <div class="igev-stat-label">vs typical post</div>
+        <div class="igev-stat-value">{% if t.median_reach_index is None %}&mdash;{% elif t.median_reach_index < 0.1 %}&lt;0.1x{% else %}{{ t.median_reach_index }}x{% endif %}</div>
+        <div class="igev-stat-sub" title="Median of the linked posts' reach compared with your typical post over the last 12 months">Median linked post</div>
+    </div>
+    {% if t.has_feed_posts %}
+    <div class="igev-stat">
+        <div class="igev-stat-label">Follows</div>
+        <div class="igev-stat-value">{{ t.follows|intcomma_or_dash }}</div>
+        <div class="igev-stat-sub">{{ t.profile_visits|intcomma_or_dash }} profile visits &middot; photos &amp; carousels</div>
+    </div>
+    {% endif %}
+</div>
+{% endwith %}
+
+<div class="table-responsive">
+    <table class="table table-hover mb-0 igev-table">
+        <thead>
+            <tr>
+                <th>Linked post</th>
+                <th class="num">Reach</th>
+                <th class="num" title="Reach compared with your typical post over the last 12 months">vs typical</th>
+                <th class="num">Eng. rate</th>
+                <th class="num">Shares</th>
+                <th class="num">Saves</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in data.posts %}
+            <tr>
+                <td>
+                    <div class="igev-post">
+                        {% if p.thumbnail %}<img src="{{ p.thumbnail }}" alt="" class="igev-thumb" loading="lazy" referrerpolicy="no-referrer">{% else %}<span class="igev-thumb"><i class="bi bi-{% if p.format == 'reel' %}camera-reels{% else %}image{% endif %}"></i></span>{% endif %}
+                        <div>
+                            <a href="{{ p.permalink|default:'#' }}" target="_blank" rel="noopener" class="igev-caption">{{ p.caption|default:"No caption" }}</a>
+                            <div class="igev-sub">{{ p.format_label }} &middot; {{ p.published_at|date:"M j" }} &middot; {{ p.timing }}</div>
+                        </div>
+                    </div>
+                </td>
+                <td class="num">{{ p.reach|intcomma_or_dash }}</td>
+                <td class="num">{% if p.reach_index is None %}&mdash;{% elif p.reach_index < 0.1 %}&lt;0.1x{% else %}{{ p.reach_index }}x{% endif %}</td>
+                <td class="num">{% if p.engagement_rate is None %}&mdash;{% else %}{{ p.engagement_rate }}%{% endif %}</td>
+                <td class="num">{{ p.shares|intcomma_or_dash }}</td>
+                <td class="num">{{ p.saves|intcomma_or_dash }}</td>
+                <td class="text-end">
+                    <button type="button" class="btn btn-sm btn-outline-danger" data-ig-action="unlink" data-event-id="{{ event.id }}" data-url="{% url 'tickets:instagram_post_event_link' p.id %}" title="Unlink this post from the event">Unlink</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% if data.missing_count %}
+<p class="text-body-secondary small mt-2 mb-0">{{ data.missing_count }} linked post{{ data.missing_count|pluralize }} couldn't be loaded from Instagram (deleted or no longer available) and {{ data.missing_count|pluralize:"isn't,aren't" }} counted.</p>
+{% endif %}
+{% else %}
+<p class="text-body-secondary mb-0">No Instagram posts linked to this event yet. Link the posts that promoted or recapped it to see their combined reach and engagement here.</p>
+{% endif %}
+
+{% if data.suggestions %}
+<div class="igev-section-title">Suggested posts</div>
+<div class="igev-candidates">
+    {% for c in data.suggestions %}
+    {% include 'tickets/marketing/_instagram_event_candidate.html' %}
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if data.browse %}
+<details class="mt-3">
+    <summary class="small text-body-secondary">Find more posts from around this event ({{ data.browse|length }})</summary>
+    <div class="igev-candidates mt-2">
+        {% for c in data.browse %}
+        {% include 'tickets/marketing/_instagram_event_candidate.html' %}
+        {% endfor %}
+    </div>
+</details>
+{% elif not data.suggestions %}
+<p class="text-body-secondary small mt-2 mb-0">No posts found from 90 days before to 2 weeks after this event. You can also link posts from <a href="{% url 'tickets:instagram_content_insights' %}?window=365d">Instagram Content</a> by clicking a post.</p>
+{% endif %}
+{% endif %}

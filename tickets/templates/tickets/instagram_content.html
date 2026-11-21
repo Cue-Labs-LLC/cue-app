@@ -1,0 +1,676 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}Instagram Content{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<style>
+/* Format identity: categorical slots 1-3, validated (CVD + normal-vision, all pairs)
+   against the light and dark surfaces. Text never wears these; a dot carries identity. */
+.ig-root { --fmt-reel: #2a78d6; --fmt-photo: #eb6834; --fmt-carousel: #1baf7a; }
+[data-theme="dark"] .ig-root { --fmt-reel: #3987e5; --fmt-photo: #d95926; --fmt-carousel: #199e70; }
+
+.ig-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .4rem; vertical-align: .05em; flex-shrink: 0; }
+.ig-dot--reel { background: var(--fmt-reel); }
+.ig-dot--photo { background: var(--fmt-photo); }
+.ig-dot--carousel { background: var(--fmt-carousel); }
+
+.ig-account { display: flex; align-items: center; gap: .85rem; }
+.ig-avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; flex-shrink: 0; border: 2px solid var(--border); }
+.ig-avatar--blank { display: flex; align-items: center; justify-content: center; background: var(--bg-inset); color: var(--text-tertiary); font-size: 1.4rem; }
+
+.ig-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.ig-pills { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.ig-pills a { padding: .3rem .75rem; font-size: .8rem; font-weight: 500; color: var(--text-secondary); text-decoration: none; display: inline-flex; align-items: center; }
+.ig-pills a + a { border-left: 1px solid var(--border); }
+.ig-pills a:hover { background: var(--bg-inset); color: var(--text-primary); }
+.ig-pills a.active { background: var(--text-primary); color: var(--bg-surface); }
+.ig-pills a.active .ig-dot { box-shadow: 0 0 0 2px var(--bg-surface); }
+
+.ig-chart-wrap { position: relative; height: 280px; }
+.ig-legend { display: flex; flex-wrap: wrap; gap: .25rem 1rem; font-size: .8rem; color: var(--text-secondary); }
+.ig-legend-median { display: inline-block; width: 1.1rem; border-top: 2px dashed var(--text-tertiary); margin-right: .4rem; vertical-align: middle; }
+
+.ig-top-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
+.ig-top-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface); display: flex; flex-direction: column; color: inherit; text-decoration: none; transition: border-color .15s, transform .15s, box-shadow .15s; opacity: 0; animation: ig-rise .45s ease forwards; }
+.ig-top-card:nth-child(2) { animation-delay: .06s; }
+.ig-top-card:nth-child(3) { animation-delay: .12s; }
+.ig-top-card:nth-child(4) { animation-delay: .18s; }
+.ig-top-card:hover { border-color: var(--text-tertiary); transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.08); color: inherit; }
+@keyframes ig-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ig-top-card { animation: none; opacity: 1; } }
+.ig-top-thumb { aspect-ratio: 4 / 5; background: var(--bg-inset); position: relative; display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 2rem; }
+.ig-top-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.ig-top-rank { position: absolute; top: .5rem; left: .5rem; background: rgba(0,0,0,.65); color: #fff; font-size: .75rem; font-weight: 600; padding: .1rem .45rem; border-radius: 6px; }
+.ig-top-index { position: absolute; bottom: .5rem; left: .5rem; background: rgba(0,0,0,.72); color: #fff; font-size: .72rem; font-weight: 600; padding: .15rem .5rem; border-radius: 6px; }
+.ig-top-body { padding: .7rem .75rem; display: flex; flex-direction: column; gap: .45rem; flex: 1; }
+.ig-top-meta { font-size: .75rem; color: var(--text-secondary); display: flex; align-items: center; }
+.ig-top-caption { font-size: .82rem; line-height: 1.35; color: var(--text-primary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.2em; }
+.ig-top-metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .25rem .5rem; margin: auto 0 0; padding-top: .45rem; border-top: 1px solid var(--border-light); }
+.ig-top-metrics dt { font-size: .63rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.ig-top-metrics dd { margin: 0; font-weight: 600; font-size: .88rem; font-variant-numeric: tabular-nums; }
+
+.ig-table td, .ig-table th { white-space: nowrap; vertical-align: middle; }
+.ig-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.ig-table th.num { text-align: right; }
+.ig-table th.sorted { color: var(--text-primary); }
+.ig-post-cell { display: flex; align-items: center; gap: .65rem; min-width: 260px; max-width: 360px; white-space: normal; }
+.ig-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--bg-inset); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); }
+.ig-post-caption { font-size: .82rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text-primary); text-decoration: none; }
+.ig-post-caption:hover { text-decoration: underline; }
+.ig-post-sub { font-size: .72rem; color: var(--text-secondary); }
+.ig-index { font-weight: 600; }
+.ig-index--up { color: var(--success); }
+.ig-index--down { color: var(--text-tertiary); }
+.ig-period-table { max-height: 440px; overflow-y: auto; }
+.ig-period-table thead th { position: sticky; top: 0; background: var(--bg-surface); z-index: 1; }
+.ig-type-edit { border: 0; background: none; padding: 0 .2rem; color: var(--text-tertiary); font-size: .75rem; }
+.ig-type-edit:hover { color: var(--text-primary); }
+/* Post rows/cards open the detail panel */
+.ig-post-row { cursor: pointer; }
+.ig-post-row.is-open > td { background: var(--bg-inset); }
+/* Post detail side panel (mirrors the Meta Ads creative panel) */
+.ig-panel { --bs-offcanvas-width: 480px; background: var(--bg-surface); color: var(--text-primary); border-left: 1px solid var(--border); }
+.ig-panel .offcanvas-header { border-bottom: 1px solid var(--border-light); }
+.ig-panel .offcanvas-title { font-size: .75rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); }
+[data-theme="dark"] .ig-panel .btn-close { filter: invert(1) grayscale(1) brightness(2); }
+.ig-panel-loading { display: flex; align-items: center; justify-content: center; gap: .6rem; padding: 3rem 0; color: var(--text-secondary); font-size: .85rem; }
+.igd-media, .igd-slide { position: relative; border-radius: 10px; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+.igd-media img, .igd-media video, .igd-slide img, .igd-slide video { width: 100%; max-height: 560px; object-fit: contain; display: block; }
+.igd-media-note { position: absolute; bottom: .6rem; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.72); color: #fff; font-size: .8rem; font-weight: 600; padding: .3rem .7rem; border-radius: 999px; text-decoration: none; }
+.igd-slides { display: flex; gap: .5rem; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: .35rem; }
+.igd-slide { flex: 0 0 100%; scroll-snap-align: start; }
+.igd-slide-count { position: absolute; top: .5rem; right: .5rem; background: rgba(0,0,0,.65); color: #fff; font-size: .72rem; font-weight: 600; padding: .1rem .45rem; border-radius: 6px; }
+.igd-meta { display: flex; flex-wrap: wrap; gap: .35rem 1rem; align-items: center; font-size: .8rem; color: var(--text-secondary); margin: .85rem 0 .25rem; }
+.igd-section { padding: .9rem 0; border-top: 1px solid var(--border-light); }
+.igd-section:first-of-type { border-top: 0; }
+.igd-label { font-size: .68rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .45rem; }
+.igd-event { font-size: .85rem; padding: .2rem 0; }
+.igd-caption { background: var(--bg-inset); border-radius: 8px; padding: .7rem .85rem; font-size: .875rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
+/* Per-cell borders (not a gap over a tinted background) so a short last row stays blank. */
+.igd-metrics { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border-light); border-left: 1px solid var(--border-light); margin: 0; }
+.igd-metrics > div { padding: .55rem .7rem; border-right: 1px solid var(--border-light); border-bottom: 1px solid var(--border-light); }
+.igd-metrics dt { font-size: .63rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.igd-metrics dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.igd-sub { font-size: .7rem; color: var(--text-tertiary); }
+.igd-bench { font-size: .8rem; }
+.igd-bench th { font-size: .63rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.igd-bench td, .igd-bench th { font-variant-numeric: tabular-nums; background: transparent; }
+.ig-best { font-size: .65rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; border: 1px solid var(--border); border-radius: 4px; padding: 0 .3rem; margin-left: .35rem; color: var(--text-secondary); vertical-align: .1em; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="ig-root" style="max-width: 1200px; margin: 0 auto;">
+<div class="page-header">
+    {% if connected and data %}
+    <div class="ig-account">
+        {% if data.account.profile_picture_url %}
+        <img src="{{ data.account.profile_picture_url }}" alt="" class="ig-avatar" referrerpolicy="no-referrer">
+        {% else %}
+        <div class="ig-avatar ig-avatar--blank"><i class="bi bi-instagram"></i></div>
+        {% endif %}
+        <div>
+            <h1>Instagram Content</h1>
+            <p class="page-header-subtitle mb-0">
+                @{{ data.account.username }}{% if data.followers is not None %} &middot; {{ data.followers|intcomma }} followers{% endif %} &middot; {{ active_window_label }}
+            </p>
+        </div>
+    </div>
+    {% else %}
+    <div>
+        <h1>Instagram Content</h1>
+        <p class="page-header-subtitle mb-0">Organic reach and engagement for your posts and reels</p>
+    </div>
+    {% endif %}
+</div>
+
+{% if not connected %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-instagram"></i>
+            <p>Connect your Instagram professional account to see how your organic posts and reels perform.</p>
+            <a href="{% url 'tickets:instagram_settings' %}" class="btn btn-primary">Connect Instagram</a>
+        </div>
+    </div>
+</div>
+{% else %}
+
+<div class="ig-controls mb-3">
+    <div class="window-selector mb-0">
+        <div class="dropdown">
+            <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-calendar3"></i> {{ active_window_label }}
+            </button>
+            <ul class="dropdown-menu">
+                {% for key, label, url in window_links %}
+                <li><a class="dropdown-item{% if key == active_window %} active{% endif %}" href="{{ url }}">{{ label }}</a></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <nav class="ig-pills" aria-label="Filter by format">
+        {% for key, label, url in format_links %}
+        <a href="{{ url }}" class="{% if active_format == key %}active{% endif %}">{% if key %}<span class="ig-dot ig-dot--{{ key }}"></span>{% endif %}{{ label }}</a>
+        {% endfor %}
+    </nav>
+    <a href="{{ refresh_url }}" class="btn btn-sm btn-outline-secondary" title="Data is cached for an hour">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+    </a>
+    {% if data.fetched_at %}
+    <span class="text-muted small"><i class="bi bi-broadcast me-1"></i>Loaded from Instagram {{ data.fetched_at|timesince }} ago</span>
+    {% endif %}
+</div>
+
+{% if error and rate_limited %}
+<div class="alert alert-warning">
+    <i class="bi bi-hourglass-split me-2"></i>Instagram is limiting how often Cue can pull data right now. Wait a few minutes, then try again.
+</div>
+{% elif error and token_expired %}
+<div class="alert alert-danger d-flex justify-content-between align-items-center gap-3">
+    <div><i class="bi bi-exclamation-triangle me-2"></i>Your Instagram connection has expired. Reconnect to load your content metrics.</div>
+    <a href="{% url 'tickets:instagram_settings' %}" class="btn btn-sm btn-outline-danger flex-shrink-0">Reconnect</a>
+</div>
+{% elif error %}
+<div class="alert alert-danger d-flex justify-content-between align-items-center gap-3">
+    <div><i class="bi bi-exclamation-triangle me-2"></i>Couldn't load data from Instagram: {{ error }}</div>
+    <a href="{% url 'tickets:instagram_settings' %}" class="btn btn-sm btn-outline-danger flex-shrink-0">Check connection</a>
+</div>
+{% elif not data.post_count %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-images"></i>
+            <p>No posts or reels published in this period.</p>
+            {% if active_window != '365d' %}<a href="?window=365d" class="btn btn-outline-secondary">View last 12 months</a>{% endif %}
+        </div>
+    </div>
+</div>
+{% else %}
+
+{% if data.insights_permission_missing %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center gap-3">
+    <div>
+        <i class="bi bi-shield-lock me-2"></i>Reach, views, shares, saves, and follows need insights access, which your current Instagram connection doesn't include. Likes and comments are shown below. Disconnect and reconnect Instagram to grant it.
+    </div>
+    <a href="{% url 'tickets:instagram_settings' %}" class="btn btn-sm btn-outline-warning flex-shrink-0">Reconnect</a>
+</div>
+{% endif %}
+
+{% if data.truncated %}
+<div class="alert alert-warning">
+    <i class="bi bi-scissors me-2"></i>This period has more than {{ data.max_posts|intcomma }} posts, so only the most recent {{ data.max_posts|intcomma }} are included. Pick a shorter range to see every post.
+</div>
+{% endif %}
+
+{% with t=data.totals %}
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Posts</div>
+            <div class="stat-value">{{ t.posts|intcomma }}</div>
+            <div class="text-muted small mt-1">{{ t.posts_per_week }} per week &middot; {{ t.reels }} reel{{ t.reels|pluralize }}</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Avg reach per post</div>
+            <div class="stat-value">{{ t.avg_reach|intcomma_or_dash }}</div>
+            <div class="text-muted small mt-1">{% if t.median_reach is not None %}Median {{ t.median_reach|intcomma }}{% if t.reach_rate is not None %} &middot; {{ t.reach_rate }}% of followers{% endif %}{% else %}Needs insights access{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Engagement rate</div>
+            <div class="stat-value">{% if t.engagement_rate is None %}&mdash;{% else %}{{ t.engagement_rate }}%{% endif %}</div>
+            <div class="text-muted small mt-1">{% if t.interactions is not None %}{{ t.interactions|intcomma }} interactions &divide; reach{% else %}{{ t.likes|intcomma }} likes &middot; {{ t.comments|intcomma }} comments{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Shares &amp; saves</div>
+            <div class="stat-value">{{ t.saves_shares|intcomma_or_dash }}</div>
+            <div class="text-muted small mt-1">{% if t.saves_shares is not None %}{{ t.shares|intcomma }} shares &middot; {{ t.saves|intcomma }} saves{% if t.follows_measured %} &middot; {{ t.follows|intcomma }} follows{% endif %}{% else %}Needs insights access{% endif %}</div>
+        </div>
+    </div>
+</div>
+{% endwith %}
+
+{% if has_chart %}
+<div class="card mb-4" id="reach">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            {% if active_group == 'post' %}
+            <h5 class="mb-0">Reach per post</h5>
+            <span class="text-muted small">Each bar is one post, oldest to newest. Bars above the dashed line beat your typical post.</span>
+            {% else %}
+            <h5 class="mb-0">Reach by {{ active_group }}</h5>
+            <span class="text-muted small">Total reach of the posts published each {{ active_group }}, by format. Reach is added up per post, so someone who saw two posts counts twice.</span>
+            {% endif %}
+        </div>
+        <nav class="ig-pills" aria-label="Group chart by">
+            {% for key, label, url in group_links %}
+            <a href="{{ url }}" class="{% if active_group == key %}active{% endif %}">{{ label }}</a>
+            {% endfor %}
+        </nav>
+    </div>
+    <div class="card-body">
+        <div class="ig-legend mb-2" aria-hidden="true">
+            {% for s in data.chart.series %}<span><span class="ig-dot ig-dot--{{ s.format }}"></span>{{ s.label }}</span>{% endfor %}
+            {% if data.chart.median_reach is not None %}<span><span class="ig-legend-median"></span>Median reach{% if active_format %} (all posts){% endif %}</span>{% endif %}
+        </div>
+        <div class="ig-chart-wrap"><canvas id="igReachChart" role="img" aria-label="{% if active_group == 'post' %}Bar chart of reach per post over time, colored by format. The posts table below lists the same values.{% else %}Stacked bar chart of total reach per {{ active_group }}, split by format. The table below lists the same values.{% endif %}"></canvas></div>
+    </div>
+    {% if data.periods %}
+    <div class="card-body p-0 border-top">
+        <div class="table-responsive ig-period-table">
+            <table class="table table-hover mb-0 ig-table">
+                <thead>
+                    <tr>
+                        <th>{{ active_group|capfirst }}</th>
+                        <th class="num">Posts</th>
+                        <th class="num">Total reach</th>
+                        <th class="num">Avg reach per post</th>
+                        <th class="num" title="Likes, comments, shares, and saves divided by reach">Eng. rate</th>
+                        <th class="num">Shares</th>
+                        <th class="num">Saves</th>
+                        <th class="num" title="Reported for photos and carousels only">Follows</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in data.periods reversed %}
+                    <tr>
+                        <td>{{ p.title }}{% if p.partial %} <span class="text-muted small">(partial)</span>{% endif %}</td>
+                        <td class="num">{% if p.posts %}{{ p.posts }}{% else %}<span class="text-muted">0</span>{% endif %}</td>
+                        <td class="num">{{ p.reach|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.avg_reach|intcomma_or_dash }}</td>
+                        <td class="num">{% if p.engagement_rate is None %}&mdash;{% else %}{{ p.engagement_rate }}%{% endif %}</td>
+                        <td class="num">{{ p.shares|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.saves|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.follows|intcomma_or_dash }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{{ data.chart|json_script:"igChartData" }}
+{% endif %}
+
+{% if data.formats %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">By format</h5>
+        <span class="text-muted small">Which kind of content earns the most organic reach and engagement</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 ig-table">
+                <thead>
+                    <tr>
+                        <th>Format</th>
+                        <th class="num">Posts</th>
+                        <th class="num">Avg reach</th>
+                        <th class="num">Avg views</th>
+                        <th class="num">Engagement rate</th>
+                        <th class="num">Avg likes</th>
+                        <th class="num">Avg comments</th>
+                        <th class="num">Avg shares</th>
+                        <th class="num">Avg saves</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for f in data.formats %}
+                    <tr>
+                        <td><span class="ig-dot ig-dot--{{ f.format }}"></span>{{ f.label }}</td>
+                        <td class="num">{{ f.posts }} <span class="text-muted small">({{ f.share_of_posts }}%)</span></td>
+                        <td class="num">{{ f.avg_reach|intcomma_or_dash }}{% if f.best_avg_reach %}<span class="ig-best">Best</span>{% endif %}</td>
+                        <td class="num">{{ f.avg_views|intcomma_or_dash }}</td>
+                        <td class="num">{% if f.engagement_rate is None %}&mdash;{% else %}{{ f.engagement_rate }}%{% endif %}{% if f.best_engagement_rate %}<span class="ig-best">Best</span>{% endif %}</td>
+                        <td class="num">{{ f.avg_likes|intcomma_or_dash }}</td>
+                        <td class="num">{{ f.avg_comments|intcomma_or_dash }}</td>
+                        <td class="num">{{ f.avg_shares|intcomma_or_dash }}</td>
+                        <td class="num">{{ f.avg_saves|intcomma_or_dash }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if data.top_posts %}
+<h5 class="mb-1">Top posts by reach</h5>
+<p class="text-muted small mb-3">Multiplier is reach compared with your median post in this period.</p>
+<div class="ig-top-grid mb-4">
+    {% for p in data.top_posts %}
+    <a class="ig-top-card js-open-detail" href="{{ p.permalink }}" target="_blank" rel="noopener" data-detail-url="{% url 'tickets:instagram_post_detail' p.id %}" data-post-id="{{ p.id }}">
+        <div class="ig-top-thumb">
+            {% if p.thumbnail %}<img src="{{ p.thumbnail }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<i class="bi bi-{% if p.format == 'reel' %}camera-reels{% else %}image{% endif %}"></i>{% endif %}
+            <span class="ig-top-rank">#{{ forloop.counter }}</span>
+            {% if p.reach_index is not None %}<span class="ig-top-index">{{ p.reach_index }}x median</span>{% endif %}
+        </div>
+        <div class="ig-top-body">
+            <div class="ig-top-meta"><span class="ig-dot ig-dot--{{ p.format }}"></span>{{ p.format_label }} &middot; {{ p.published_at|date:"M j" }}</div>
+            <div class="ig-top-caption">{{ p.caption|default:"No caption" }}</div>
+            <dl class="ig-top-metrics">
+                <div><dt>Reach</dt><dd>{{ p.reach|intcomma_or_dash }}</dd></div>
+                <div><dt>Eng.</dt><dd>{% if p.engagement_rate is None %}&mdash;{% else %}{{ p.engagement_rate }}%{% endif %}</dd></div>
+                <div><dt>Shares</dt><dd>{{ p.shares|intcomma_or_dash }}</dd></div>
+            </dl>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <h5 class="mb-0">Posts</h5>
+            <span class="text-muted small">{{ data.posts|length }} post{{ data.posts|length|pluralize }}, sorted by {{ active_sort_label|lower }}</span>
+        </div>
+        <div class="dropdown">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-sort-down me-1"></i>Sort: {{ active_sort_label }}
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                {% for key, label, url in sort_links %}
+                <li><a class="dropdown-item{% if key == active_sort %} active{% endif %}" href="{{ url }}">{{ label }}</a></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        {% if data.posts %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 ig-table">
+                <thead>
+                    <tr>
+                        <th class="{% if active_sort == 'published' %}sorted{% endif %}">Post</th>
+                        <th class="num{% if active_sort == 'reach' %} sorted{% endif %}">Reach</th>
+                        <th class="num" title="Reach compared with your median post in this period">vs median</th>
+                        <th class="num{% if active_sort == 'views' %} sorted{% endif %}">Views</th>
+                        <th class="num">Likes</th>
+                        <th class="num">Comments</th>
+                        <th class="num{% if active_sort == 'shares' %} sorted{% endif %}">Shares</th>
+                        <th class="num{% if active_sort == 'saves' %} sorted{% endif %}">Saves</th>
+                        <th class="num{% if active_sort == 'engagement_rate' %} sorted{% endif %}" title="Likes, comments, shares, and saves divided by reach">Eng. rate</th>
+                        <th class="num{% if active_sort == 'follows' %} sorted{% endif %}" title="Reported for photos and carousels only">Follows</th>
+                        <th class="num" title="Average watch time (reels)">Avg watch</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in data.posts %}
+                    <tr class="ig-post-row" data-detail-url="{% url 'tickets:instagram_post_detail' p.id %}" data-post-id="{{ p.id }}">
+                        <td>
+                            <div class="ig-post-cell">
+                                {% if p.thumbnail %}<img src="{{ p.thumbnail }}" alt="" class="ig-thumb" loading="lazy" referrerpolicy="no-referrer">{% else %}<span class="ig-thumb"><i class="bi bi-{% if p.format == 'reel' %}camera-reels{% else %}image{% endif %}"></i></span>{% endif %}
+                                <div>
+                                    <a href="{{ p.permalink|default:'#' }}" target="_blank" rel="noopener" class="ig-post-caption js-open-detail" data-detail-url="{% url 'tickets:instagram_post_detail' p.id %}" data-post-id="{{ p.id }}">{{ p.caption|default:"No caption" }}</a>
+                                    <div class="ig-post-sub"><span class="ig-dot ig-dot--{{ p.format }}"></span>{{ p.format_label }} &middot; {{ p.published_at|date:"M j, Y" }}<span class="js-row-events">{% if p.events %} &middot; <i class="bi bi-calendar-event"></i> {{ p.events.0.name }}{% if p.events|length > 1 %} +{{ p.events|length|add:"-1" }}{% endif %}{% endif %}</span>{% if p.insights_status == 'unavailable' %} &middot; <span title="Instagram didn't return insights for this post">No insights</span>{% endif %}</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="num">{{ p.reach|intcomma_or_dash }}</td>
+                        <td class="num">{% if p.reach_index is None %}&mdash;{% else %}<span class="ig-index {% if p.reach_index >= 1.5 %}ig-index--up{% elif p.reach_index < 0.75 %}ig-index--down{% endif %}">{{ p.reach_index }}x</span>{% endif %}</td>
+                        <td class="num">{{ p.views|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.likes|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.comments|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.shares|intcomma_or_dash }}</td>
+                        <td class="num">{{ p.saves|intcomma_or_dash }}</td>
+                        <td class="num">{% if p.engagement_rate is None %}&mdash;{% else %}{{ p.engagement_rate }}%{% endif %}</td>
+                        <td class="num">{{ p.follows|intcomma_or_dash }}</td>
+                        <td class="num">{% if p.avg_watch_seconds %}{{ p.avg_watch_seconds }}s{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-filter"></i>
+            <p>No posts of this format in this period.</p>
+            <a href="{{ all_formats_url }}" class="btn btn-outline-secondary">Show all formats</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<p class="text-muted small mb-4">
+    Organic metrics reported by Instagram for feed posts and reels (stories aren't included). Instagram can take up to 48 hours to finalize a post's numbers, so very recent posts may still be climbing. Paid results for boosted posts are on <a href="{% url 'tickets:meta_ads_dashboard' %}">Meta Ads</a>.
+    Click any post to see its full details.
+    {% if data.unavailable_count %}Instagram didn't return insights for {{ data.unavailable_count }} post{{ data.unavailable_count|pluralize }}, usually ones published before the account became a professional account.{% endif %}
+</p>
+{% endif %}
+{% endif %}
+</div>
+<div class="offcanvas offcanvas-end ig-panel ig-root" tabindex="-1" id="igPostPanel" aria-labelledby="igPostPanelLabel"
+     data-window="{{ active_window }}" data-next="{{ current_url }}">
+    <div class="offcanvas-header">
+        <h5 class="offcanvas-title" id="igPostPanelLabel">Post details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body" id="igPostPanelBody"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // Post detail panel: click a post row (anywhere but its controls) or a top-post
+    // card; the body is fetched on demand so the page doesn't embed every post.
+    var panel = document.getElementById('igPostPanel');
+    if (!panel || !window.bootstrap) return;
+    // The content wrapper's fade-in leaves a transform that would anchor the fixed
+    // panel to it instead of the viewport, so re-parent it onto <body>.
+    document.body.appendChild(panel);
+    var body = document.getElementById('igPostPanelBody');
+    var offcanvas = bootstrap.Offcanvas.getOrCreateInstance(panel);
+    var requestToken = 0;
+
+    function openDetail(url, postId) {
+        var token = ++requestToken;
+        document.querySelectorAll('.ig-post-row.is-open').forEach(function (row) { row.classList.remove('is-open'); });
+        var row = document.querySelector('.ig-post-row[data-post-id="' + postId + '"]');
+        if (row) row.classList.add('is-open');
+        body.innerHTML = '<div class="ig-panel-loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span>Loading post&hellip;</div>';
+        offcanvas.show();
+        var params = new URLSearchParams({ window: panel.dataset.window, next: panel.dataset.next });
+        fetch(url + '?' + params.toString(), { credentials: 'same-origin' })
+            .then(function (response) {
+                return response.text().then(function (html) { return { ok: response.ok, html: html }; });
+            })
+            .then(function (result) {
+                if (token !== requestToken) return;  // a newer click won
+                body.innerHTML = result.ok ? result.html : '<p class="text-danger">Couldn\'t load this post. Try again.</p>';
+                body.scrollTop = 0;
+            })
+            .catch(function () {
+                if (token === requestToken) body.innerHTML = '<p class="text-danger">Couldn\'t load this post. Try again.</p>';
+            });
+    }
+
+    document.addEventListener('click', function (event) {
+        var opener = event.target.closest('.js-open-detail');
+        var row = event.target.closest('.ig-post-row');
+        if (!opener && row) {
+            // Let the row's own controls (links, buttons) behave normally.
+            if (event.target.closest('a, button, select, input, label, form, .dropdown-menu')) return;
+            opener = row;
+        }
+        if (!opener) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey) return;  // new-tab clicks go to Instagram
+        event.preventDefault();
+        openDetail(opener.dataset.detailUrl, opener.dataset.postId);
+    });
+
+    // Event links inside the panel: save, re-render the panel, then mirror the linked
+    // events onto the table row's indicator.
+    function syncRowEvents(postId) {
+        var row = document.querySelector('.ig-post-row[data-post-id="' + postId + '"] .js-row-events');
+        if (!row) return;
+        var names = Array.prototype.map.call(body.querySelectorAll('.igd-event a'), function (a) { return a.textContent; });
+        row.textContent = '';
+        if (!names.length) return;
+        row.append(' \u00b7 ');
+        var icon = document.createElement('i');
+        icon.className = 'bi bi-calendar-event';
+        row.append(icon, ' ' + names[0] + (names.length > 1 ? ' +' + (names.length - 1) : ''));
+    }
+
+    function saveEventLink(url, eventId, action, csrf, errorEl) {
+        var postId = body.querySelector('.igd').dataset.postId;
+        var data = new FormData();
+        data.append('action', action);
+        data.append('event_id', eventId);
+        data.append('csrfmiddlewaretoken', csrf);
+        fetch(url, { method: 'POST', body: data, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+                if (!res.ok) { if (errorEl) errorEl.textContent = res.error || 'Could not save. Try again.'; return; }
+                var detailUrl = document.querySelector('[data-post-id="' + postId + '"][data-detail-url]').dataset.detailUrl;
+                return fetch(detailUrl + '?' + new URLSearchParams({ window: panel.dataset.window, next: panel.dataset.next }), { credentials: 'same-origin' })
+                    .then(function (r) { return r.text(); })
+                    .then(function (html) {
+                        var scroll = body.scrollTop;
+                        body.innerHTML = html;
+                        body.scrollTop = scroll;
+                        syncRowEvents(postId);
+                    });
+            })
+            .catch(function () { if (errorEl) errorEl.textContent = 'Could not save. Try again.'; });
+    }
+
+    body.addEventListener('submit', function (event) {
+        var form = event.target.closest('.js-event-link-form');
+        if (!form) return;
+        event.preventDefault();
+        event.stopPropagation();
+        var select = form.querySelector('[name=event_id]');
+        if (!select.value) return;
+        // getAttribute: the form's hidden input named "action" shadows form.action.
+        saveEventLink(form.getAttribute('action'), select.value, 'link', form.querySelector('[name=csrfmiddlewaretoken]').value,
+                      body.querySelector('.js-event-error'));
+    });
+    body.addEventListener('click', function (event) {
+        var btn = event.target.closest('.js-event-unlink');
+        if (!btn) return;
+        var csrf = body.querySelector('[name=csrfmiddlewaretoken]');
+        saveEventLink(btn.dataset.url, btn.dataset.eventId, 'unlink', csrf ? csrf.value : '',
+                      body.querySelector('.js-event-error'));
+    });
+
+    panel.addEventListener('hidden.bs.offcanvas', function () {
+        requestToken++;
+        body.querySelectorAll('video').forEach(function (video) { video.pause(); });
+        body.innerHTML = '';
+        document.querySelectorAll('.ig-post-row.is-open').forEach(function (row) { row.classList.remove('is-open'); });
+    });
+});
+</script>
+{% if has_chart %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var el = document.getElementById('igChartData');
+    var canvas = document.getElementById('igReachChart');
+    if (!el || !canvas || typeof Chart === 'undefined') return;
+    var chart = JSON.parse(el.textContent);
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var styles = getComputedStyle(document.querySelector('.ig-root'));
+    var fmtColor = function (fmt) { return styles.getPropertyValue('--fmt-' + fmt).trim(); };
+    var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+    var tickColor = isDark ? '#8C8884' : '#5C5A57';
+    var medianColor = isDark ? '#7A7672' : '#9A9794';
+    var nf = new Intl.NumberFormat();
+
+    var surface = getComputedStyle(document.body).getPropertyValue('--bg-surface').trim() || '#fff';
+    var stacked = chart.group !== 'post';
+    var datasets = chart.series.map(function (s) {
+        return {
+            type: 'bar',
+            label: s.label,
+            data: s.data,
+            backgroundColor: fmtColor(s.format),
+            // A numeric radius on a stacked chart rounds only the ends of the stack;
+            // the 2px surface-coloured top edge separates stacked format segments.
+            borderRadius: 4,
+            borderSkipped: 'start',
+            borderWidth: stacked ? { top: 2 } : 0,
+            borderColor: surface,
+            maxBarThickness: stacked ? 40 : 28,
+            stack: 'posts'
+        };
+    });
+    if (chart.median_reach !== null) {
+        datasets.push({
+            type: 'line',
+            label: 'Median reach',
+            data: chart.labels.map(function () { return chart.median_reach; }),
+            borderColor: medianColor,
+            borderDash: [5, 4],
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHitRadius: 0,
+            stack: 'median'
+        });
+    }
+
+    new Chart(canvas.getContext('2d'), {
+        data: { labels: chart.labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { stacked: true, grid: { display: false }, ticks: { color: tickColor, maxRotation: 0, autoSkip: true, autoSkipPadding: 12 } },
+                y: { stacked: true, beginAtZero: true, grid: { color: gridColor }, border: { display: false }, ticks: { color: tickColor, callback: function (v) { return nf.format(v); } } }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: chart.group === 'post' ? {
+                    filter: function (item) { return item.raw !== null && item.dataset.type !== 'line'; },
+                    callbacks: {
+                        title: function (items) {
+                            var m = chart.meta[items[0].dataIndex];
+                            return m.format + ' \u00b7 ' + m.date;
+                        },
+                        label: function (item) { return 'Reach: ' + nf.format(item.raw); },
+                        afterLabel: function (item) {
+                            var m = chart.meta[item.dataIndex];
+                            var lines = [];
+                            if (m.views !== null) lines.push('Views: ' + nf.format(m.views));
+                            if (m.engagement_rate !== null) lines.push('Engagement: ' + m.engagement_rate + '%');
+                            if (chart.median_reach) lines.push((item.raw / chart.median_reach).toFixed(1) + 'x median');
+                            if (m.caption) lines.push('"' + m.caption + (m.caption.length >= 80 ? '\u2026' : '') + '"');
+                            return lines;
+                        }
+                    }
+                } : {
+                    // Week/month: one tooltip per period listing each format's share.
+                    filter: function (item) { return item.raw !== null; },
+                    callbacks: {
+                        title: function (items) { return chart.meta[items[0].dataIndex].title; },
+                        label: function (item) { return item.dataset.label + ': ' + nf.format(item.raw) + ' reach'; },
+                        footer: function (items) {
+                            var m = chart.meta[items[0].dataIndex];
+                            var lines = [m.posts + (m.posts === 1 ? ' post' : ' posts')];
+                            if (m.avg_reach !== null) lines.push('Avg reach per post: ' + nf.format(m.avg_reach));
+                            if (m.engagement_rate !== null) lines.push('Engagement: ' + m.engagement_rate + '%');
+                            return lines;
+                        }
+                    }
+                }
+            }
+        }
+    });
+});
+</script>
+{% endif %}
+{% endblock %}

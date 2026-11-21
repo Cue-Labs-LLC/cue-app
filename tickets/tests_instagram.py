@@ -1,5 +1,8 @@
 """Tests for the Instagram DM support agent (Phases 0–2).
 
+Every class runs with ``INSTAGRAM_DM_AGENT_ENABLED=True`` (the agent is off by default;
+the disabled behaviour is covered in tests_instagram_content.py).
+
 Covers the data-model foundations (OrgFAQ, InstagramConversation, InstagramMessage,
 the Organization integration fields, the AITokenUsage feature), the per-org FAQ editor
 (Phase 1), and the offline answer pipeline (Phase 2): the customer-safe tool surface
@@ -49,6 +52,7 @@ from .services.instagram.evaluation import (
 )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class OrgFAQModelTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name='FAQ Org', slug='faq-org')
@@ -86,6 +90,7 @@ class OrgFAQModelTests(TestCase):
         self.assertEqual(ordered, [b, c, a])
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InstagramConversationModelTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name='IG Org', slug='ig-org')
@@ -122,6 +127,7 @@ class InstagramConversationModelTests(TestCase):
             self.assertEqual(conv.agent_in_control, expected, status)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InstagramMessageModelTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name='IG Msg Org', slug='ig-msg-org')
@@ -190,6 +196,7 @@ class InstagramMessageModelTests(TestCase):
         self.assertEqual(list(self.conv.messages.all()), [first, second])
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class OrganizationInstagramFieldsTests(TestCase):
     def test_instagram_fields_default_empty(self):
         org = Organization.objects.create(name='Defaults Org', slug='defaults-org')
@@ -227,6 +234,7 @@ class OrganizationInstagramFieldsTests(TestCase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class AITokenUsageFeatureTests(TestCase):
     def test_ig_support_agent_feature_choice_exists(self):
         self.assertEqual(AITokenUsage.FEATURE_IG_SUPPORT_AGENT, 'ig_support_agent')
@@ -252,6 +260,7 @@ class AITokenUsageFeatureTests(TestCase):
 # ---------------------------------------------------------------------------
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class _FAQViewTestBase(TestCase):
     """Shared setup: an org with an admin and a non-admin (host) member."""
 
@@ -300,6 +309,7 @@ class _FAQViewTestBase(TestCase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQAccessControlTests(_FAQViewTestBase):
     def test_non_admin_forbidden_on_all_views(self):
         self._login_host()
@@ -323,6 +333,7 @@ class FAQAccessControlTests(_FAQViewTestBase):
         self.assertEqual(response.status_code, 200)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQCrudTests(_FAQViewTestBase):
     def test_create_scopes_to_request_org(self):
         self._login_admin()
@@ -365,6 +376,7 @@ class FAQCrudTests(_FAQViewTestBase):
         self.assertIn(faq, response.context['faqs'])
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQOrgScopingTests(_FAQViewTestBase):
     def test_other_orgs_faq_not_listed(self):
         self._login_admin()
@@ -397,6 +409,7 @@ class FAQOrgScopingTests(_FAQViewTestBase):
         self.assertIsNone(theirs.deleted_at)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQReorderTests(_FAQViewTestBase):
     def _ordered_questions(self):
         response = self.client.get(reverse('tickets:instagram_faq_list'))
@@ -443,6 +456,7 @@ class FAQReorderTests(_FAQViewTestBase):
         self.assertEqual(response.status_code, 405)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQInlineAjaxTests(_FAQViewTestBase):
     """Inline (XMLHttpRequest) create/edit/delete answer JSON, not redirects."""
 
@@ -502,6 +516,7 @@ class FAQInlineAjaxTests(_FAQViewTestBase):
 # ---------------------------------------------------------------------------
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class FAQFormTests(_FAQViewTestBase):
     def test_form_requires_answer(self):
         form = OrgFAQForm(data={
@@ -516,6 +531,7 @@ ALLOWED_IG_TOOL_NAMES = {'get_faq', 'list_upcoming_events', 'list_past_events',
                          'find_event', 'get_contact_info'}
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGToolsSafetyTests(TestCase):
     """The customer-safe tool surface: allowlist pin, output scrubbing, visibility.
 
@@ -694,6 +710,7 @@ def _tool_message(name, content):
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
                    IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGAnswerAgentTests(_FAQViewTestBase):
     """InstagramSupportAgentService.answer() with the ReAct agent mocked."""
 
@@ -847,6 +864,7 @@ class IGAnswerAgentTests(_FAQViewTestBase):
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
                    IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGClassifierTests(_FAQViewTestBase):
     """classify_escalation() + decide_autosend() gating."""
 
@@ -923,6 +941,7 @@ class IGClassifierTests(_FAQViewTestBase):
         self.assertIn('AUTO-SEND', printed)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGEvaluationGraderTests(TestCase):
     """Pure eval scorers (no LLM / no Langfuse) used by the eval_ig_agent experiment."""
 
@@ -1030,6 +1049,7 @@ from .services.instagram import (  # noqa: E402
 )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGNormalizeTests(TestCase):
     """normalize_meta_payload: keep real text DMs, skip the rest."""
 
@@ -1084,6 +1104,7 @@ class IGNormalizeTests(TestCase):
 
 @override_settings(INSTAGRAM_APP_SECRET='top-secret', FACEBOOK_APP_SECRET='top-secret',
                    E2E_TEST_MODE=False)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGVerifySignatureTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -1118,6 +1139,7 @@ class IGVerifySignatureTests(TestCase):
         self.assertTrue(verify_meta_signature(self._req(b'{"a":1}', 'deadbeef')))
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGGetSenderTests(TestCase):
     @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
     def test_stub_backend(self):
@@ -1150,6 +1172,7 @@ class IGGetSenderTests(TestCase):
 @override_settings(INSTAGRAM_WEBHOOK_VERIFY_TOKEN='verify-me',
                    INSTAGRAM_APP_SECRET='top-secret', FACEBOOK_APP_SECRET='top-secret',
                    E2E_TEST_MODE=False)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGWebhookViewTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -1230,6 +1253,7 @@ class IGWebhookViewTests(TestCase):
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
                    IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8,
                    INSTAGRAM_SENDER_BACKEND='stub', IG_AGENT_DAILY_ANSWER_CAP=200)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGOrchestrationTaskTests(TestCase):
     """process_instagram_inbound_task with the LLM pipeline mocked."""
 
@@ -1462,6 +1486,7 @@ class IGOrchestrationTaskTests(TestCase):
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o',
                    INSTAGRAM_SENDER_BACKEND='stub', IG_AGENT_AUTOSEND_MIN_CONFIDENCE=0.8)
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGSimulateCommandTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(
@@ -1504,6 +1529,7 @@ from django.core import mail  # noqa: E402
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class _InboxViewTestBase(_FAQViewTestBase):
     """Reuses the FAQ base (admin + host + other_org) with IG thread helpers."""
 
@@ -1523,6 +1549,7 @@ class _InboxViewTestBase(_FAQViewTestBase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InstagramFeatureFlagTests(_InboxViewTestBase):
     def test_ux_404s_when_feature_off(self):
         self.org.instagram_feature_enabled = False
@@ -1546,6 +1573,7 @@ class InstagramFeatureFlagTests(_InboxViewTestBase):
             self.client.get(reverse('tickets:instagram_faq_list')).status_code, 200)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InstagramRegistryGateTests(TestCase):
     def test_card_hidden_when_feature_off(self):
         from tickets.integrations.registry import integration_statuses
@@ -1561,6 +1589,7 @@ class InstagramRegistryGateTests(TestCase):
         self.assertIn('instagram', keys)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxAccessControlTests(_InboxViewTestBase):
     def test_non_admin_forbidden(self):
         self._login_host()
@@ -1578,6 +1607,7 @@ class InboxAccessControlTests(_InboxViewTestBase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxOrgScopingTests(_InboxViewTestBase):
     def test_only_own_orgs_conversations_listed(self):
         self._login_admin()
@@ -1599,6 +1629,7 @@ class InboxOrgScopingTests(_InboxViewTestBase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class ConversationDetailThreadTests(_InboxViewTestBase):
     def test_pending_draft_excluded_from_inline_thread(self):
         # The un-sent draft belongs in the editor, not the sent-message timeline.
@@ -1639,6 +1670,7 @@ class ConversationDetailThreadTests(_InboxViewTestBase):
             'Agent in control')
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxDraftApproveTests(_InboxViewTestBase):
     def test_approve_sends_and_marks_approved_then_resolves(self):
         self._login_admin()
@@ -1709,6 +1741,7 @@ class InboxDraftApproveTests(_InboxViewTestBase):
         )
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxHumanReplyTests(_InboxViewTestBase):
     def test_human_reply_sends_and_marks_human_handling(self):
         self._login_admin()
@@ -1742,6 +1775,7 @@ class InboxHumanReplyTests(_InboxViewTestBase):
             conversation=conv, author=InstagramMessage.AUTHOR_HUMAN).exists())
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxHandbackTests(_InboxViewTestBase):
     """Explicit 'hand back to agent' control on a human-owned thread."""
 
@@ -1893,6 +1927,7 @@ class InboxHandbackTests(_InboxViewTestBase):
         delay.assert_not_called()
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxConversationMessagesApiTests(_InboxViewTestBase):
     """The JSON feed the detail page polls for live updates."""
 
@@ -1991,6 +2026,7 @@ class InboxConversationMessagesApiTests(_InboxViewTestBase):
         self.assertEqual(self.client.post(self._url(conv)).status_code, 405)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxResolveCloseTests(_InboxViewTestBase):
     """'Resolve & close' resolves, clears ownership, and resets the agent's context."""
 
@@ -2068,6 +2104,7 @@ class InboxResolveCloseTests(_InboxViewTestBase):
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxEscalationNotifyTriggerTests(TestCase):
     """The orchestration task notifies once, only on the awaiting_human transition (D2)."""
 
@@ -2109,6 +2146,7 @@ class InboxEscalationNotifyTriggerTests(TestCase):
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub', SITE_URL='https://cue.test')
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InboxEscalationNotifyTaskTests(TestCase):
     """notify_instagram_escalation_task emails + pushes only org admins (D1)."""
 
@@ -2156,6 +2194,7 @@ class InboxEscalationNotifyTaskTests(TestCase):
 
 
 @override_settings(INSTAGRAM_SENDER_BACKEND='stub')
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class IGEscalationSilentTests(TestCase):
     """Escalations happen silently: the customer gets no outbound message until a human
     replies (no auto-acknowledgement is ever sent)."""
@@ -2253,6 +2292,7 @@ def _graph_response(status_code, payload):
     return resp
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class GraphAPISenderTests(TestCase):
     """GraphAPISender.send_text: POST shape, messaging_type/tag, and failure mapping."""
 
@@ -2332,6 +2372,7 @@ class GraphAPISenderTests(TestCase):
         self.assertTrue(result.error)
 
 
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class _IGConnectViewBase(_FAQViewTestBase):
     """Reuses the FAQ view base (org + admin/host, instagram_feature_enabled=True)."""
 
@@ -2343,6 +2384,7 @@ class _IGConnectViewBase(_FAQViewTestBase):
 
 
 @override_settings(INSTAGRAM_APP_ID='ig-app-id', INSTAGRAM_APP_SECRET='ig-app-secret')
+@override_settings(INSTAGRAM_DM_AGENT_ENABLED=True)
 class InstagramConnectFlowTests(_IGConnectViewBase):
     def test_settings_page_requires_admin(self):
         self._login_host()

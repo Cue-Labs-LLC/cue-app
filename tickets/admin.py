@@ -6,6 +6,7 @@ from django.db.models import Sum, Count, Subquery, OuterRef
 from django.db.models.functions import Coalesce
 from django import forms
 from .models import (
+    InstagramPostEvent,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventImage, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue,
@@ -926,7 +927,9 @@ class OrganizationAdmin(admin.ModelAdmin):
             'fields': ('instagram_support_agent_enabled',
                        'instagram_business_account_id', 'instagram_username'),
             'classes': ('collapse',),
-            'description': 'instagram_feature_enabled (in Feature Flags) gates UX visibility; '
+            'description': 'instagram_feature_enabled (in Feature Flags) gates the Instagram UX '
+                           '(connection + content analytics); the DM agent additionally needs the '
+                           'global INSTAGRAM_DM_AGENT_ENABLED env setting, and '
                            'instagram_support_agent_enabled turns on runtime auto-answering.',
         }),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
@@ -1763,3 +1766,12 @@ class MarketCompetitionFeedCacheAdmin(admin.ModelAdmin):
     @admin.display(description='Events')
     def event_count(self, obj):
         return len(obj.payload or [])
+
+
+@admin.register(InstagramPostEvent)
+class InstagramPostEventAdmin(admin.ModelAdmin):
+    """Organic Instagram posts linked to events (shown on the event Marketing tab)."""
+    list_display = ('ig_media_id', 'event', 'organization', 'linked_by', 'created_at')
+    search_fields = ('ig_media_id', 'event__name', 'organization__name')
+    raw_id_fields = ('event', 'linked_by')
+    ordering = ('-created_at',)

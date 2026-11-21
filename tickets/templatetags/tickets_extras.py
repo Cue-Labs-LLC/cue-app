@@ -88,6 +88,14 @@ def intcomma(value):
 
 
 @register.filter
+def intcomma_or_dash(value):
+    """Like ``intcomma`` but renders a missing metric as an em dash instead of 0."""
+    if value is None or value == '':
+        return '\u2014'
+    return intcomma(value)
+
+
+@register.filter
 def filter_channel(rows, channel):
     """Filter a list of campaign-row dicts by `channel` key."""
     if not rows:

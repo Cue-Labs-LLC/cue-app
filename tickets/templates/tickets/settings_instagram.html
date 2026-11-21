@@ -1,13 +1,18 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Instagram DM Agent{% endblock %}
+{% block title %}{% if instagram_dm_agent_enabled %}Instagram DM Agent{% else %}Instagram{% endif %}{% endblock %}
 
 {% block content %}
 <div style="max-width: 900px; margin: 0 auto;">
 <div class="page-header">
     <div>
+        {% if instagram_dm_agent_enabled %}
         <h1>Instagram DM Agent</h1>
         <p class="text-body-secondary mb-0">Connect Instagram so the support agent can answer customer DMs from your published FAQs and public event info.</p>
+        {% else %}
+        <h1>Instagram</h1>
+        <p class="text-body-secondary mb-0">Connect your Instagram professional account to see how your organic posts and reels perform.</p>
+        {% endif %}
     </div>
 </div>
 
@@ -23,8 +28,12 @@
         {% if not org.instagram_business_account_id %}
         <h2 class="h5 mb-2">Connect Instagram</h2>
         <p class="text-body-secondary mb-3">
-            Cue will request message access for your Instagram professional account and subscribe to incoming DMs.
-            You can review every answer before the agent sends automatically.
+            {% if instagram_dm_agent_enabled %}
+            Cue will request message and insights access for your Instagram professional account, subscribe to incoming DMs,
+            and read your posts' organic metrics for the Instagram Content analytics page. You can review every answer before the agent sends automatically.
+            {% else %}
+            Cue will request read-only insights access for your Instagram professional account to show your posts' organic reach and engagement.
+            {% endif %}
         </p>
         <form method="post" action="{% url 'tickets:instagram_connect' %}">
             {% csrf_token %}
@@ -49,6 +58,7 @@
             </div>
         </div>
 
+        {% if instagram_dm_agent_enabled %}
         <hr class="my-4">
 
         <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
@@ -72,9 +82,25 @@
             </form>
         </div>
         {% endif %}
+        {% endif %}
     </div>
 </div>
 
+{% if org.instagram_business_account_id %}
+<div class="card mt-3">
+    <div class="card-body d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+        <div>
+            <h2 class="h6 mb-1">Content analytics</h2>
+            <p class="text-body-secondary mb-0">Organic reach, engagement, shares, and saves for your posts and reels. Connected before this was available? Disconnect and reconnect to grant insights access.</p>
+        </div>
+        <a href="{% url 'tickets:instagram_content_insights' %}" class="btn btn-outline-primary">
+            <i class="bi bi-bar-chart-line me-1"></i> View content
+        </a>
+    </div>
+</div>
+{% endif %}
+
+{% if instagram_dm_agent_enabled %}
 <div class="card mt-3">
     <div class="card-body d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <div>
@@ -86,5 +112,6 @@
         </a>
     </div>
 </div>
+{% endif %}
 </div>
 {% endblock %}

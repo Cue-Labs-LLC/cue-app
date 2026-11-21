@@ -135,6 +135,9 @@ urlpatterns = [
     path('analytics/market-demand/', views.market_demand, name='market_demand'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/meta-ads/', meta_ads_views.meta_ads_dashboard, name='meta_ads_dashboard'),
+    path('analytics/instagram/', instagram_views.instagram_content_insights, name='instagram_content_insights'),
+    path('analytics/instagram/posts/<str:media_id>/', instagram_views.instagram_post_detail, name='instagram_post_detail'),
+    path('analytics/instagram/posts/<str:media_id>/events/', instagram_views.instagram_post_event_link, name='instagram_post_event_link'),
     path('analytics/meta-ads/ads/<int:ad_id>/preview/', meta_ads_views.meta_ads_ad_preview, name='meta_ads_ad_preview'),
     # Loyalty programs
     path('loyalty/', views.loyalty_program_list, name='loyalty_program_list'),
@@ -235,6 +238,7 @@ urlpatterns = [
     # Integrations — per-event campaign actions (paths stay under the event; handlers
     # live in tickets/integrations/). See the "Integrations" block lower down for the
     # connection/settings pages.
+    path('events/<uuid:event_id>/instagram/', instagram_views.event_instagram_card, name='event_instagram_card'),
     path('events/<uuid:event_id>/meta-ads/match/', meta_ads_views.event_meta_ads_match, name='event_meta_ads_match'),
     path('events/<uuid:event_id>/meta-ads/apply/', meta_ads_views.event_meta_ads_apply, name='event_meta_ads_apply'),
     path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', meta_ads_views.event_meta_ads_refresh, name='event_meta_ads_refresh'),
