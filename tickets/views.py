@@ -2174,6 +2174,43 @@ def _decorate_spotlight(ev, today, org=None):
     return ev
 
 
+def _ig_organic_totals(org):
+    """Return {reach, saves, posts} summed across all of this org's linked Instagram posts,
+    reading only from the shared cache (no Meta API call). Returns None when Instagram
+    isn't connected, no posts are linked, or the cache is cold."""
+    import hashlib
+    from django.core.cache import cache as django_cache
+    from .models import InstagramPostEvent
+
+    if not (org.instagram_page_access_token and org.instagram_business_account_id):
+        return None
+    linked_ids = set(
+        InstagramPostEvent.objects.filter(organization=org)
+        .values_list('ig_media_id', flat=True)
+        .distinct()
+    )
+    if not linked_ids:
+        return None
+    token = org.instagram_page_access_token or ''
+    fp = hashlib.sha256(token.encode()).hexdigest()[:12]
+    raw = django_cache.get(
+        f'ig_content:v2:{org.pk}:{org.instagram_business_account_id}:{fp}'
+    )
+    if not raw:
+        return None
+    post_map = {p['id']: p for p in raw.get('posts', [])}
+    reach = saves = matched = 0
+    for mid in linked_ids:
+        p = post_map.get(mid)
+        if p and p.get('insights'):
+            reach += p['insights'].get('reach') or 0
+            saves += p['insights'].get('saved') or 0
+            matched += 1
+    if not matched:
+        return None
+    return {'reach': reach, 'saves': saves, 'posts': matched}
+
+
 @login_required
 @require_org
 @require_organizer
@@ -2248,6 +2285,10 @@ def home(request):
     has_customers = total_customers > 0
     onboarding = _onboarding_state(org, has_customers)
 
+    # Instagram organic totals for linked posts — cache-only (no API call).
+    # Only shown when the org has Instagram connected and at least one post linked.
+    ig_organic = _ig_organic_totals(org)
+
     context = {
         'upcoming_events': upcoming_events,
         'ended_events': ended_events,
@@ -2262,6 +2303,7 @@ def home(request):
         'show_directticketing_upsell': _direct_ticketing_upsell(
             org, has_customers, onboarding.get('has_sent_campaign')
         ),
+        'ig_organic': ig_organic,
     }
     return render(request, 'tickets/home.html', context)
 

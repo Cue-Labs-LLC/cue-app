@@ -102,6 +102,18 @@
         <div class="stat-label">Total Tickets</div>
         <div class="stat-value">{{ total_tickets|default:0|intcomma }}</div>
     </div>
+    {% if ig_organic %}
+    <div class="stat-card">
+        <div class="stat-label">Total Organic Reach</div>
+        <div class="stat-value">{{ ig_organic.reach|intcomma }}</div>
+        <a href="{% url 'tickets:instagram_content_insights' %}" class="stat-link">View posts <i class="bi bi-arrow-right"></i></a>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Total Organic Saves</div>
+        <div class="stat-value">{{ ig_organic.saves|intcomma }}</div>
+        <span class="text-muted small">{{ ig_organic.posts }} linked post{{ ig_organic.posts|pluralize }}</span>
+    </div>
+    {% endif %}
 </div>
 {% else %}
 <div class="card mb-4">
