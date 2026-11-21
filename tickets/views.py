@@ -2174,21 +2174,21 @@ def _decorate_spotlight(ev, today, org=None):
     return ev
 
 
-def _ig_organic_totals(org):
-    """Return {reach, saves, posts} summed across all of this org's linked Instagram posts,
-    reading only from the shared cache (no Meta API call). Returns None when Instagram
-    isn't connected, no posts are linked, or the cache is cold."""
+def _ig_organic_totals(org, event=None):
+    """Return {reach, saves, posts} summed across linked Instagram posts, reading only
+    from the shared cache (no Meta API call). Pass event to scope to one event's linked
+    posts; omit to sum across the whole org. Returns None when Instagram isn't connected,
+    no posts are linked, or the cache is cold."""
     import hashlib
     from django.core.cache import cache as django_cache
     from .models import InstagramPostEvent
 
     if not (org.instagram_page_access_token and org.instagram_business_account_id):
         return None
-    linked_ids = set(
-        InstagramPostEvent.objects.filter(organization=org)
-        .values_list('ig_media_id', flat=True)
-        .distinct()
-    )
+    qs = InstagramPostEvent.objects.filter(organization=org)
+    if event is not None:
+        qs = qs.filter(event=event)
+    linked_ids = set(qs.values_list('ig_media_id', flat=True).distinct())
     if not linked_ids:
         return None
     token = org.instagram_page_access_token or ''
@@ -6455,6 +6455,9 @@ def event_detail(request, event_id):
         event_customers_page = cust_paginator.get_page(request.GET.get('cust_page'))
         event_org_tags = CustomerTag.objects.filter(organization=org)
 
+    # Instagram organic totals for posts linked to this event (cache-only, no API call).
+    ig_organic = _ig_organic_totals(org, event=event)
+
     context = {
         'event': event,
         'native_sms_campaigns': native_sms_campaigns,
@@ -6574,6 +6577,7 @@ def event_detail(request, event_id):
         # D2=A: block the tool (show a "set a genre" prompt) when the event has no
         # genre, no description, and no buy page to detect one from.
         'competition_needs_genre': not _competition_has_genre_source(event),
+        'ig_organic': ig_organic,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)

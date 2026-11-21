@@ -648,6 +648,24 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
     </div>
 </div>
+
+{% if ig_organic %}
+<!-- Row 3: Instagram organic -->
+<div class="stat-section">
+    <div class="stats-grid">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Total Organic Reach</div>
+            <div class="stat-value">{{ ig_organic.reach|intcomma }}</div>
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">{{ ig_organic.posts }} linked post{{ ig_organic.posts|pluralize }}</div>
+        </div>
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Total Organic Saves</div>
+            <div class="stat-value">{{ ig_organic.saves|intcomma }}</div>
+            <a href="{% url 'tickets:instagram_content_insights' %}" class="stat-link">View posts <i class="bi bi-arrow-right"></i></a>
+        </div>
+    </div>
+</div>
+{% endif %}
 </div>
 
 {% if org.ai_event_summary_enabled %}
