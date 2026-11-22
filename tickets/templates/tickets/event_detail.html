@@ -1836,10 +1836,11 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 4: Marketing ===== -->
 <div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
-{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}
+{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %}
 <div class="marketing-subnav" role="tablist">
     {% if org.sms_marketing_enabled and is_org_host %}<button type="button" class="marketing-subnav-btn active" data-marketing-view="native">SMS</button>{% endif %}
     {% if is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}<button type="button" class="marketing-subnav-btn" data-marketing-view="instagram">Instagram</button>{% endif %}
+    {% if show_ads_view %}<button type="button" class="marketing-subnav-btn" data-marketing-view="ads">Ads</button>{% endif %}
     <button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Integrations</button>
 </div>
 {% endif %}
@@ -1953,7 +1954,102 @@ document.addEventListener('DOMContentLoaded', function() {
 </div><!-- /Instagram view -->
 {% endif %}
 
-<div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %} hidden{% endif %}>
+{% if show_ads_view %}
+<div class="marketing-section" data-marketing-section="ads" hidden>
+{% if ads_has_data %}
+<div class="stats-grid mb-4">
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Spend</div>
+        <div class="stat-value">{{ ads_currency_prefix }}{{ ads_totals.spend|currency }}</div>
+    </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Impressions</div>
+        <div class="stat-value">{{ ads_totals.impressions|intcomma }}</div>
+    </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Clicks</div>
+        <div class="stat-value">{{ ads_totals.link_clicks|intcomma }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">CTR</div>
+        <div class="stat-value">{% if ads_totals.ctr != None %}{{ ads_totals.ctr }}%{% else %}&mdash;{% endif %}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">CPM</div>
+        <div class="stat-value">{% if ads_totals.cpm != None %}{{ ads_currency_prefix }}{{ ads_totals.cpm|currency }}{% else %}&mdash;{% endif %}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">CPC</div>
+        <div class="stat-value">{% if ads_totals.cpc != None %}{{ ads_currency_prefix }}{{ ads_totals.cpc|currency }}{% else %}&mdash;{% endif %}</div>
+    </div>
+    {% if ads_totals.purchases != None %}
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Purchases</div>
+        <div class="stat-value">{{ ads_totals.purchases }}</div>
+    </div>
+    {% endif %}
+    {% if ads_totals.roas != None %}
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">ROAS</div>
+        <div class="stat-value">{{ ads_totals.roas }}x</div>
+    </div>
+    {% endif %}
+</div>
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Daily spend</h5></div>
+    <div class="card-body">
+        <div style="position: relative; height: 220px;"><canvas id="adsSpendChart"></canvas></div>
+    </div>
+</div>
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Campaign breakdown</h5></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Campaign</th>
+                        <th class="text-end">Spend</th>
+                        <th class="text-end">Impressions</th>
+                        <th class="text-end">Clicks</th>
+                        <th class="text-end">CTR</th>
+                        <th class="text-end">CPC</th>
+                        <th class="text-end">CPM</th>
+                        <th class="text-end">Purchases</th>
+                        <th class="text-end">ROAS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in ads_campaigns %}
+                    <tr>
+                        <td class="fw-medium">{{ c.name }}</td>
+                        <td class="text-end">{{ ads_currency_prefix }}{{ c.spend|currency }}</td>
+                        <td class="text-end">{{ c.impressions|intcomma }}</td>
+                        <td class="text-end">{{ c.link_clicks|intcomma }}</td>
+                        <td class="text-end">{% if c.ctr != None %}{{ c.ctr }}%{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.cpc != None %}{{ ads_currency_prefix }}{{ c.cpc|currency }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.cpm != None %}{{ ads_currency_prefix }}{{ c.cpm|currency }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.purchases != None %}{{ c.purchases }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.roas != None %}{{ c.roas }}x{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state" style="padding: 28px 24px;">
+    <i class="bi bi-graph-up" style="font-size: 16px;"></i>
+    <p class="mb-2">No synced data yet for the linked campaigns.</p>
+    <p class="text-body-secondary small mb-0">Metrics will appear once the nightly sync has run.</p>
+</div>
+{% endif %}
+</div><!-- /Ads view -->
+<script type="application/json" id="ads-spend-data" data-currency-prefix="{{ ads_currency_prefix }}">{{ ads_daily_spend_json|safe }}</script>
+{% endif %}
+
+<div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %} hidden{% endif %}>
     <h5 class="mb-3">Integrations</h5>
     {% regroup marketing_providers by category as provider_groups %}
     {% for group in provider_groups %}
@@ -3335,6 +3431,71 @@ if (document.readyState === 'loading') {
     var wanted = new URLSearchParams(window.location.search).get('mview');
     var initial = buttons.filter(function(b) { return b.getAttribute('data-marketing-view') === wanted; })[0] || buttons[0];
     if (initial) show(initial.getAttribute('data-marketing-view'), false);
+})();
+</script>
+<script>
+// Ads sub-view: lazily initialise the daily-spend line chart on first reveal.
+// Chart.js draws at zero size when the canvas is in a hidden container, so
+// defer init until the ads marketing:view event fires.
+(function () {
+    var spendEl = document.getElementById('ads-spend-data');
+    if (!spendEl) return;
+    var spendData = JSON.parse(spendEl.textContent);
+    var prefix = spendEl.getAttribute('data-currency-prefix') || '$';
+    if (!spendData.length) return;
+    var chartInstance = null;
+    function initAdsChart() {
+        if (chartInstance) return;
+        var canvas = document.getElementById('adsSpendChart');
+        if (!canvas) return;
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var labelColor = isDark ? '#94a3b8' : '#64748b';
+        var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+        chartInstance = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: spendData.map(function (d) { return d.date; }),
+                datasets: [{
+                    label: 'Spend',
+                    data: spendData.map(function (d) { return d.spend; }),
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.35,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: 'index', intersect: false, displayColors: false,
+                        callbacks: { label: function (ctx) { return prefix + ctx.formattedValue; } }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return prefix + v; } }
+                    }
+                }
+            }
+        });
+    }
+    document.addEventListener('marketing:view', function (e) {
+        if (e.detail && e.detail.view === 'ads') initAdsChart();
+    });
+    document.addEventListener('DOMContentLoaded', function () {
+        var sec = document.querySelector('[data-marketing-section="ads"]');
+        if (sec && !sec.hidden) initAdsChart();
+    });
 })();
 </script>
 <script>
