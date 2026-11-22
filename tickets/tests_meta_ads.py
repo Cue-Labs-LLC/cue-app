@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -6,7 +7,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
-from .models import Event, EventExpense, Organization, OrganizationMembership, UserProfile, Venue
+from .models import Event, EventExpense, MetaAdDailyInsight, Organization, OrganizationMembership, UserProfile, Venue
 from .services.meta_ads import CampaignInsights, MetaAdsAPIError, MetaAdsClient
 from .services.meta_campaign_matcher import CampaignCandidate, MatchResult, MetaCampaignMatcher
 
@@ -1589,3 +1590,98 @@ class MetaAdsSyncLifecycleTests(_MetaAdsDashboardFixtures, TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self._rows(), 0)
         self.assertIsNone(self.org.meta_ads_synced_at)
+
+
+class EventAdsInsightsTests(TestCase):
+    """Marketing tab → Ads sub-view: per-event metrics from synced daily rows."""
+
+    def setUp(self):
+        # No access token: keeps event_detail's live Meta refresh a no-op.
+        self.org = Organization.objects.create(name='Ads Org', slug='ads-org', meta_ads_account_id='act_1')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        self.user = User.objects.create_user(username='ads-owner', email='ads@example.com', password='pass123')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        venue = Venue.objects.create(organization=self.org, name='Venue', city='Oakland')
+        self.event = Event.objects.create(
+            organization=self.org, venue=venue, name='Event', start_date=date(2026, 6, 1),
+        )
+        self.client.force_login(self.user)
+        session = self.client.session
+        session['_org_id'] = str(self.org.id)
+        session.save()
+        self.url = reverse('tickets:event_detail', kwargs={'event_id': self.event.id})
+
+    def _link(self, campaign_id, name='Campaign'):
+        return EventExpense.objects.create(
+            event=self.event, category='marketing', description=name, amount=Decimal('0.00'),
+            source='meta_ads', external_id=campaign_id, external_metadata={'campaign_name': name},
+        )
+
+    def _row(self, campaign_id, day, ad_id='ad1', org=None, **metrics):
+        defaults = {'spend': Decimal('10.00'), 'impressions': 1000, 'link_clicks': 20}
+        defaults.update(metrics)
+        return MetaAdDailyInsight.objects.create(
+            organization=org or self.org, ad_account_id='act_1', date=day, ad_id=ad_id,
+            campaign_id=campaign_id, campaign_name=f'Name {campaign_id}', currency='USD', **defaults,
+        )
+
+    def _insights(self):
+        from .views import _get_event_ads_insights
+        expenses = list(EventExpense.objects.filter(event=self.event, source='meta_ads'))
+        return _get_event_ads_insights(self.event, expenses)
+
+    def test_hidden_without_linked_campaigns(self):
+        result = self._insights()
+        self.assertFalse(result['show'])
+        response = self.client.get(self.url)
+        self.assertNotContains(response, 'data-marketing-view="ads"')
+
+    def test_linked_campaign_without_synced_rows_shows_empty_state(self):
+        self._link('cmp_1')
+        result = self._insights()
+        self.assertTrue(result['show'])
+        self.assertFalse(result['has_data'])
+        response = self.client.get(self.url)
+        self.assertContains(response, 'data-marketing-view="ads"')
+        self.assertContains(response, 'No synced data yet for the linked campaigns.')
+
+    def test_aggregates_only_linked_campaigns_in_this_org(self):
+        self._link('cmp_1')
+        self._link('cmp_2')
+        self._row('cmp_1', date(2026, 5, 1), purchases=2, purchase_value=Decimal('60.00'))
+        self._row('cmp_1', date(2026, 5, 2), ad_id='ad2', spend=Decimal('20.00'), purchases=1,
+                  purchase_value=Decimal('30.00'))
+        self._row('cmp_2', date(2026, 5, 2), ad_id='ad3', spend=Decimal('5.00'))
+        self._row('cmp_unlinked', date(2026, 5, 2), ad_id='ad4', spend=Decimal('999.00'))
+        self._row('cmp_1', date(2026, 5, 2), ad_id='ad5', org=self.other_org, spend=Decimal('999.00'))
+
+        result = self._insights()
+
+        totals = result['totals']
+        self.assertTrue(result['has_data'])
+        self.assertEqual(totals['spend'], Decimal('35.00'))
+        self.assertEqual(totals['impressions'], 3000)
+        self.assertEqual(totals['link_clicks'], 60)
+        self.assertEqual(totals['purchases'], 3)
+        self.assertEqual(totals['ctr'], Decimal('2.00'))
+        self.assertEqual(totals['cpm'], Decimal('11.67'))
+        self.assertEqual(totals['roas'], Decimal('2.57'))
+        self.assertEqual([c['name'] for c in result['campaigns']], ['Name cmp_1', 'Name cmp_2'])
+        self.assertEqual(result['campaigns'][0]['spend'], Decimal('30.00'))
+        self.assertIsNone(result['campaigns'][1]['purchases'])
+        self.assertEqual(
+            json.loads(result['daily_spend_json']),
+            [{'date': '2026-05-01', 'spend': 10.0}, {'date': '2026-05-02', 'spend': 25.0}],
+        )
+
+    def test_renders_metrics_in_marketing_tab(self):
+        self._link('cmp_1')
+        self._row('cmp_1', date(2026, 5, 1), spend=Decimal('1234.50'))
+        response = self.client.get(self.url)
+        self.assertContains(response, 'data-marketing-section="ads"')
+        self.assertContains(response, '$1,234.50')
+        self.assertContains(response, 'Campaign breakdown')
+        self.assertContains(response, 'id="adsSpendChart"')

@@ -49,6 +49,7 @@ from .models import (
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     LoyaltyProgram, LoyaltyTier, PhoneSuppression, SMSConsentRecord,
+    MetaAdDailyInsight,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
     TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
@@ -5729,6 +5730,72 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     return had_error
 
 
+def _get_event_ads_insights(event, meta_ads_expenses):
+    """Daily-insight metrics for an event's linked Meta Ads campaigns.
+
+    Reads from MetaAdDailyInsight (nightly-synced rows) filtered to the
+    campaign IDs on linked EventExpense records. Returns aggregated totals,
+    per-campaign breakdown, and a JSON-serialisable daily-spend series.
+    """
+    from .services.meta_ads_dashboard import _synced_metrics
+
+    campaign_ids = [e.external_id for e in meta_ads_expenses if e.external_id]
+    empty = {
+        'show': bool(campaign_ids),
+        'has_data': False,
+        'totals': None,
+        'campaigns': [],
+        'daily_spend_json': '[]',
+        'currency_prefix': '$',
+    }
+    if not campaign_ids:
+        return {**empty, 'show': False}
+
+    rows = MetaAdDailyInsight.objects.filter(
+        organization=event.organization,
+        campaign_id__in=campaign_ids,
+    )
+    if not rows.exists():
+        return empty
+
+    sums = dict(
+        spend=Sum('spend'),
+        impressions=Sum('impressions'),
+        link_clicks=Sum('link_clicks'),
+        purchases=Sum('purchases'),
+        purchase_value=Sum('purchase_value'),
+    )
+    currency = rows.exclude(currency='').values_list('currency', flat=True).first() or ''
+    currency_prefix = '$' if currency in ('', 'USD', 'CAD', 'AUD') else f'{currency} '
+
+    daily_rows = rows.values('date').annotate(spend=Sum('spend')).order_by('date')
+    daily_spend_json = json.dumps([
+        {'date': r['date'].isoformat(), 'spend': float(r['spend'] or 0)}
+        for r in daily_rows
+    ])
+
+    campaign_rows = (
+        rows.values('campaign_id')
+        .annotate(name=Max('campaign_name'), **sums)
+        .order_by('-spend')
+    )
+    campaigns = [
+        {'name': row['name'] or 'Untitled campaign', **_synced_metrics(row)}
+        for row in campaign_rows
+    ]
+
+    totals = _synced_metrics(rows.aggregate(**sums))
+
+    return {
+        'show': True,
+        'has_data': True,
+        'totals': totals,
+        'campaigns': campaigns,
+        'daily_spend_json': daily_spend_json,
+        'currency_prefix': currency_prefix,
+    }
+
+
 def _marketing_tab_redirect(event):
     _invalidate_marketing_cache(getattr(event, 'organization', None))
     return redirect(f"{reverse('tickets:event_detail', kwargs={'event_id': event.id})}?tab=marketing")
@@ -6225,6 +6292,7 @@ def event_detail(request, event_id):
     for expense in meta_ads_expenses:
         metadata = expense.external_metadata or {}
         expense.meta_ads_last_synced_display = _format_meta_ads_datetime(metadata.get('last_synced_at'))
+    ads_insights = _get_event_ads_insights(event, meta_ads_expenses)
     mailchimp_campaigns = list(
         EventEmailCampaign.objects.filter(
             event=event,
@@ -6438,6 +6506,12 @@ def event_detail(request, event_id):
         'has_finance_flow': has_finance_flow,
         'finance_flow_json': finance_flow_json,
         'meta_ads_expenses': meta_ads_expenses,
+        'show_ads_view': ads_insights['show'],
+        'ads_has_data': ads_insights['has_data'],
+        'ads_totals': ads_insights.get('totals'),
+        'ads_campaigns': ads_insights.get('campaigns', []),
+        'ads_daily_spend_json': ads_insights.get('daily_spend_json', '[]'),
+        'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,
