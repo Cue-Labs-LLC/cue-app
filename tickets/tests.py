@@ -13211,7 +13211,7 @@ class EventBulkTagTests(TestCase):
     def test_customers_tab_rendered(self):
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'id="tab-customers-btn"')
+        self.assertContains(resp, 'data-subview="customers"')
         self.assertEqual(resp.context['event_customers_page'].paginator.count, 2)
 
     def test_tag_existing(self):
@@ -16846,10 +16846,10 @@ class EventAudienceTests(TestCase):
         self._order(c, self.event, 'A1', scanned=True)
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'id="tab-audience"')
+        self.assertContains(resp, 'data-subview-section="audience"')
         self.assertContains(resp, 'audienceDonut')
-        # The tab button shows no count.
-        self.assertContains(resp, 'role="tab">Audience</button>')
+        # The sub-view button shows no count.
+        self.assertContains(resp, 'data-subview="audience">Insights</button>')
 
     def test_audience_tab_hidden_for_external_event_without_scans(self):
         self._login()
@@ -16857,7 +16857,7 @@ class EventAudienceTests(TestCase):
         self._order(c, self.event, 'B1', scanned=False)  # bought, never scanned
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
         self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, 'id="tab-audience"')
+        self.assertNotContains(resp, 'data-subview-section="audience"')
 
 
 class OLSHelperTests(TestCase):
@@ -19292,9 +19292,9 @@ class SalesPacingTests(TestCase):
         self.assertTrue(resp.context['show_pacing_card'])
         self.assertEqual(resp.context['pacing_default_compare_id'], str(self.past_event.id))
         self.assertNotEqual(resp.context['pacing_current_json'], 'null')
-        # The pacing card lives in a dedicated Analytics tab.
-        self.assertContains(resp, 'data-bs-target="#tab-analytics"')
-        self.assertContains(resp, 'id="tab-analytics"')
+        # The pacing card lives in the Sales tab's Trends sub-view.
+        self.assertContains(resp, 'data-subview="analytics"')
+        self.assertContains(resp, 'data-subview-section="analytics"')
         # Comparison event is chosen via a searchable combobox.
         self.assertContains(resp, 'id="pacingCompareInput"')
         self.assertContains(resp, 'role="combobox"')
@@ -19322,8 +19322,23 @@ class SalesPacingTests(TestCase):
         resp = self.client.get(reverse('tickets:event_detail', args=[lone.id]))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.context['show_pacing_card'])
-        # No Analytics tab when there's nothing to compare against.
-        self.assertNotContains(resp, 'data-bs-target="#tab-analytics"')
+        # No Trends sub-view when there's nothing to compare against.
+        self.assertNotContains(resp, 'data-subview="analytics"')
+        self.assertNotContains(resp, 'data-subview-section="analytics"')
+
+    def test_detail_groups_tabs_into_simplified_bar(self):
+        # Orders/Trends fold into Sales; Audience/Customers/Surveys into
+        # Attendees; Manage becomes the Settings gear.
+        self._make_order(self.event, 'G-1', datetime(2024, 6, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        for name in ('overview', 'sales', 'attendees', 'marketing', 'finance', 'settings'):
+            self.assertContains(resp, f'data-bs-target="#tab-{name}"', count=1)
+        for old in ('analytics', 'orders', 'audience', 'customers', 'surveys', 'manage'):
+            self.assertNotContains(resp, f'data-bs-target="#tab-{old}"')
+        self.assertContains(resp, 'data-subview-section="orders"')
+        self.assertContains(resp, 'data-subview-section="surveys"')
+        self.assertContains(resp, 'aria-label="Event settings"')
 
     def test_pacing_api_returns_series(self):
         self._make_order(self.past_event, 'PP-1', datetime(2024, 3, 1, 12, 0), 4, '200.00')

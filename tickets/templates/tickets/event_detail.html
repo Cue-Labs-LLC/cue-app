@@ -5,7 +5,7 @@
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
 {% block extra_head %}
-<style>/* No page fade when switching the tabs — each tab is a full navigation. */
+<style>/* No page-load fade on this page; tab and sub-view reveals animate on their own. */
 .content > * { animation: none; }</style>
 {% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results or has_finance_flow or ads_has_data %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -19,21 +19,36 @@
 <script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
 {% endif %}
 <style>
-/* -- Marketing / Finance tab sub-views (SMS vs Linked; Ledger vs Flow) -- */
-.marketing-subnav, .finance-subnav {
+/* -- Tab sub-views (Sales: Orders/Trends; Attendees: Insights/Customers/Surveys;
+      Marketing: SMS/Linked; Finance: Ledger/Flow) -- */
+.marketing-subnav, .finance-subnav, .event-subnav {
     display: inline-flex; gap: 2px; margin-bottom: 22px;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 999px; padding: 3px;
 }
-.marketing-subnav-btn, .finance-subnav-btn {
+.marketing-subnav-btn, .finance-subnav-btn, .event-subnav-btn {
     border: none; background: transparent; cursor: pointer; margin: 0;
     font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
     letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
     padding: 7px 18px; border-radius: 999px;
     transition: background 0.12s, color 0.12s;
 }
-.marketing-subnav-btn:hover, .finance-subnav-btn:hover { color: var(--text-primary); }
-.marketing-subnav-btn.active, .finance-subnav-btn.active { background: var(--accent); color: var(--text-inverse); }
+.marketing-subnav-btn:hover, .finance-subnav-btn:hover, .event-subnav-btn:hover { color: var(--text-primary); }
+.marketing-subnav-btn.active, .finance-subnav-btn.active, .event-subnav-btn.active { background: var(--accent); color: var(--text-inverse); }
+.event-subnav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Counts ride along on the sub-view pill instead of crowding the top tab bar. */
+.event-subnav-count { margin-left: 4px; font-variant-numeric: tabular-nums; opacity: 0.6; }
+.event-subnav-btn.active .event-subnav-count { opacity: 0.75; }
+.event-subnav-btn .badge { font-family: var(--font-body, inherit); letter-spacing: 0; }
+@media (max-width: 575px) {
+    /* Tighten the event tab bar so all five tabs (nearly) fit a phone width;
+       whatever's left scrolls, and the active tab is kept in view (see JS). */
+    #eventDetailTabs .nav-link { flex: 1 1 auto; padding: 8px 9px; font-size: 10.5px; letter-spacing: 0.02em; }
+    #eventDetailTabs .nav-link--icon { flex: 0 0 auto; padding: 8px 10px; }
+    .event-subnav { display: flex; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+    .event-subnav::-webkit-scrollbar { display: none; }
+    .event-subnav-btn { flex: 1 0 auto; padding: 7px 12px; white-space: nowrap; }
+}
 /* Ads tab daily-chart metric toggle: a compact version of the sub-nav pills.
    Counts and ratios are two pills side by side; one button is active across both. */
 .ads-metric-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -52,7 +67,7 @@
 .ads-metric-btn:hover { color: var(--text-primary); }
 .ads-metric-btn.active { background: var(--accent); color: var(--text-inverse); }
 @media (prefers-reduced-motion: no-preference) {
-    .marketing-section:not([hidden]), .finance-section:not([hidden]) { animation: marketingFade 0.25s ease both; }
+    .marketing-section:not([hidden]), .finance-section:not([hidden]), .event-subsection:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
 }
 
@@ -579,23 +594,13 @@ document.addEventListener('DOMContentLoaded', function () {
 <!-- Tab navigation -->
 <nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    {% if show_pacing_card or show_checkin_curve_card or show_page_views_comparison_card %}
-    <button class="nav-link" id="tab-analytics-btn" data-bs-toggle="tab" data-bs-target="#tab-analytics" type="button" role="tab">Analytics</button>
-    {% endif %}
-    <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
-    <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
-    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
-    {% if show_audience_tab %}
-    <button class="nav-link" id="tab-audience-btn" data-bs-toggle="tab" data-bs-target="#tab-audience" type="button" role="tab">Audience</button>
-    {% endif %}
-    {% if org.sms_marketing_enabled and is_org_host %}
-    <button class="nav-link" id="tab-customers-btn" data-bs-toggle="tab" data-bs-target="#tab-customers" type="button" role="tab">Customers{% if total_customers %} ({{ total_customers }}){% endif %}</button>
-    {% endif %}
-    <button class="nav-link" id="tab-surveys-btn" data-bs-toggle="tab" data-bs-target="#tab-surveys" type="button" role="tab">
-        Surveys{% if linked_survey_responses %} ({{ linked_survey_responses|length }}){% endif %}
-        {% if suggested_survey_responses %}<span class="badge text-bg-warning ms-1">{{ suggested_survey_responses|length }}</span>{% endif %}
+    <button class="nav-link" id="tab-sales-btn" data-bs-toggle="tab" data-bs-target="#tab-sales" type="button" role="tab">Sales</button>
+    <button class="nav-link" id="tab-attendees-btn" data-bs-toggle="tab" data-bs-target="#tab-attendees" type="button" role="tab">
+        Attendees{% if suggested_survey_responses %}<span class="nav-tab-dot" title="Survey responses waiting to be matched"></span><span class="visually-hidden"> (survey responses waiting to be matched)</span>{% endif %}
     </button>
-    <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
+    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
+    <button class="nav-link nav-link--icon" id="tab-settings-btn" data-bs-toggle="tab" data-bs-target="#tab-settings" type="button" role="tab" aria-label="Event settings" title="Settings"><i class="bi bi-gear" aria-hidden="true"></i></button>
 </nav>
 <div class="tab-content">
 
@@ -1341,9 +1346,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
 </div><!-- /tab-overview -->
 
-<!-- ===== TAB: Analytics ===== -->
+<!-- ===== TAB: Sales (Orders + Trends sub-views) ===== -->
+<div class="tab-pane fade" id="tab-sales" role="tabpanel">
 {% if show_pacing_card or show_checkin_curve_card or show_page_views_comparison_card %}
-<div class="tab-pane fade" id="tab-analytics" role="tabpanel">
+<div class="event-subnav" role="group" aria-label="Sales views">
+    <button type="button" class="event-subnav-btn active" data-subview="orders">Orders{% if total_orders %} <span class="event-subnav-count">{{ total_orders }}</span>{% endif %}</button>
+    <button type="button" class="event-subnav-btn" data-subview="analytics">Trends</button>
+</div>
+
+<!-- Sales > Trends (formerly the Analytics tab) -->
+<div class="event-subsection" data-subview-section="analytics">
 <style>
 .pacing-combo { position: relative; }
 .pacing-compare-input {
@@ -1553,11 +1565,11 @@ document.addEventListener('DOMContentLoaded', function() {
 <script type="application/json" id="conversion-current-data">{{ conversion_current_json|safe }}</script>
 <script type="application/json" id="conversion-compare-data">{{ conversion_compare_json|safe }}</script>
 {% endif %}
-</div><!-- /tab-analytics -->
+</div><!-- /Sales > Trends -->
 {% endif %}
 
-<!-- ===== TAB 2: Orders ===== -->
-<div class="tab-pane fade" id="tab-orders" role="tabpanel">
+<!-- Sales > Orders -->
+<div class="event-subsection" data-subview-section="orders">
 
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -1637,7 +1649,9 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 </div>
 
-</div><!-- /tab-orders -->
+</div><!-- /Sales > Orders -->
+
+</div><!-- /tab-sales -->
 
 <!-- ===== TAB 3: Finance ===== -->
 <div class="tab-pane fade" id="tab-finance" role="tabpanel">
@@ -2111,9 +2125,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
 </div><!-- /tab-marketing -->
 
+<!-- ===== TAB: Attendees (Insights + Customers + Surveys sub-views) ===== -->
+<div class="tab-pane fade" id="tab-attendees" role="tabpanel">
+{% if show_audience_tab or org.sms_marketing_enabled and is_org_host %}
+<div class="event-subnav" role="group" aria-label="Attendee views">
+    {% if show_audience_tab %}<button type="button" class="event-subnav-btn" data-subview="audience">Insights</button>{% endif %}
+    {% if org.sms_marketing_enabled and is_org_host %}<button type="button" class="event-subnav-btn" data-subview="customers">Customers{% if total_customers %} <span class="event-subnav-count">{{ total_customers }}</span>{% endif %}</button>{% endif %}
+    <button type="button" class="event-subnav-btn" data-subview="surveys">Surveys{% if linked_survey_responses %} <span class="event-subnav-count">{{ linked_survey_responses|length }}</span>{% endif %}{% if suggested_survey_responses %}<span class="badge text-bg-warning ms-1" title="Responses waiting to be matched">{{ suggested_survey_responses|length }}</span>{% endif %}</button>
+</div>
+{% endif %}
+
 {% if show_audience_tab %}
-<!-- ===== TAB: Audience ===== -->
-<div class="tab-pane fade" id="tab-audience" role="tabpanel">
+<!-- Attendees > Insights (formerly the Audience tab) -->
+<div class="event-subsection" data-subview-section="audience">
 
 <div class="stats-grid">
     <div class="stat-card stat-card--info">
@@ -2225,12 +2249,12 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 </div>
 
-</div><!-- /tab-audience -->
+</div><!-- /Attendees > Insights -->
 {% endif %}
 
 {% if org.sms_marketing_enabled and is_org_host %}
-<!-- ===== TAB: Customers ===== -->
-<div class="tab-pane fade" id="tab-customers" role="tabpanel">
+<!-- Attendees > Customers -->
+<div class="event-subsection" data-subview-section="customers">
 {% if event_customers_page and event_customers_page.paginator.count %}
 <p class="text-body-secondary mb-3">Select customers below to tag them. Target tags in an SMS send from the Marketing tab.</p>
 
@@ -2323,11 +2347,11 @@ document.addEventListener('DOMContentLoaded', function() {
     <p class="mb-0">No customers have bought tickets to this event yet.</p>
 </div>
 {% endif %}
-</div><!-- /tab-customers -->
+</div><!-- /Attendees > Customers -->
 {% endif %}
 
-<!-- ===== TAB 5: Surveys ===== -->
-<div class="tab-pane fade" id="tab-surveys" role="tabpanel">
+<!-- Attendees > Surveys -->
+<div class="event-subsection" id="attendees-surveys" data-subview-section="surveys">
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
     {# Left: what already went out (if anything) + where the automatic send time comes from. #}
@@ -2685,10 +2709,12 @@ document.addEventListener('DOMContentLoaded', function() {
     {% endif %}
 {% endif %}
 
-</div><!-- /tab-surveys -->
+</div><!-- /Attendees > Surveys -->
 
-<!-- ===== TAB 6: Manage ===== -->
-<div class="tab-pane fade manage-tab" id="tab-manage" role="tabpanel">
+</div><!-- /tab-attendees -->
+
+<!-- ===== TAB: Settings (formerly Manage) ===== -->
+<div class="tab-pane fade manage-tab" id="tab-settings" role="tabpanel">
 
 {% if event.ticketing_type == 'direct' %}
 {% if public_buy_url and event.effective_status == 'live' %}
@@ -2893,7 +2919,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-</div><!-- /tab-manage -->
+</div><!-- /tab-settings -->
 
 </div><!-- /tab-content -->
 
@@ -3721,29 +3747,103 @@ if (document.readyState === 'loading') {
 })();
 </script>
 <script>
+// Sales and Attendees group several views under one tab. Each view keeps the
+// name of the top-level tab it used to be, so ?tab=orders / ?tab=surveys /
+// ?tab=customers links (redirects, pagination, bookmarks) still land on it.
+var EVENT_DETAIL_SUBVIEW_PARENTS = {
+    analytics: 'sales', orders: 'sales',
+    audience: 'attendees', customers: 'attendees', surveys: 'attendees'
+};
+var EVENT_DETAIL_TAB_ALIASES = { manage: 'settings' };
+
+function eventDetailTabUrlName(pane) {
+    // The URL names the active sub-view when the pane has one, else the pane.
+    var active = pane.querySelector('.event-subnav-btn.active');
+    return active ? active.getAttribute('data-subview') : pane.id.replace('tab-', '');
+}
+
+// Sub-view switcher for one pane. Hidden sections stay in the DOM so their
+// forms and scripts keep working; 'eventdetail:subview' tells lazy content
+// (e.g. the Trends charts) it just became visible.
+function initEventDetailSubviews(pane) {
+    var buttons = Array.prototype.slice.call(pane.querySelectorAll('.event-subnav-btn'));
+    if (!buttons.length) return null;
+    var sections = pane.querySelectorAll('[data-subview-section]');
+    function announce(view) {
+        document.dispatchEvent(new CustomEvent('eventdetail:subview', { detail: { view: view } }));
+    }
+    function show(view, remember) {
+        buttons.forEach(function(b) {
+            var on = b.getAttribute('data-subview') === view;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        sections.forEach(function(sec) {
+            sec.hidden = sec.getAttribute('data-subview-section') !== view;
+        });
+        if (remember) {
+            var url = new URL(window.location);
+            url.searchParams.set('tab', view);
+            history.replaceState(null, '', url.toString());
+        }
+        if (pane.classList.contains('active')) announce(view);
+    }
+    buttons.forEach(function(btn) {
+        btn.addEventListener('click', function() { show(btn.getAttribute('data-subview'), true); });
+    });
+    show(buttons[0].getAttribute('data-subview'), false);
+    return {
+        show: show,
+        has: function(view) { return buttons.some(function(b) { return b.getAttribute('data-subview') === view; }); },
+        announceActive: function() { announce(eventDetailTabUrlName(pane)); }
+    };
+}
+
 // Activate the tab named by ?tab=<name> (or a legacy #tab-<name> hash) on load,
 // and keep the URL in sync as tabs change. Deferred to DOMContentLoaded so the
 // (defer-loaded) Bootstrap bundle has run and `bootstrap.Tab` is defined.
 function initEventDetailTabs() {
     var tabs = document.getElementById('eventDetailTabs');
     if (!tabs || typeof bootstrap === 'undefined') return;
+    var switchers = {};
+    ['sales', 'attendees'].forEach(function(name) {
+        var pane = document.getElementById('tab-' + name);
+        if (pane) switchers[name] = initEventDetailSubviews(pane);
+    });
+
     var params = new URLSearchParams(window.location.search);
-    var activeTab = params.get('tab');
+    var requested = params.get('tab');
     // Fall back to a legacy #tab-<name> hash link (e.g. from older bookmarks).
-    if (!activeTab && window.location.hash.indexOf('#tab-') === 0) {
-        activeTab = window.location.hash.slice('#tab-'.length);
+    if (!requested && window.location.hash.indexOf('#tab-') === 0) {
+        requested = window.location.hash.slice('#tab-'.length);
     }
-    if (activeTab) {
-        var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
+    if (requested) {
+        var tabName = EVENT_DETAIL_TAB_ALIASES[requested] || EVENT_DETAIL_SUBVIEW_PARENTS[requested] || requested;
+        var switcher = switchers[tabName];
+        if (switcher && switcher.has(requested)) { switcher.show(requested, false); }
+        var btn = tabs.querySelector('[data-bs-target="#tab-' + tabName + '"]');
         if (btn) { new bootstrap.Tab(btn).show(); }
     }
+    function keepActiveTabInView() {
+        // On phones the bar scrolls sideways; don't let the active tab sit off-screen.
+        var active = tabs.querySelector('.nav-link.active');
+        if (active && tabs.scrollWidth > tabs.clientWidth) {
+            var offset = active.getBoundingClientRect().left - tabs.getBoundingClientRect().left;
+            tabs.scrollLeft += offset - (tabs.clientWidth - active.offsetWidth) / 2;
+        }
+    }
+    keepActiveTabInView();
     tabs.addEventListener('shown.bs.tab', function(e) {
+        keepActiveTabInView();
         var target = e.target.getAttribute('data-bs-target');
         if (!target) return;
-        var tabName = target.replace('#tab-', '');
+        var pane = document.querySelector(target);
+        if (!pane) return;
+        var name = pane.id.replace('tab-', '');
+        if (switchers[name]) switchers[name].announceActive();
         var url = new URL(window.location);
-        if (tabName === 'overview') { url.searchParams.delete('tab'); }
-        else { url.searchParams.set('tab', tabName); }
+        if (name === 'overview') { url.searchParams.delete('tab'); }
+        else { url.searchParams.set('tab', eventDetailTabUrlName(pane)); }
         history.replaceState(null, '', url.toString());
     });
 }
@@ -6225,7 +6325,7 @@ document.addEventListener('click', function(evt) {
 <script>
 // Surveys tab: NPS donut + rating bar chart + tooltip init. Mirrors survey_analytics.html.
 document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('#tab-surveys [data-bs-toggle="tooltip"]').forEach(function (el) {
+    document.querySelectorAll('#attendees-surveys [data-bs-toggle="tooltip"]').forEach(function (el) {
         if (window.bootstrap && bootstrap.Tooltip) new bootstrap.Tooltip(el);
     });
 
@@ -6964,16 +7064,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     })();
 
-    // The chart is created inside the (initially hidden) Analytics tab, so its
-    // canvas has no size until the tab is shown. Re-measure on first reveal.
-    var tabsEl = document.getElementById('eventDetailTabs');
-    if (tabsEl) {
-        tabsEl.addEventListener('shown.bs.tab', function (e) {
-            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
-                chart.resize();
-            }
-        });
-    }
+    // The chart lives in the (initially hidden) Sales > Trends sub-view, so its
+    // canvas has no size until that view is shown. Re-measure on reveal.
+    document.addEventListener('eventdetail:subview', function (e) {
+        if (e.detail && e.detail.view === 'analytics' && chart) {
+            chart.resize();
+        }
+    });
 
     render();
 });
@@ -7297,16 +7394,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     })();
 
-    // The chart lives in the (initially hidden) Analytics tab, so its canvas has no
-    // size until the tab is shown. Re-measure on first reveal.
-    var tabsEl = document.getElementById('eventDetailTabs');
-    if (tabsEl) {
-        tabsEl.addEventListener('shown.bs.tab', function (e) {
-            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
-                chart.resize();
-            }
-        });
-    }
+    // The chart lives in the (initially hidden) Sales > Trends sub-view, so its
+    // canvas has no size until that view is shown. Re-measure on reveal.
+    document.addEventListener('eventdetail:subview', function (e) {
+        if (e.detail && e.detail.view === 'analytics' && chart) {
+            chart.resize();
+        }
+    });
 
     render();
 });
@@ -7630,16 +7724,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     })();
 
-    // The chart lives in the (initially hidden) Analytics tab, so its canvas has no
-    // size until the tab is shown. Re-measure on first reveal.
-    var tabsEl = document.getElementById('eventDetailTabs');
-    if (tabsEl) {
-        tabsEl.addEventListener('shown.bs.tab', function (e) {
-            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
-                chart.resize();
-            }
-        });
-    }
+    // The chart lives in the (initially hidden) Sales > Trends sub-view, so its
+    // canvas has no size until that view is shown. Re-measure on reveal.
+    document.addEventListener('eventdetail:subview', function (e) {
+        if (e.detail && e.detail.view === 'analytics' && chart) {
+            chart.resize();
+        }
+    });
 
     render();
 });
@@ -7958,16 +8049,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     })();
 
-    // The chart lives in the (initially hidden) Analytics tab, so its canvas has no
-    // size until the tab is shown. Re-measure on first reveal.
-    var tabsEl = document.getElementById('eventDetailTabs');
-    if (tabsEl) {
-        tabsEl.addEventListener('shown.bs.tab', function (e) {
-            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
-                chart.resize();
-            }
-        });
-    }
+    // The chart lives in the (initially hidden) Sales > Trends sub-view, so its
+    // canvas has no size until that view is shown. Re-measure on reveal.
+    document.addEventListener('eventdetail:subview', function (e) {
+        if (e.detail && e.detail.view === 'analytics' && chart) {
+            chart.resize();
+        }
+    });
 
     render();
 });
