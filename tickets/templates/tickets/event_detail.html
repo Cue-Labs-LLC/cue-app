@@ -2025,12 +2025,6 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="stat-value">{{ ads_currency_prefix }}{{ ads_totals.cost_per_result|currency }}</div>
     </div>
     {% endif %}
-    {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}
-    <div class="stat-card">
-        <div class="stat-label">Purchases</div>
-        <div class="stat-value">{{ ads_totals.purchases }}</div>
-    </div>
-    {% endif %}
     {% if ads_totals.roas != None %}
     <div class="stat-card stat-card--success">
         <div class="stat-label">ROAS</div>
@@ -2048,14 +2042,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 <button type="button" class="ads-metric-btn" data-ads-metric="impressions" aria-pressed="false">Impressions</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="clicks" aria-pressed="false">Clicks</button>
                 {% if ads_totals.results != None %}<button type="button" class="ads-metric-btn" data-ads-metric="results" aria-pressed="false">Results</button>{% endif %}
-                {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}<button type="button" class="ads-metric-btn" data-ads-metric="purchases" aria-pressed="false">Purchases</button>{% endif %}
             </div>
             <div class="ads-metric-toggle">
                 <button type="button" class="ads-metric-btn" data-ads-metric="ctr" aria-pressed="false">CTR</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="cpc" aria-pressed="false">CPC</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="cpm" aria-pressed="false">CPM</button>
                 {% if ads_totals.results != None %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_result" aria-pressed="false">Cost / result</button>{% endif %}
-                {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_purchase" aria-pressed="false">Cost / purchase</button>{% endif %}
                 {% if ads_totals.roas != None %}<button type="button" class="ads-metric-btn" data-ads-metric="roas" aria-pressed="false">ROAS</button>{% endif %}
             </div>
         </div>
