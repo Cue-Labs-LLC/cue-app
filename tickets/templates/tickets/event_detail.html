@@ -34,6 +34,23 @@
 }
 .marketing-subnav-btn:hover, .finance-subnav-btn:hover { color: var(--text-primary); }
 .marketing-subnav-btn.active, .finance-subnav-btn.active { background: var(--accent); color: var(--text-inverse); }
+/* Ads tab daily-chart metric toggle: a compact version of the sub-nav pills.
+   Counts and ratios are two pills side by side; one button is active across both. */
+.ads-metric-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+.ads-metric-toggle {
+    display: inline-flex; gap: 2px;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px;
+}
+.ads-metric-btn {
+    border: none; background: transparent; cursor: pointer; margin: 0;
+    font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+    letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
+    padding: 5px 12px; border-radius: 999px;
+    transition: background 0.12s, color 0.12s;
+}
+.ads-metric-btn:hover { color: var(--text-primary); }
+.ads-metric-btn.active { background: var(--accent); color: var(--text-inverse); }
 @media (prefers-reduced-motion: no-preference) {
     .marketing-section:not([hidden]), .finance-section:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
@@ -1996,9 +2013,28 @@ document.addEventListener('DOMContentLoaded', function() {
     {% endif %}
 </div>
 <div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Daily spend</h5></div>
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
+        {% comment %}Purchase-based views only appear when Meta has conversion (pixel) data,
+        matching the Purchases/ROAS stat cards above.{% endcomment %}
+        <div class="ads-metric-toggles" role="group" aria-label="Daily chart metric">
+            <div class="ads-metric-toggle">
+                <button type="button" class="ads-metric-btn active" data-ads-metric="spend" aria-pressed="true">Spend</button>
+                <button type="button" class="ads-metric-btn" data-ads-metric="impressions" aria-pressed="false">Impressions</button>
+                <button type="button" class="ads-metric-btn" data-ads-metric="clicks" aria-pressed="false">Clicks</button>
+                {% if ads_totals.purchases != None %}<button type="button" class="ads-metric-btn" data-ads-metric="purchases" aria-pressed="false">Purchases</button>{% endif %}
+            </div>
+            <div class="ads-metric-toggle">
+                <button type="button" class="ads-metric-btn" data-ads-metric="ctr" aria-pressed="false">CTR</button>
+                <button type="button" class="ads-metric-btn" data-ads-metric="cpc" aria-pressed="false">CPC</button>
+                <button type="button" class="ads-metric-btn" data-ads-metric="cpm" aria-pressed="false">CPM</button>
+                {% if ads_totals.purchases != None %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_purchase" aria-pressed="false">Cost / purchase</button>{% endif %}
+                {% if ads_totals.roas != None %}<button type="button" class="ads-metric-btn" data-ads-metric="roas" aria-pressed="false">ROAS</button>{% endif %}
+            </div>
+        </div>
+    </div>
     <div class="card-body">
-        <div style="position: relative; height: 220px;"><canvas id="adsSpendChart"></canvas></div>
+        <div style="position: relative; height: 220px;"><canvas id="adsDailyChart"></canvas></div>
     </div>
 </div>
 <div class="card mb-4">
@@ -2046,7 +2082,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 </div><!-- /Ads view -->
-<script type="application/json" id="ads-spend-data" data-currency-prefix="{{ ads_currency_prefix }}">{{ ads_daily_spend_json|safe }}</script>
+<script type="application/json" id="ads-daily-data" data-currency-prefix="{{ ads_currency_prefix }}">{{ ads_daily_json|safe }}</script>
 {% endif %}
 
 <div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %} hidden{% endif %}>
@@ -3434,35 +3470,63 @@ if (document.readyState === 'loading') {
 })();
 </script>
 <script>
-// Ads sub-view: lazily initialise the daily-spend line chart on first reveal.
-// Chart.js draws at zero size when the canvas is in a hidden container, so
-// defer init until the ads marketing:view event fires.
+// Ads sub-view: daily chart with a metric toggle. The server sends raw daily
+// totals; ratios are divided per day here (null when the denominator is zero,
+// which Chart.js draws as a gap). The chart is built lazily once the canvas is
+// visible (Chart.js draws blank at zero size inside a hidden container).
 (function () {
-    var spendEl = document.getElementById('ads-spend-data');
-    if (!spendEl) return;
-    var spendData = JSON.parse(spendEl.textContent);
-    var prefix = spendEl.getAttribute('data-currency-prefix') || '$';
-    if (!spendData.length) return;
-    var chartInstance = null;
-    function initAdsChart() {
-        if (chartInstance) return;
-        var canvas = document.getElementById('adsSpendChart');
-        if (!canvas) return;
+    var dataEl = document.getElementById('ads-daily-data');
+    if (!dataEl) return;
+    var days = JSON.parse(dataEl.textContent);
+    if (!days.length) return;
+    var prefix = dataEl.getAttribute('data-currency-prefix') || '$';
+
+    function money(v) { return prefix + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function count(v) { return Math.round(v).toLocaleString(); }
+    function ratio(num, den) { return (num == null || !den) ? null : num / den; }
+    var METRICS = {
+        spend:             { label: 'spend',             fmt: money, get: function (d) { return d.spend; } },
+        impressions:       { label: 'impressions',       fmt: count, get: function (d) { return d.impressions; } },
+        clicks:            { label: 'clicks',            fmt: count, get: function (d) { return d.clicks; } },
+        purchases:         { label: 'purchases',         fmt: count, get: function (d) { return d.purchases; } },
+        ctr:               { label: 'CTR',               fmt: function (v) { return v.toFixed(2) + '%'; }, get: function (d) { var r = ratio(d.clicks, d.impressions); return r == null ? null : r * 100; } },
+        cpc:               { label: 'CPC',               fmt: money, get: function (d) { return ratio(d.spend, d.clicks); } },
+        cpm:               { label: 'CPM',               fmt: money, get: function (d) { var r = ratio(d.spend, d.impressions); return r == null ? null : r * 1000; } },
+        cost_per_purchase: { label: 'cost per purchase', fmt: money, get: function (d) { return ratio(d.spend, d.purchases); } },
+        roas:              { label: 'ROAS',              fmt: function (v) { return v.toFixed(2) + 'x'; }, get: function (d) { return ratio(d.purchase_value, d.spend); } }
+    };
+    var current = 'spend';
+    var chart = null;
+    var title = document.getElementById('adsChartTitle');
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-ads-metric]'));
+
+    function series() { return days.map(METRICS[current].get); }
+
+    function buildChart() {
+        var canvas = document.getElementById('adsDailyChart');
+        if (!canvas || canvas.offsetParent === null || typeof Chart === 'undefined') return;  // still hidden
+        if (chart) { chart.resize(); return; }
         var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
         var labelColor = isDark ? '#94a3b8' : '#64748b';
         var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
-        chartInstance = new Chart(canvas, {
+        chart = new Chart(canvas, {
             type: 'line',
             data: {
-                labels: spendData.map(function (d) { return d.date; }),
+                labels: days.map(function (d) { return d.date; }),
                 datasets: [{
-                    label: 'Spend',
-                    data: spendData.map(function (d) { return d.spend; }),
+                    data: series(),
                     borderColor: '#6366f1',
                     backgroundColor: 'rgba(99, 102, 241, 0.08)',
                     borderWidth: 2,
-                    // A lone day has no line segment, so show it as a dot.
-                    pointRadius: spendData.length === 1 ? 4 : 0,
+                    // A day with no neighbours (a lone day, or one boxed in by gaps)
+                    // has no line segment, so draw it as a dot.
+                    pointRadius: function (ctx) {
+                        var v = ctx.dataset.data, i = ctx.dataIndex;
+                        if (v[i] == null) return 0;
+                        var prevGap = i === 0 || v[i - 1] == null;
+                        var nextGap = i === v.length - 1 || v[i + 1] == null;
+                        return prevGap && nextGap ? 4 : 0;
+                    },
                     pointHoverRadius: 4,
                     fill: true,
                     tension: 0.35,
@@ -3475,7 +3539,7 @@ if (document.readyState === 'loading') {
                     legend: { display: false },
                     tooltip: {
                         mode: 'index', intersect: false, displayColors: false,
-                        callbacks: { label: function (ctx) { return prefix + ctx.formattedValue; } }
+                        callbacks: { label: function (ctx) { return ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y); } }
                     }
                 },
                 interaction: { mode: 'index', intersect: false },
@@ -3484,19 +3548,37 @@ if (document.readyState === 'loading') {
                     y: {
                         beginAtZero: true,
                         grid: { color: gridColor, drawBorder: false },
-                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return prefix + v; } }
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return METRICS[current].fmt(v); } }
                     }
                 }
             }
         });
     }
+
+    function select(metric) {
+        if (!METRICS[metric]) return;
+        current = metric;
+        buttons.forEach(function (b) {
+            var on = b.getAttribute('data-ads-metric') === metric;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        if (title) title.textContent = 'Daily ' + METRICS[metric].label;
+        if (chart) {
+            chart.data.datasets[0].data = series();
+            chart.update();
+        }
+    }
+    buttons.forEach(function (b) {
+        b.addEventListener('click', function () { select(b.getAttribute('data-ads-metric')); });
+    });
+
     document.addEventListener('marketing:view', function (e) {
-        if (e.detail && e.detail.view === 'ads') initAdsChart();
+        if (e.detail && e.detail.view === 'ads') buildChart();
     });
-    document.addEventListener('DOMContentLoaded', function () {
-        var sec = document.querySelector('[data-marketing-section="ads"]');
-        if (sec && !sec.hidden) initAdsChart();
-    });
+    var marketingTabBtn = document.getElementById('tab-marketing-btn');
+    if (marketingTabBtn) marketingTabBtn.addEventListener('shown.bs.tab', buildChart);
+    document.addEventListener('DOMContentLoaded', buildChart);
 })();
 </script>
 <script>

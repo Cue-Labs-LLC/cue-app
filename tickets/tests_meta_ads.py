@@ -1672,10 +1672,26 @@ class EventAdsInsightsTests(TestCase):
         self.assertEqual([c['name'] for c in result['campaigns']], ['Name cmp_1', 'Name cmp_2'])
         self.assertEqual(result['campaigns'][0]['spend'], Decimal('30.00'))
         self.assertIsNone(result['campaigns'][1]['purchases'])
+        # Daily raw totals feed the chart's metric toggle; ratios are derived client-side.
         self.assertEqual(
-            json.loads(result['daily_spend_json']),
-            [{'date': '2026-05-01', 'spend': 10.0}, {'date': '2026-05-02', 'spend': 25.0}],
+            json.loads(result['daily_json']),
+            [
+                {'date': '2026-05-01', 'spend': 10.0, 'impressions': 1000, 'clicks': 20,
+                 'purchases': 2, 'purchase_value': 60.0},
+                {'date': '2026-05-02', 'spend': 25.0, 'impressions': 2000, 'clicks': 40,
+                 'purchases': 1, 'purchase_value': 30.0},
+            ],
         )
+
+    def test_daily_series_keeps_missing_conversions_as_null(self):
+        # A day with no pixel data must not be plotted as zero purchases.
+        self._link('cmp_1')
+        self._row('cmp_1', date(2026, 5, 1), purchases=4, purchase_value=Decimal('80.00'))
+        self._row('cmp_1', date(2026, 5, 2), ad_id='ad2')
+        daily = json.loads(self._insights()['daily_json'])
+        self.assertEqual(daily[0]['purchases'], 4)
+        self.assertIsNone(daily[1]['purchases'])
+        self.assertIsNone(daily[1]['purchase_value'])
 
     def test_renders_metrics_in_marketing_tab(self):
         self._link('cmp_1')
@@ -1684,6 +1700,18 @@ class EventAdsInsightsTests(TestCase):
         self.assertContains(response, 'data-marketing-section="ads"')
         self.assertContains(response, '$1,234.50')
         self.assertContains(response, 'Campaign breakdown')
-        self.assertContains(response, 'id="adsSpendChart"')
+        self.assertContains(response, 'id="adsDailyChart"')
         # The event has no orders, so Chart.js must be loaded for the ads chart alone.
         self.assertContains(response, 'chart.umd.min.js')
+        for metric in ('spend', 'impressions', 'clicks', 'ctr', 'cpc', 'cpm'):
+            self.assertContains(response, f'data-ads-metric="{metric}"')
+        # No pixel data: purchase-based views are hidden rather than flat at zero.
+        for metric in ('purchases', 'cost_per_purchase', 'roas'):
+            self.assertNotContains(response, f'data-ads-metric="{metric}"')
+
+    def test_purchase_metric_toggles_shown_with_conversion_data(self):
+        self._link('cmp_1')
+        self._row('cmp_1', date(2026, 5, 1), purchases=3, purchase_value=Decimal('90.00'))
+        response = self.client.get(self.url)
+        for metric in ('purchases', 'cost_per_purchase', 'roas'):
+            self.assertContains(response, f'data-ads-metric="{metric}"')
