@@ -1705,13 +1705,17 @@ class EventAdsInsightsTests(TestCase):
         self.assertContains(response, 'chart.umd.min.js')
         for metric in ('spend', 'impressions', 'clicks', 'ctr', 'cpc', 'cpm'):
             self.assertContains(response, f'data-ads-metric="{metric}"')
-        # No pixel data: purchase-based views are hidden rather than flat at zero.
-        for metric in ('purchases', 'cost_per_purchase', 'roas'):
+        # No pixel data: conversion-based views are hidden rather than flat at zero.
+        for metric in ('results', 'cost_per_result', 'roas'):
             self.assertNotContains(response, f'data-ads-metric="{metric}"')
 
-    def test_purchase_metric_toggles_shown_with_conversion_data(self):
+    def test_results_metric_toggles_shown_with_conversion_data(self):
         self._link('cmp_1')
-        self._row('cmp_1', date(2026, 5, 1), purchases=3, purchase_value=Decimal('90.00'))
+        self._row('cmp_1', date(2026, 5, 1), purchases=3, purchase_value=Decimal('90.00'), results=3)
         response = self.client.get(self.url)
-        for metric in ('purchases', 'cost_per_purchase', 'roas'):
+        # results and cost_per_result replace purchases/cost_per_purchase;
+        # roas is shown when purchase_value data exists.
+        for metric in ('results', 'cost_per_result', 'roas'):
             self.assertContains(response, f'data-ads-metric="{metric}"')
+        # purchases toggle is no longer rendered (results covers both).
+        self.assertNotContains(response, 'data-ads-metric="purchases"')
