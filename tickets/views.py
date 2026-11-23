@@ -5735,7 +5735,9 @@ def _get_event_ads_insights(event, meta_ads_expenses):
 
     Reads from MetaAdDailyInsight (nightly-synced rows) filtered to the
     campaign IDs on linked EventExpense records. Returns aggregated totals,
-    per-campaign breakdown, and a JSON-serialisable daily-spend series.
+    per-campaign breakdown, and a JSON-serialisable daily series of the raw
+    totals (spend, impressions, clicks, purchases, purchase value) that the
+    chart's metric toggle plots directly or divides into daily ratios.
     """
     from .services.meta_ads_dashboard import _synced_metrics
 
@@ -5745,7 +5747,7 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         'has_data': False,
         'totals': None,
         'campaigns': [],
-        'daily_spend_json': '[]',
+        'daily_json': '[]',
         'currency_prefix': '$',
     }
     if not campaign_ids:
@@ -5768,9 +5770,18 @@ def _get_event_ads_insights(event, meta_ads_expenses):
     currency = rows.exclude(currency='').values_list('currency', flat=True).first() or ''
     currency_prefix = '$' if currency in ('', 'USD', 'CAD', 'AUD') else f'{currency} '
 
-    daily_rows = rows.values('date').annotate(spend=Sum('spend')).order_by('date')
-    daily_spend_json = json.dumps([
-        {'date': r['date'].isoformat(), 'spend': float(r['spend'] or 0)}
+    # purchases/purchase_value stay None on days with no conversion data (no
+    # pixel), so the chart leaves a gap instead of plotting a false zero.
+    daily_rows = rows.values('date').annotate(**sums).order_by('date')
+    daily_json = json.dumps([
+        {
+            'date': r['date'].isoformat(),
+            'spend': float(r['spend'] or 0),
+            'impressions': r['impressions'] or 0,
+            'clicks': r['link_clicks'] or 0,
+            'purchases': r['purchases'],
+            'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
+        }
         for r in daily_rows
     ])
 
@@ -5791,7 +5802,7 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         'has_data': True,
         'totals': totals,
         'campaigns': campaigns,
-        'daily_spend_json': daily_spend_json,
+        'daily_json': daily_json,
         'currency_prefix': currency_prefix,
     }
 
@@ -6510,7 +6521,7 @@ def event_detail(request, event_id):
         'ads_has_data': ads_insights['has_data'],
         'ads_totals': ads_insights.get('totals'),
         'ads_campaigns': ads_insights.get('campaigns', []),
-        'ads_daily_spend_json': ads_insights.get('daily_spend_json', '[]'),
+        'ads_daily_json': ads_insights.get('daily_json', '[]'),
         'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
