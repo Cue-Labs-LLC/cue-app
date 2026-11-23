@@ -5766,6 +5766,7 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         link_clicks=Sum('link_clicks'),
         purchases=Sum('purchases'),
         purchase_value=Sum('purchase_value'),
+        results=Sum('results'),
     )
     currency = rows.exclude(currency='').values_list('currency', flat=True).first() or ''
     currency_prefix = '$' if currency in ('', 'USD', 'CAD', 'AUD') else f'{currency} '
@@ -5781,6 +5782,7 @@ def _get_event_ads_insights(event, meta_ads_expenses):
             'clicks': r['link_clicks'] or 0,
             'purchases': r['purchases'],
             'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
+            'results': r['results'],
         }
         for r in daily_rows
     ])

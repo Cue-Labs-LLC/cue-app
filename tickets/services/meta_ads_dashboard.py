@@ -29,6 +29,7 @@ from .meta_ads import (
     MetaAdsClient,
     _extract_purchase_amount,
     _extract_purchase_count,
+    _extract_results_count,
 )
 
 logger = logging.getLogger(__name__)
@@ -200,11 +201,13 @@ def _with_ratios(metrics: dict) -> dict:
     impressions = metrics['impressions']
     clicks = metrics['link_clicks']
     purchases = metrics['purchases']
+    results = metrics.get('results')
     value = metrics['purchase_value']
     metrics['ctr'] = (Decimal(clicks) * 100 / impressions).quantize(Decimal('0.01')) if impressions else None
     metrics['cpc'] = (spend / clicks).quantize(Decimal('0.01')) if clicks else None
     metrics['cpm'] = (spend * 1000 / impressions).quantize(Decimal('0.01')) if impressions else None
     metrics['cost_per_purchase'] = (spend / purchases).quantize(Decimal('0.01')) if purchases else None
+    metrics['cost_per_result'] = (spend / results).quantize(Decimal('0.01')) if results else None
     metrics['roas'] = (value / spend).quantize(Decimal('0.01')) if value is not None and spend else None
     return metrics
 
@@ -217,11 +220,13 @@ def _row_metrics(row: dict) -> dict:
         # None = Meta reported no conversion data for this row (no pixel/actions).
         'purchases': _extract_purchase_count(row.get('actions')),
         'purchase_value': _extract_purchase_amount(row.get('action_values')),
+        'results': _extract_results_count(row.get('actions')),
     })
 
 
 def _sum_metrics(rows: list[dict]) -> dict:
     has_conversions = any(r['purchases'] is not None for r in rows)
+    has_results = any(r.get('results') is not None for r in rows)
     return _with_ratios({
         'spend': sum((r['spend'] for r in rows), Decimal('0.00')),
         'impressions': sum(r['impressions'] for r in rows),
@@ -231,12 +236,13 @@ def _sum_metrics(rows: list[dict]) -> dict:
             sum((r['purchase_value'] or Decimal('0.00') for r in rows), Decimal('0.00'))
             if has_conversions else None
         ),
+        'results': sum(r.get('results') or 0 for r in rows) if has_results else None,
     })
 
 
 def _synced_metrics(row: dict) -> dict:
-    """Metrics from an aggregated MetaAdDailyInsight row. ``purchases`` sums to
-    None only when every day lacked conversion data, matching the live path."""
+    """Metrics from an aggregated MetaAdDailyInsight row. ``purchases``/``results``
+    sum to None only when every day lacked conversion data, matching the live path."""
     return _with_ratios({
         'spend': (row['spend'] or Decimal('0.00')).quantize(Decimal('0.01')),
         'impressions': row['impressions'] or 0,
@@ -245,6 +251,7 @@ def _synced_metrics(row: dict) -> dict:
         'purchase_value': (
             row['purchase_value'].quantize(Decimal('0.01')) if row['purchase_value'] is not None else None
         ),
+        'results': row.get('results'),
     })
 
 
@@ -387,6 +394,7 @@ class MetaAdsDashboardCalculator:
             'link_clicks': Sum('link_clicks'),
             'purchases': Sum('purchases'),
             'purchase_value': Sum('purchase_value'),
+            'results': Sum('results'),
         }
         statuses = self._campaign_statuses()
         campaigns = [
