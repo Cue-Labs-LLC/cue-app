@@ -1835,6 +1835,10 @@ class MetaAdDailyInsight(BaseModel):
     # Null = Meta reported no conversion data (no pixel/actions) for the day.
     purchases = models.PositiveIntegerField(null=True, blank=True)
     purchase_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # results = primary conversion for the campaign objective (purchases for
+    # purchase campaigns; registrations/RSVPs/leads for other objectives).
+    # Null when Meta reported no conversion data at all.
+    results = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [

@@ -21,6 +21,20 @@ PURCHASE_ACTION_TYPES = (
     'onsite_web_purchase',
 )
 
+# Non-purchase conversion action types in priority order. Each tuple is a group
+# of overlapping types (use the first present, never sum within a group). Groups
+# are tried in order; the first group with any match becomes the results count.
+# Covers RSVP/registration (Laylo DropRSVP), leads, app installs, subscriptions.
+RESULTS_ACTION_TYPE_GROUPS = (
+    ('omni_complete_registration', 'complete_registration',
+     'offsite_conversion.fb_pixel_complete_registration'),
+    ('omni_lead', 'lead', 'offsite_conversion.fb_pixel_lead'),
+    ('omni_app_install', 'app_install', 'mobile_app_install'),
+    ('subscribe', 'omni_subscribe'),
+    ('schedule', 'omni_schedule'),
+    ('omni_add_to_cart', 'add_to_cart', 'offsite_conversion.fb_pixel_add_to_cart'),
+)
+
 # Meta error codes that are explicitly "transient — retry later":
 # 1 = "An unknown error has occurred.", 2 = "Service temporarily unavailable".
 _META_TRANSIENT_CODES = (1, 2)
@@ -94,6 +108,35 @@ def _first_purchase_value(entries):
         if action_type in by_type:
             return by_type[action_type]
     return None
+
+
+def _extract_results_count(entries) -> int | None:
+    """Primary conversion count for the campaign, regardless of objective.
+
+    For purchase campaigns, this equals the purchase count. For
+    registration/RSVP/lead campaigns (e.g. Laylo DropRSVP), returns the first
+    matching non-purchase conversion group. Returns None when Meta reported no
+    conversion data at all (no pixel/actions).
+    """
+    if not entries:
+        return None
+    # Purchase campaigns: results = purchases (keep parity).
+    purchase_count = _extract_purchase_count(entries)
+    if purchase_count is not None and purchase_count > 0:
+        return purchase_count
+
+    by_type = {row.get('action_type'): row.get('value') for row in entries}
+    for group in RESULTS_ACTION_TYPE_GROUPS:
+        for action_type in group:
+            raw = by_type.get(action_type)
+            if raw is not None:
+                try:
+                    return int(float(raw))
+                except (TypeError, ValueError):
+                    continue
+
+    # entries were present but contained no recognized conversion actions.
+    return purchase_count  # 0 or None
 
 
 # Thumbnails default to 64px; ask for 600px so they hold up in the detail panel.

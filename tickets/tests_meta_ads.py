@@ -1677,9 +1677,9 @@ class EventAdsInsightsTests(TestCase):
             json.loads(result['daily_json']),
             [
                 {'date': '2026-05-01', 'spend': 10.0, 'impressions': 1000, 'clicks': 20,
-                 'purchases': 2, 'purchase_value': 60.0},
+                 'purchases': 2, 'purchase_value': 60.0, 'results': None},
                 {'date': '2026-05-02', 'spend': 25.0, 'impressions': 2000, 'clicks': 40,
-                 'purchases': 1, 'purchase_value': 30.0},
+                 'purchases': 1, 'purchase_value': 30.0, 'results': None},
             ],
         )
 

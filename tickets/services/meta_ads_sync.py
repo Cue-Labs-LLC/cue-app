@@ -22,7 +22,7 @@ from django.db import transaction
 from django.utils import timezone as django_tz
 
 from ..models import MetaAdDailyInsight
-from .meta_ads import MetaAdsClient, _extract_purchase_amount, _extract_purchase_count
+from .meta_ads import MetaAdsClient, _extract_purchase_amount, _extract_purchase_count, _extract_results_count
 from .meta_ads_dashboard import insights_history_floor
 
 logger = logging.getLogger(__name__)
@@ -131,6 +131,7 @@ class MetaAdsInsightsSync:
             link_clicks=_int(row.get('inline_link_clicks')),
             purchases=_extract_purchase_count(row.get('actions')),
             purchase_value=_extract_purchase_amount(row.get('action_values')),
+            results=_extract_results_count(row.get('actions')),
         )
 
 

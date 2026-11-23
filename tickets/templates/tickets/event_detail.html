@@ -2013,8 +2013,20 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="stat-label">CPC</div>
         <div class="stat-value">{% if ads_totals.cpc != None %}{{ ads_currency_prefix }}{{ ads_totals.cpc|currency }}{% else %}&mdash;{% endif %}</div>
     </div>
-    {% if ads_totals.purchases != None %}
+    {% if ads_totals.results != None %}
     <div class="stat-card stat-card--success">
+        <div class="stat-label">Results</div>
+        <div class="stat-value">{{ ads_totals.results }}</div>
+    </div>
+    {% endif %}
+    {% if ads_totals.cost_per_result != None %}
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Cost / result</div>
+        <div class="stat-value">{{ ads_currency_prefix }}{{ ads_totals.cost_per_result|currency }}</div>
+    </div>
+    {% endif %}
+    {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}
+    <div class="stat-card">
         <div class="stat-label">Purchases</div>
         <div class="stat-value">{{ ads_totals.purchases }}</div>
     </div>
@@ -2029,20 +2041,21 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
-        {% comment %}Purchase-based views only appear when Meta has conversion (pixel) data,
-        matching the Purchases/ROAS stat cards above.{% endcomment %}
+        {% comment %}Conversion-based views only appear when Meta has conversion (pixel) data.{% endcomment %}
         <div class="ads-metric-toggles" role="group" aria-label="Daily chart metric">
             <div class="ads-metric-toggle">
                 <button type="button" class="ads-metric-btn active" data-ads-metric="spend" aria-pressed="true">Spend</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="impressions" aria-pressed="false">Impressions</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="clicks" aria-pressed="false">Clicks</button>
-                {% if ads_totals.purchases != None %}<button type="button" class="ads-metric-btn" data-ads-metric="purchases" aria-pressed="false">Purchases</button>{% endif %}
+                {% if ads_totals.results != None %}<button type="button" class="ads-metric-btn" data-ads-metric="results" aria-pressed="false">Results</button>{% endif %}
+                {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}<button type="button" class="ads-metric-btn" data-ads-metric="purchases" aria-pressed="false">Purchases</button>{% endif %}
             </div>
             <div class="ads-metric-toggle">
                 <button type="button" class="ads-metric-btn" data-ads-metric="ctr" aria-pressed="false">CTR</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="cpc" aria-pressed="false">CPC</button>
                 <button type="button" class="ads-metric-btn" data-ads-metric="cpm" aria-pressed="false">CPM</button>
-                {% if ads_totals.purchases != None %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_purchase" aria-pressed="false">Cost / purchase</button>{% endif %}
+                {% if ads_totals.results != None %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_result" aria-pressed="false">Cost / result</button>{% endif %}
+                {% if ads_totals.purchases != None and ads_totals.results != ads_totals.purchases %}<button type="button" class="ads-metric-btn" data-ads-metric="cost_per_purchase" aria-pressed="false">Cost / purchase</button>{% endif %}
                 {% if ads_totals.roas != None %}<button type="button" class="ads-metric-btn" data-ads-metric="roas" aria-pressed="false">ROAS</button>{% endif %}
             </div>
         </div>
@@ -2065,8 +2078,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th class="text-end">CTR</th>
                         <th class="text-end">CPC</th>
                         <th class="text-end">CPM</th>
-                        <th class="text-end">Purchases</th>
-                        <th class="text-end">ROAS</th>
+                        <th class="text-end">Results</th>
+                        <th class="text-end">Cost / result</th>
+                        {% if ads_totals.roas != None %}<th class="text-end">ROAS</th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -2079,8 +2093,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="text-end">{% if c.ctr != None %}{{ c.ctr }}%{% else %}&mdash;{% endif %}</td>
                         <td class="text-end">{% if c.cpc != None %}{{ ads_currency_prefix }}{{ c.cpc|currency }}{% else %}&mdash;{% endif %}</td>
                         <td class="text-end">{% if c.cpm != None %}{{ ads_currency_prefix }}{{ c.cpm|currency }}{% else %}&mdash;{% endif %}</td>
-                        <td class="text-end">{% if c.purchases != None %}{{ c.purchases }}{% else %}&mdash;{% endif %}</td>
-                        <td class="text-end">{% if c.roas != None %}{{ c.roas }}x{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.results != None %}{{ c.results }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-end">{% if c.cost_per_result != None %}{{ ads_currency_prefix }}{{ c.cost_per_result|currency }}{% else %}&mdash;{% endif %}</td>
+                        {% if ads_totals.roas != None %}<td class="text-end">{% if c.roas != None %}{{ c.roas }}x{% else %}&mdash;{% endif %}</td>{% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -3514,10 +3529,12 @@ if (document.readyState === 'loading') {
         spend:             { label: 'spend',             fmt: money, get: function (d) { return d.spend; } },
         impressions:       { label: 'impressions',       fmt: count, get: function (d) { return d.impressions; } },
         clicks:            { label: 'clicks',            fmt: count, get: function (d) { return d.clicks; } },
+        results:           { label: 'results',           fmt: count, get: function (d) { return d.results; } },
         purchases:         { label: 'purchases',         fmt: count, get: function (d) { return d.purchases; } },
         ctr:               { label: 'CTR',               fmt: function (v) { return v.toFixed(2) + '%'; }, get: function (d) { var r = ratio(d.clicks, d.impressions); return r == null ? null : r * 100; } },
         cpc:               { label: 'CPC',               fmt: money, get: function (d) { return ratio(d.spend, d.clicks); } },
         cpm:               { label: 'CPM',               fmt: money, get: function (d) { var r = ratio(d.spend, d.impressions); return r == null ? null : r * 1000; } },
+        cost_per_result:   { label: 'cost per result',   fmt: money, get: function (d) { return ratio(d.spend, d.results); } },
         cost_per_purchase: { label: 'cost per purchase', fmt: money, get: function (d) { return ratio(d.spend, d.purchases); } },
         roas:              { label: 'ROAS',              fmt: function (v) { return v.toFixed(2) + 'x'; }, get: function (d) { return ratio(d.purchase_value, d.spend); } }
     };
