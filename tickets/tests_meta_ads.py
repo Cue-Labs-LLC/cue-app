@@ -8,7 +8,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .models import Event, EventExpense, MetaAdDailyInsight, Organization, OrganizationMembership, UserProfile, Venue
-from .services.meta_ads import CampaignInsights, MetaAdsAPIError, MetaAdsClient
+from .services.meta_ads import CampaignInsights, MetaAdsAPIError, MetaAdsClient, _extract_results_count
 from .services.meta_campaign_matcher import CampaignCandidate, MatchResult, MetaCampaignMatcher
 
 
@@ -1280,6 +1280,51 @@ class MetaAdsRateLimitTests(_MetaAdsDashboardFixtures, TestCase):
 
         self.assertIsNone(response.context['data'])
         self.assertContains(response, 'Check connection')
+
+
+class ExtractResultsCountTests(TestCase):
+    def test_purchase_campaign_returns_purchase_count(self):
+        actions = [
+            {'action_type': 'omni_purchase', 'value': '5'},
+            {'action_type': 'link_click', 'value': '200'},
+        ]
+        self.assertEqual(_extract_results_count(actions), 5)
+
+    def test_custom_conversion_campaign_sums_custom_actions(self):
+        # Laylo DropRSVP fires offsite_conversion.custom.* events
+        actions = [
+            {'action_type': 'offsite_conversion.custom.123456789', 'value': '12'},
+            {'action_type': 'link_click', 'value': '300'},
+        ]
+        self.assertEqual(_extract_results_count(actions), 12)
+
+    def test_multiple_custom_conversion_events_are_summed(self):
+        actions = [
+            {'action_type': 'offsite_conversion.custom.111', 'value': '7'},
+            {'action_type': 'offsite_conversion.custom.222', 'value': '3'},
+        ]
+        self.assertEqual(_extract_results_count(actions), 10)
+
+    def test_purchase_takes_precedence_over_custom_conversion(self):
+        actions = [
+            {'action_type': 'omni_purchase', 'value': '4'},
+            {'action_type': 'offsite_conversion.custom.999', 'value': '50'},
+        ]
+        self.assertEqual(_extract_results_count(actions), 4)
+
+    def test_no_actions_returns_none(self):
+        self.assertIsNone(_extract_results_count(None))
+        self.assertIsNone(_extract_results_count([]))
+
+    def test_actions_without_conversions_returns_zero(self):
+        actions = [{'action_type': 'link_click', 'value': '100'}]
+        self.assertEqual(_extract_results_count(actions), 0)
+
+    def test_standard_non_purchase_types_not_counted_as_results(self):
+        # complete_registration is a standard Meta type, not a custom conversion —
+        # results stays 0 so we don't misreport campaigns that incidentally fire it.
+        actions = [{'action_type': 'complete_registration', 'value': '8'}]
+        self.assertEqual(_extract_results_count(actions), 0)
 
 
 class MetaAdsClientBatchingTests(TestCase):
