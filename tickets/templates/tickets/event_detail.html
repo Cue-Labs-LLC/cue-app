@@ -7,7 +7,7 @@
 {% block extra_head %}
 <style>/* No page fade when switching the tabs — each tab is a full navigation. */
 .content > * { animation: none; }</style>
-{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results or has_finance_flow %}
+{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results or has_finance_flow or ads_has_data %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% if has_finance_flow %}
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.1/dist/chartjs-chart-sankey.min.js" defer></script>
@@ -3461,7 +3461,8 @@ if (document.readyState === 'loading') {
                     borderColor: '#6366f1',
                     backgroundColor: 'rgba(99, 102, 241, 0.08)',
                     borderWidth: 2,
-                    pointRadius: 0,
+                    // A lone day has no line segment, so show it as a dot.
+                    pointRadius: spendData.length === 1 ? 4 : 0,
                     pointHoverRadius: 4,
                     fill: true,
                     tension: 0.35,

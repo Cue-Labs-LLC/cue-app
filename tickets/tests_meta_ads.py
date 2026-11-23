@@ -1685,3 +1685,5 @@ class EventAdsInsightsTests(TestCase):
         self.assertContains(response, '$1,234.50')
         self.assertContains(response, 'Campaign breakdown')
         self.assertContains(response, 'id="adsSpendChart"')
+        # The event has no orders, so Chart.js must be loaded for the ads chart alone.
+        self.assertContains(response, 'chart.umd.min.js')
