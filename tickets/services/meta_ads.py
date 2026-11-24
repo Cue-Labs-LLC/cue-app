@@ -26,6 +26,8 @@ PURCHASE_ACTION_TYPES = (
 # are tried in order; the first group with any match becomes the results count.
 # Covers RSVP/registration (Laylo DropRSVP), leads, app installs, subscriptions.
 RESULTS_ACTION_TYPE_GROUPS = (
+    # Custom pixel events (e.g. Laylo DropRSVP fires offsite_conversion.fb_pixel_custom).
+    ('offsite_conversion.fb_pixel_custom',),
     ('omni_complete_registration', 'complete_registration',
      'offsite_conversion.fb_pixel_complete_registration'),
     ('omni_lead', 'lead', 'offsite_conversion.fb_pixel_lead'),
