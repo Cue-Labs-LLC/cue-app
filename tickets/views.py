@@ -6248,6 +6248,14 @@ def event_detail(request, event_id):
     avg_tickets_per_order = round(total_tickets / total_orders, 1) if total_orders else 0
     avg_order_value = (ticket_revenue / total_orders).quantize(Decimal('0.01')) if total_orders else Decimal('0.00')
 
+    # Fill %: paid tickets sold vs room capacity (event capacity, else venue capacity).
+    _fill_capacity = event.capacity or (event.venue.capacity if event.venue else None)
+    fill_pct = (
+        min(round(event.cached_paid_ticket_count / _fill_capacity * 100), 100)
+        if _fill_capacity else None
+    )
+    fill_capacity = _fill_capacity
+
     # Paginate orders - select_related + annotate to avoid N+1 in template
     _platform_fee_subq = Subquery(
         StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
@@ -6541,6 +6549,8 @@ def event_detail(request, event_id):
         'page_obj': page_obj,
         'avg_tickets_per_order': avg_tickets_per_order,
         'avg_order_value': avg_order_value,
+        'fill_pct': fill_pct,
+        'fill_capacity': fill_capacity,
         'orders_search': orders_search,
         'custom_field_values_display': custom_field_values_display,
         'org_custom_fields': org_custom_fields,
