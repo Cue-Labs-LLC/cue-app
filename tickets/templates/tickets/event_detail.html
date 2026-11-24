@@ -1571,6 +1571,21 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- Sales > Orders -->
 <div class="event-subsection" data-subview-section="orders">
 
+{% if total_orders %}
+<div class="stat-sections mb-4">
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Avg Tickets / Order</div>
+        <div class="stat-value">{{ avg_tickets_per_order }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">{{ total_tickets }} tickets · {{ total_orders }} orders</div>
+    </div>
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Avg Order Value</div>
+        <div class="stat-value">${{ avg_order_value|floatformat:2 }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">${{ ticket_revenue|floatformat:2 }} across {{ total_orders }} orders</div>
+    </div>
+</div>
+{% endif %}
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0">Recent Orders</h5>

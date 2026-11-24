@@ -6245,6 +6245,9 @@ def event_detail(request, event_id):
     survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
 
+    avg_tickets_per_order = round(total_tickets / total_orders, 1) if total_orders else 0
+    avg_order_value = (ticket_revenue / total_orders).quantize(Decimal('0.01')) if total_orders else Decimal('0.00')
+
     # Paginate orders - select_related + annotate to avoid N+1 in template
     _platform_fee_subq = Subquery(
         StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
@@ -6536,6 +6539,8 @@ def event_detail(request, event_id):
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
+        'avg_tickets_per_order': avg_tickets_per_order,
+        'avg_order_value': avg_order_value,
         'orders_search': orders_search,
         'custom_field_values_display': custom_field_values_display,
         'org_custom_fields': org_custom_fields,
