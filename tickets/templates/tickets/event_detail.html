@@ -615,6 +615,13 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="stat-label">Tickets</div>
             <div class="stat-value">{{ total_tickets }}</div>
         </div>
+        {% if fill_pct is not None %}
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Fill</div>
+            <div class="stat-value">{{ fill_pct }}%</div>
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">{{ event.cached_paid_ticket_count }} paid of {{ fill_capacity }} capacity</div>
+        </div>
+        {% endif %}
         {% if event.ticketing_type == 'direct' %}
         <div class="stat-card stat-card--info">
             <div class="stat-label">Page Views</div>
