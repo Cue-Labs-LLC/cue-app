@@ -83,7 +83,7 @@
         toggle.addEventListener('click', function () {
             on = !on;
             toggle.classList.toggle('active', on);
-            toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+            toggle.setAttribute('aria-checked', on ? 'true' : 'false');
             wrap.hidden = !on;
             if (on) load(); else render(root, null);
         });

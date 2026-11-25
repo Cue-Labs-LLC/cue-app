@@ -18,10 +18,10 @@ value, and the compare slot under it is filled with the comparison event's value
     <div class="mkt-overview-head">
         <h5 class="mb-0">Overview</h5>
         {% if candidates %}
-        <button type="button" class="mkt-compare-btn" data-compare-toggle aria-pressed="false">
-            <i class="bi bi-layout-split"></i> Compare
+        <button type="button" class="mkt-compare-btn" data-compare-toggle role="switch" aria-checked="false">
+            <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
         </button>
-        <label class="d-flex align-items-center gap-2 mb-0" data-compare-wrap hidden>
+        <label class="mkt-compare-wrap" data-compare-wrap hidden>
             <span class="pacing-compare-label">vs</span>
             <div class="pacing-combo" data-compare-combo>
                 <input type="text" class="pacing-compare-input"
@@ -40,9 +40,9 @@ value, and the compare slot under it is filled with the comparison event's value
             </div>
         </label>
         {% else %}
-        <button type="button" class="mkt-compare-btn" disabled
+        <button type="button" class="mkt-compare-btn" role="switch" aria-checked="false" disabled
                 title="No earlier events with {{ channel_label }} data to compare against yet">
-            <i class="bi bi-layout-split"></i> Compare
+            <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
         </button>
         {% endif %}
     </div>

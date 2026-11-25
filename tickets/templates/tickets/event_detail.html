@@ -74,12 +74,35 @@
 .mkt-compare-btn {
     background: none; border: none; padding: 0; cursor: pointer;
     font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--text-tertiary); display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-tertiary); display: inline-flex; align-items: center; gap: 7px;
     transition: color 0.12s;
 }
 .mkt-compare-btn:hover:not(:disabled) { color: var(--text-secondary); }
 .mkt-compare-btn.active { color: var(--accent); }
 .mkt-compare-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.mkt-compare-btn:focus-visible { outline: none; }
+.mkt-compare-btn:focus-visible .mkt-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* On/off switch inside the Compare toggle: grey track + left thumb when off,
+   accent track + right thumb when on. */
+.mkt-switch {
+    position: relative; display: inline-block; flex-shrink: 0;
+    width: 28px; height: 16px; border-radius: 999px;
+    background: var(--border); transition: background 0.15s;
+}
+.mkt-switch-thumb {
+    position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--bg-surface, #fff); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.15s;
+}
+.mkt-compare-btn.active .mkt-switch { background: var(--accent); }
+.mkt-compare-btn.active .mkt-switch-thumb { transform: translateX(12px); }
+@media (prefers-reduced-motion: reduce) {
+    .mkt-switch, .mkt-switch-thumb { transition: none; }
+}
+/* The "vs <event>" picker only shows while Compare is on. Not using Bootstrap's
+   .d-flex here: its !important display would override the hidden attribute. */
+.mkt-compare-wrap { display: flex; align-items: center; gap: 8px; margin: 0; }
+.mkt-compare-wrap[hidden] { display: none; }
 /* Event names + dates run longer than the Sales Trends labels; give the picker room. */
 .mkt-overview-head .pacing-compare-input { width: 300px; max-width: min(340px, 70vw); }
 .mkt-overview-head .pacing-combo-list { left: 0; right: auto; min-width: 300px; max-width: 420px; }
@@ -1954,10 +1977,10 @@ chart, aligned on days before each event.{% endcomment %}
 <div class="mkt-overview-head">
     <h5 class="mb-0">Overview</h5>
     {% if ads_compare_candidates %}
-    <button type="button" id="adsCampaignCompare" class="mkt-compare-btn" aria-pressed="false">
-        <i class="bi bi-layout-split"></i> Compare
+    <button type="button" id="adsCampaignCompare" class="mkt-compare-btn" role="switch" aria-checked="false">
+        <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
     </button>
-    <label class="d-flex align-items-center gap-2 mb-0" id="adsCompareComboWrap" hidden>
+    <label class="mkt-compare-wrap" id="adsCompareComboWrap" hidden>
         <span class="pacing-compare-label">vs</span>
         <div class="pacing-combo" id="adsCompareCombo">
             <input type="text" class="pacing-compare-input" id="adsCompareInput"
@@ -1976,9 +1999,9 @@ chart, aligned on days before each event.{% endcomment %}
         </div>
     </label>
     {% else %}
-    <button type="button" class="mkt-compare-btn" disabled
+    <button type="button" class="mkt-compare-btn" role="switch" aria-checked="false" disabled
             title="No earlier events with synced ads data to compare against yet">
-        <i class="bi bi-layout-split"></i> Compare
+        <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
     </button>
     {% endif %}
 </div>
@@ -3813,7 +3836,7 @@ if (document.readyState === 'loading') {
         compareBtn.addEventListener('click', function () {
             compareMode = !compareMode;
             compareBtn.classList.toggle('active', compareMode);
-            compareBtn.setAttribute('aria-pressed', compareMode ? 'true' : 'false');
+            compareBtn.setAttribute('aria-checked', compareMode ? 'true' : 'false');
             if (comboWrap) comboWrap.hidden = !compareMode;
             if (compareMode && !compareData) {
                 // Auto-load the first candidate from the combobox.
