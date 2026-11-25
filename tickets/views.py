@@ -5640,6 +5640,64 @@ def _get_page_view_comparison_candidates(org, event, limit=100):
     return same_venue + other
 
 
+def _get_ads_comparison_candidates(org, event, limit=100):
+    """Past Meta Ads campaigns available to compare against, for the ads compare combobox.
+
+    Mirrors the pacing candidates pattern: most recent first, same-venue event
+    campaigns floated to the top. Deduplicates by campaign_id so a campaign
+    linked to multiple events only appears once (the most recent event wins).
+    Falls back to all org MetaAdDailyInsight campaigns when no event-linked
+    campaigns exist.
+    """
+    expenses = list(
+        EventExpense.objects.filter(
+            organization=org,
+            source='meta_ads',
+            deleted_at__isnull=True,
+        )
+        .exclude(external_id='')
+        .exclude(event=event)
+        .select_related('event')
+        .order_by('-event__start_date', '-amount')
+        [: limit * 3]
+    )
+    seen = set()
+    candidates = []
+    for expense in expenses:
+        if expense.external_id in seen:
+            continue
+        seen.add(expense.external_id)
+        meta = expense.external_metadata or {}
+        candidates.append({
+            'campaign_id': expense.external_id,
+            'name': meta.get('campaign_name') or expense.external_id,
+            'event_name': expense.event.name,
+            'event_start_date': expense.event.start_date,
+            'is_same_venue': bool(event.venue_id and expense.event.venue_id == event.venue_id),
+        })
+
+    same_venue = [c for c in candidates if c['is_same_venue']]
+    other = [c for c in candidates if not c['is_same_venue']]
+    result = (same_venue + other)[:limit]
+
+    # Fall back to all org campaigns when nothing is event-linked.
+    if not result:
+        for row in (
+            MetaAdDailyInsight.objects.filter(organization=org)
+            .values('campaign_id')
+            .annotate(name=Max('campaign_name'))
+            .order_by('name')[:limit]
+        ):
+            result.append({
+                'campaign_id': row['campaign_id'],
+                'name': row['name'] or row['campaign_id'],
+                'event_name': '',
+                'event_start_date': None,
+                'is_same_venue': False,
+            })
+    return result
+
+
 def _recompute_utm_attribution_for_event(org, event):
     """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
 
@@ -6379,13 +6437,8 @@ def event_detail(request, event_id):
         metadata = expense.external_metadata or {}
         expense.meta_ads_last_synced_display = _format_meta_ads_datetime(metadata.get('last_synced_at'))
     ads_insights = _get_event_ads_insights(event, meta_ads_expenses)
-    ads_compare_candidates = list(
-        MetaAdDailyInsight.objects.filter(organization=org)
-        .values('campaign_id')
-        .annotate(name=Max('campaign_name'))
-        .order_by('name')
-        [:100]
-    ) if ads_insights['show'] else []
+    ads_compare_candidates = _get_ads_comparison_candidates(org, event) if ads_insights['show'] else []
+    ads_default_compare_id = ads_compare_candidates[0]['campaign_id'] if ads_compare_candidates else None
     mailchimp_campaigns = list(
         EventEmailCampaign.objects.filter(
             event=event,
@@ -6607,6 +6660,7 @@ def event_detail(request, event_id):
         'ads_campaigns_daily_json': ads_insights.get('campaigns_daily_json', '[]'),
         'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
         'ads_compare_candidates': ads_compare_candidates,
+        'ads_default_compare_id': ads_default_compare_id,
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,

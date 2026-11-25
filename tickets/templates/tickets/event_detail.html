@@ -2071,13 +2071,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     <input type="text" class="pacing-compare-input" id="adsCompareInput"
                            role="combobox" aria-expanded="false" aria-controls="adsCompareList"
                            aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign">
+                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign"
+                           value="{% if ads_default_compare_id %}{% for c in ads_compare_candidates %}{% if c.campaign_id == ads_default_compare_id %}{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}{% endif %}{% endfor %}{% endif %}">
                     <ul class="pacing-combo-list" id="adsCompareList" role="listbox" aria-label="Comparison campaign" hidden>
                         {% for c in ads_compare_candidates %}
-                        <li class="pacing-combo-option{% if forloop.first %} is-selected{% endif %}"
+                        <li class="pacing-combo-option{% if c.campaign_id == ads_default_compare_id %} is-selected{% endif %}"
                             role="option" id="adsCompareOpt-{{ forloop.counter }}"
                             data-id="{{ c.campaign_id }}"
-                            data-label="{{ c.name }}">{{ c.name }}</li>
+                            data-label="{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}">{{ c.name }}{% if c.event_name %} <span style="color:var(--text-tertiary);">&middot; {{ c.event_name }}</span>{% endif %}{% if c.is_same_venue %} <span style="color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Same venue</span>{% endif %}</li>
                         {% endfor %}
                     </ul>
                 </div>
