@@ -75,6 +75,9 @@
 }
 #adsCampaignCompare:hover { color: var(--text-secondary); }
 #adsCampaignCompare.active { color: var(--accent); }
+.ads-stat-compare {
+    font-size: 0.72rem; color: var(--text-tertiary); margin-top: 2px; letter-spacing: 0.01em;
+}
 @media (prefers-reduced-motion: no-preference) {
     .marketing-section:not([hidden]), .finance-section:not([hidden]), .event-subsection:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
@@ -2023,43 +2026,52 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Spend</div>
         <div class="stat-value">{{ ads_currency_prefix }}{{ ads_totals.spend|currency }}</div>
+        <div class="ads-stat-compare" data-ads-stat="spend" hidden></div>
     </div>
     <div class="stat-card stat-card--info">
         <div class="stat-label">Impressions</div>
         <div class="stat-value">{{ ads_totals.impressions|intcomma }}</div>
+        <div class="ads-stat-compare" data-ads-stat="impressions" hidden></div>
     </div>
     <div class="stat-card stat-card--info">
         <div class="stat-label">Clicks</div>
         <div class="stat-value">{{ ads_totals.link_clicks|intcomma }}</div>
+        <div class="ads-stat-compare" data-ads-stat="clicks" hidden></div>
     </div>
     <div class="stat-card">
         <div class="stat-label">CTR</div>
         <div class="stat-value">{% if ads_totals.ctr != None %}{{ ads_totals.ctr }}%{% else %}&mdash;{% endif %}</div>
+        <div class="ads-stat-compare" data-ads-stat="ctr" hidden></div>
     </div>
     <div class="stat-card">
         <div class="stat-label">CPM</div>
         <div class="stat-value">{% if ads_totals.cpm != None %}{{ ads_currency_prefix }}{{ ads_totals.cpm|currency }}{% else %}&mdash;{% endif %}</div>
+        <div class="ads-stat-compare" data-ads-stat="cpm" hidden></div>
     </div>
     <div class="stat-card">
         <div class="stat-label">CPC</div>
         <div class="stat-value">{% if ads_totals.cpc != None %}{{ ads_currency_prefix }}{{ ads_totals.cpc|currency }}{% else %}&mdash;{% endif %}</div>
+        <div class="ads-stat-compare" data-ads-stat="cpc" hidden></div>
     </div>
     {% if ads_totals.results != None %}
     <div class="stat-card stat-card--success">
         <div class="stat-label">Results</div>
         <div class="stat-value">{{ ads_totals.results }}</div>
+        <div class="ads-stat-compare" data-ads-stat="results" hidden></div>
     </div>
     {% endif %}
     {% if ads_totals.cost_per_result != None %}
     <div class="stat-card stat-card--success">
         <div class="stat-label">Cost / result</div>
         <div class="stat-value">{{ ads_currency_prefix }}{{ ads_totals.cost_per_result|currency }}</div>
+        <div class="ads-stat-compare" data-ads-stat="cost_per_result" hidden></div>
     </div>
     {% endif %}
     {% if ads_totals.roas != None %}
     <div class="stat-card stat-card--success">
         <div class="stat-label">ROAS</div>
         <div class="stat-value">{{ ads_totals.roas }}x</div>
+        <div class="ads-stat-compare" data-ads-stat="roas" hidden></div>
     </div>
     {% endif %}
 </div>
@@ -3603,6 +3615,64 @@ if (document.readyState === 'loading') {
 
     function series() { return days.map(METRICS[current].get); }
 
+    function adsCompareTotals() {
+        if (!compareData || !compareData.days || !compareData.days.length) return null;
+        var d = compareData.days;
+        var spend = 0, impressions = 0, clicks = 0, results = 0, pv = 0;
+        var hasResults = false, hasPv = false;
+        d.forEach(function (r) {
+            spend += r.spend || 0;
+            impressions += r.impressions || 0;
+            clicks += r.clicks || 0;
+            if (r.results != null) { results += r.results; hasResults = true; }
+            if (r.purchase_value != null) { pv += r.purchase_value; hasPv = true; }
+        });
+        return {
+            spend: spend,
+            impressions: impressions,
+            clicks: clicks,
+            results: hasResults ? results : null,
+            roas: (hasPv && spend) ? pv / spend : null,
+            ctr: impressions ? clicks / impressions * 100 : null,
+            cpm: impressions ? spend / impressions * 1000 : null,
+            cpc: clicks ? spend / clicks : null,
+            cost_per_result: (hasResults && results) ? spend / results : null,
+        };
+    }
+
+    function refreshStatCards() {
+        var els = document.querySelectorAll('.ads-stat-compare');
+        if (!compareMode || !compareData) {
+            Array.prototype.forEach.call(els, function (el) { el.hidden = true; });
+            return;
+        }
+        var cmp = adsCompareTotals();
+        if (!cmp) {
+            Array.prototype.forEach.call(els, function (el) { el.hidden = true; });
+            return;
+        }
+        var FMT = {
+            spend:           function (v) { return money(v); },
+            impressions:     function (v) { return count(v); },
+            clicks:          function (v) { return count(v); },
+            ctr:             function (v) { return v == null ? null : v.toFixed(2) + '%'; },
+            cpm:             function (v) { return v == null ? null : money(v); },
+            cpc:             function (v) { return v == null ? null : money(v); },
+            results:         function (v) { return v == null ? null : count(v); },
+            cost_per_result: function (v) { return v == null ? null : money(v); },
+            roas:            function (v) { return v == null ? null : v.toFixed(2) + 'x'; },
+        };
+        Array.prototype.forEach.call(els, function (el) {
+            var key = el.getAttribute('data-ads-stat');
+            if (!key || !FMT[key]) return;
+            var val = cmp[key];
+            var formatted = FMT[key](val);
+            if (formatted == null) { el.hidden = true; return; }
+            el.textContent = 'vs ' + formatted;
+            el.hidden = false;
+        });
+    }
+
     function getChartTheme() {
         var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
         return {
@@ -3740,7 +3810,7 @@ if (document.readyState === 'loading') {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
-        .then(function (json) { compareData = json; refreshChart(); if (onDone) onDone(); })
+        .then(function (json) { compareData = json; refreshChart(); refreshStatCards(); if (onDone) onDone(); })
         .catch(function (err) { console.error(err); })
         .finally(function () { if (compareInput) compareInput.disabled = false; });
     }
@@ -3784,6 +3854,7 @@ if (document.readyState === 'loading') {
                 }
             }
             if (chart) refreshChart(); else buildChart();
+            refreshStatCards();
         });
     }
 
