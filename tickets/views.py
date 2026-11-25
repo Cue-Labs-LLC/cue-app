@@ -5787,15 +5787,35 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         for r in daily_rows
     ])
 
-    campaign_rows = (
+    campaign_rows = list(
         rows.values('campaign_id')
         .annotate(name=Max('campaign_name'), **sums)
         .order_by('-spend')
     )
     campaigns = [
-        {'name': row['name'] or 'Untitled campaign', **_synced_metrics(row)}
+        {'name': row['name'] or 'Untitled campaign', 'campaign_id': row['campaign_id'], **_synced_metrics(row)}
         for row in campaign_rows
     ]
+
+    def _daily_for_campaign(cid):
+        cdays = rows.filter(campaign_id=cid).values('date').annotate(**sums).order_by('date')
+        return [
+            {
+                'date': r['date'].isoformat(),
+                'spend': float(r['spend'] or 0),
+                'impressions': r['impressions'] or 0,
+                'clicks': r['link_clicks'] or 0,
+                'purchases': r['purchases'],
+                'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
+                'results': r['results'],
+            }
+            for r in cdays
+        ]
+
+    campaigns_daily_json = json.dumps([
+        {'id': row['campaign_id'], 'name': row['name'] or 'Untitled campaign', 'days': _daily_for_campaign(row['campaign_id'])}
+        for row in campaign_rows
+    ])
 
     totals = _synced_metrics(rows.aggregate(**sums))
 
@@ -5805,6 +5825,7 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         'totals': totals,
         'campaigns': campaigns,
         'daily_json': daily_json,
+        'campaigns_daily_json': campaigns_daily_json,
         'currency_prefix': currency_prefix,
     }
 
@@ -6535,6 +6556,7 @@ def event_detail(request, event_id):
         'ads_totals': ads_insights.get('totals'),
         'ads_campaigns': ads_insights.get('campaigns', []),
         'ads_daily_json': ads_insights.get('daily_json', '[]'),
+        'ads_campaigns_daily_json': ads_insights.get('campaigns_daily_json', '[]'),
         'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
