@@ -239,6 +239,7 @@ urlpatterns = [
     # live in tickets/integrations/). See the "Integrations" block lower down for the
     # connection/settings pages.
     path('events/<uuid:event_id>/instagram/', instagram_views.event_instagram_card, name='event_instagram_card'),
+    path('events/<uuid:event_id>/ads-compare/', views.event_ads_compare_api, name='event_ads_compare_api'),
     path('events/<uuid:event_id>/meta-ads/match/', meta_ads_views.event_meta_ads_match, name='event_meta_ads_match'),
     path('events/<uuid:event_id>/meta-ads/apply/', meta_ads_views.event_meta_ads_apply, name='event_meta_ads_apply'),
     path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', meta_ads_views.event_meta_ads_refresh, name='event_meta_ads_refresh'),

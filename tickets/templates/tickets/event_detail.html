@@ -2056,14 +2056,32 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
     {% endif %}
 </div>
-<div class="card mb-4">
+<div class="card mb-4" id="adsDailyCard"
+     data-compare-url="{% url 'tickets:event_ads_compare_api' event.id %}">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
             <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
-            {% if ads_campaigns|length > 1 %}
             <button type="button" id="adsCampaignCompare" class="btn btn-sm btn-outline-secondary" aria-pressed="false" style="font-size: 11px; padding: 2px 10px;">
                 <i class="bi bi-layout-split" style="font-size: 11px;"></i> Compare
             </button>
+            {% if ads_compare_candidates %}
+            <label class="d-flex align-items-center gap-2 mb-0" id="adsCompareComboWrap" hidden>
+                <span class="pacing-compare-label">vs</span>
+                <div class="pacing-combo" id="adsCompareCombo">
+                    <input type="text" class="pacing-compare-input" id="adsCompareInput"
+                           role="combobox" aria-expanded="false" aria-controls="adsCompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign">
+                    <ul class="pacing-combo-list" id="adsCompareList" role="listbox" aria-label="Comparison campaign" hidden>
+                        {% for c in ads_compare_candidates %}
+                        <li class="pacing-combo-option{% if forloop.first %} is-selected{% endif %}"
+                            role="option" id="adsCompareOpt-{{ forloop.counter }}"
+                            data-id="{{ c.campaign_id }}"
+                            data-label="{{ c.name }}">{{ c.name }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </label>
             {% endif %}
         </div>
         {% comment %}Conversion-based views only appear when Meta has conversion (pixel) data.{% endcomment %}
@@ -3546,20 +3564,8 @@ if (document.readyState === 'loading') {
     if (!days.length) return;
     var prefix = dataEl.getAttribute('data-currency-prefix') || '$';
 
-    var campaignsDataEl = document.getElementById('ads-campaigns-daily-data');
-    var campaignsData = campaignsDataEl ? JSON.parse(campaignsDataEl.textContent) : [];
-
-    // Colors for multi-series compare mode (up to 8 campaigns)
-    var COMPARE_COLORS = [
-        { line: '#6366f1', bg: 'rgba(99,102,241,0.07)' },
-        { line: '#10b981', bg: 'rgba(16,185,129,0.07)' },
-        { line: '#f59e0b', bg: 'rgba(245,158,11,0.07)' },
-        { line: '#ef4444', bg: 'rgba(239,68,68,0.07)' },
-        { line: '#06b6d4', bg: 'rgba(6,182,212,0.07)' },
-        { line: '#8b5cf6', bg: 'rgba(139,92,246,0.07)' },
-        { line: '#f97316', bg: 'rgba(249,115,22,0.07)' },
-        { line: '#ec4899', bg: 'rgba(236,72,153,0.07)' },
-    ];
+    var card = document.getElementById('adsDailyCard');
+    var compareUrl = card ? card.getAttribute('data-compare-url') : null;
 
     function money(v) { return prefix + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function count(v) { return Math.round(v).toLocaleString(); }
@@ -3579,39 +3585,15 @@ if (document.readyState === 'loading') {
     };
     var current = 'spend';
     var compareMode = false;
+    var compareData = null;   // {days: [...], name: '...'} fetched from API
     var chart = null;
     var title = document.getElementById('adsChartTitle');
     var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-ads-metric]'));
     var compareBtn = document.getElementById('adsCampaignCompare');
+    var comboWrap = document.getElementById('adsCompareComboWrap');
+    var compareInput = document.getElementById('adsCompareInput');
 
     function series() { return days.map(METRICS[current].get); }
-
-    // Build a unified date axis from all campaigns' days, then map each campaign's
-    // values onto those dates (null for missing dates = gap in chart).
-    function compareDatasets() {
-        var dateSet = {};
-        campaignsData.forEach(function (c) { c.days.forEach(function (d) { dateSet[d.date] = true; }); });
-        var sortedDates = Object.keys(dateSet).sort();
-        return {
-            labels: sortedDates,
-            datasets: campaignsData.map(function (c, i) {
-                var dayMap = {};
-                c.days.forEach(function (d) { dayMap[d.date] = d; });
-                var clr = COMPARE_COLORS[i % COMPARE_COLORS.length];
-                return {
-                    label: c.name,
-                    data: sortedDates.map(function (dt) { return dayMap[dt] ? METRICS[current].get(dayMap[dt]) : null; }),
-                    borderColor: clr.line,
-                    backgroundColor: clr.bg,
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 4,
-                    fill: false,
-                    tension: 0.35,
-                };
-            }),
-        };
-    }
 
     function getChartTheme() {
         var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -3621,40 +3603,79 @@ if (document.readyState === 'loading') {
         };
     }
 
+    // Build a 2-series config: current event (solid accent) vs comparison (dashed info).
+    function compareChartData() {
+        var dateSet = {};
+        days.forEach(function (d) { dateSet[d.date] = true; });
+        if (compareData && compareData.days) {
+            compareData.days.forEach(function (d) { dateSet[d.date] = true; });
+        }
+        var sortedDates = Object.keys(dateSet).sort();
+        var currentMap = {};
+        days.forEach(function (d) { currentMap[d.date] = d; });
+        var datasets = [{
+            label: '{{ event.name|escapejs }}',
+            data: sortedDates.map(function (dt) { return currentMap[dt] ? METRICS[current].get(currentMap[dt]) : null; }),
+            borderColor: '#6366f1',
+            backgroundColor: 'rgba(99,102,241,0.08)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.35,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+        }];
+        if (compareData && compareData.days) {
+            var cmpMap = {};
+            compareData.days.forEach(function (d) { cmpMap[d.date] = d; });
+            datasets.push({
+                label: compareData.name || 'Comparison',
+                data: sortedDates.map(function (dt) { return cmpMap[dt] ? METRICS[current].get(cmpMap[dt]) : null; }),
+                borderColor: '#7B8FBF',
+                backgroundColor: 'rgba(123,143,191,0.05)',
+                borderWidth: 2,
+                borderDash: [5, 4],
+                fill: false,
+                tension: 0.35,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+            });
+        }
+        return { labels: sortedDates, datasets: datasets };
+    }
+
     function buildChart() {
         var canvas = document.getElementById('adsDailyChart');
         if (!canvas || canvas.offsetParent === null || typeof Chart === 'undefined') return;
         if (chart) { chart.resize(); return; }
         var theme = getChartTheme();
-        var initialData = compareMode ? compareDatasets() : {
-            labels: days.map(function (d) { return d.date; }),
-            datasets: [{
-                data: series(),
-                borderColor: '#6366f1',
-                backgroundColor: 'rgba(99, 102, 241, 0.08)',
-                borderWidth: 2,
-                pointRadius: function (ctx) {
-                    var v = ctx.dataset.data, i = ctx.dataIndex;
-                    if (v[i] == null) return 0;
-                    var prevGap = i === 0 || v[i - 1] == null;
-                    var nextGap = i === v.length - 1 || v[i + 1] == null;
-                    return prevGap && nextGap ? 4 : 0;
-                },
-                pointHoverRadius: 4,
-                fill: true,
-                tension: 0.35,
-            }]
-        };
         chart = new Chart(canvas, {
             type: 'line',
-            data: initialData,
+            data: {
+                labels: days.map(function (d) { return d.date; }),
+                datasets: [{
+                    data: series(),
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                    borderWidth: 2,
+                    pointRadius: function (ctx) {
+                        var v = ctx.dataset.data, i = ctx.dataIndex;
+                        if (v[i] == null) return 0;
+                        var prevGap = i === 0 || v[i - 1] == null;
+                        var nextGap = i === v.length - 1 || v[i + 1] == null;
+                        return prevGap && nextGap ? 4 : 0;
+                    },
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.35,
+                }]
+            },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { display: compareMode, position: 'bottom', labels: { color: theme.labelColor, boxWidth: 12, padding: 12 } },
+                    legend: { display: false, position: 'bottom', labels: { color: theme.labelColor, boxWidth: 12, padding: 12 } },
                     tooltip: {
-                        mode: 'index', intersect: false, displayColors: compareMode,
+                        mode: 'index', intersect: false, displayColors: false,
                         callbacks: { label: function (ctx) { return (compareMode ? ctx.dataset.label + ': ' : '') + (ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y)); } }
                     }
                 },
@@ -3669,21 +3690,17 @@ if (document.readyState === 'loading') {
                 }
             }
         });
-        applyCompareDots();
     }
 
     function refreshChart() {
         if (!chart) return;
         var theme = getChartTheme();
         if (compareMode) {
-            var cd = compareDatasets();
+            var cd = compareChartData();
             chart.data.labels = cd.labels;
             chart.data.datasets = cd.datasets;
             chart.options.plugins.legend.display = true;
             chart.options.plugins.tooltip.displayColors = true;
-            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
-                return ctx.dataset.label + ': ' + (ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y));
-            };
         } else {
             chart.data.labels = days.map(function (d) { return d.date; });
             chart.data.datasets = [{
@@ -3704,28 +3721,20 @@ if (document.readyState === 'loading') {
             }];
             chart.options.plugins.legend.display = false;
             chart.options.plugins.tooltip.displayColors = false;
-            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
-                return ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y);
-            };
         }
         chart.update();
-        applyCompareDots();
     }
 
-    // Color the campaign table row indicators to match chart series.
-    function applyCompareDots() {
-        var rows = document.querySelectorAll('[data-campaign-id]');
-        rows.forEach(function (row, i) {
-            var dot = row.querySelector('.ads-compare-dot');
-            if (!dot) return;
-            if (compareMode) {
-                var clr = COMPARE_COLORS[i % COMPARE_COLORS.length];
-                dot.style.background = clr.line;
-                dot.style.display = 'inline-block';
-            } else {
-                dot.style.display = 'none';
-            }
-        });
+    function loadComparison(campaignId, onDone) {
+        if (!campaignId || !compareUrl) return;
+        if (compareInput) compareInput.disabled = true;
+        fetch(compareUrl + '?campaign_id=' + encodeURIComponent(campaignId), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+        .then(function (json) { compareData = json; refreshChart(); if (onDone) onDone(); })
+        .catch(function (err) { console.error(err); })
+        .finally(function () { if (compareInput) compareInput.disabled = false; });
     }
 
     function select(metric) {
@@ -3739,8 +3748,8 @@ if (document.readyState === 'loading') {
         if (title) title.textContent = 'Daily ' + METRICS[metric].label;
         if (chart) {
             if (compareMode) {
-                var cd = compareDatasets();
-                chart.data.datasets.forEach(function (ds, i) { ds.data = cd.datasets[i] ? cd.datasets[i].data : []; });
+                var cd = compareChartData();
+                chart.data.datasets.forEach(function (ds, i) { if (cd.datasets[i]) ds.data = cd.datasets[i].data; });
             } else {
                 chart.data.datasets[0].data = series();
             }
@@ -3756,13 +3765,96 @@ if (document.readyState === 'loading') {
             compareMode = !compareMode;
             compareBtn.classList.toggle('active', compareMode);
             compareBtn.setAttribute('aria-pressed', compareMode ? 'true' : 'false');
-            if (chart) {
-                refreshChart();
-            } else {
-                buildChart();
+            if (comboWrap) comboWrap.hidden = !compareMode;
+            if (compareMode && !compareData) {
+                // Auto-load the first candidate from the combobox.
+                var firstOpt = document.querySelector('#adsCompareList .pacing-combo-option');
+                if (firstOpt) {
+                    if (compareInput) compareInput.value = firstOpt.dataset.label || firstOpt.textContent.trim();
+                    loadComparison(firstOpt.dataset.id);
+                    return;
+                }
             }
+            if (chart) refreshChart(); else buildChart();
         });
     }
+
+    // Combobox interaction (follows the pacing compare pattern).
+    (function () {
+        var combo = document.getElementById('adsCompareCombo');
+        if (!combo) return;
+        var input = document.getElementById('adsCompareInput');
+        var list = document.getElementById('adsCompareList');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label || initial.textContent.trim(); }
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function showEmpty() {
+            if (emptyEl) return;
+            emptyEl = document.createElement('li');
+            emptyEl.className = 'pacing-combo-empty';
+            emptyEl.textContent = 'No matching campaigns';
+            list.appendChild(emptyEl);
+        }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) showEmpty();
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label || opt.textContent.trim();
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            loadComparison(selectedId);
+        }
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
+        });
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    })();
 
     document.addEventListener('marketing:view', function (e) {
         if (e.detail && e.detail.view === 'ads') buildChart();

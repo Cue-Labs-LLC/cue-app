@@ -5830,6 +5830,47 @@ def _get_event_ads_insights(event, meta_ads_expenses):
     }
 
 
+@login_required
+@require_org
+def event_ads_compare_api(request, event_id):
+    """Return daily MetaAdDailyInsight data for any org campaign, for the compare chart."""
+    org = get_organization(request)
+    campaign_id = request.GET.get('campaign_id', '').strip()
+    if not campaign_id:
+        return JsonResponse({'days': [], 'name': ''})
+    rows = (
+        MetaAdDailyInsight.objects.filter(organization=org, campaign_id=campaign_id)
+        .values('date')
+        .annotate(
+            spend=Sum('spend'),
+            impressions=Sum('impressions'),
+            link_clicks=Sum('link_clicks'),
+            purchases=Sum('purchases'),
+            purchase_value=Sum('purchase_value'),
+            results=Sum('results'),
+        )
+        .order_by('date')
+    )
+    name = (
+        MetaAdDailyInsight.objects.filter(organization=org, campaign_id=campaign_id)
+        .values_list('campaign_name', flat=True)
+        .first() or 'Campaign'
+    )
+    days = [
+        {
+            'date': r['date'].isoformat(),
+            'spend': float(r['spend'] or 0),
+            'impressions': r['impressions'] or 0,
+            'clicks': r['link_clicks'] or 0,
+            'purchases': r['purchases'],
+            'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
+            'results': r['results'],
+        }
+        for r in rows
+    ]
+    return JsonResponse({'days': days, 'name': name})
+
+
 def _marketing_tab_redirect(event):
     _invalidate_marketing_cache(getattr(event, 'organization', None))
     return redirect(f"{reverse('tickets:event_detail', kwargs={'event_id': event.id})}?tab=marketing")
@@ -6338,6 +6379,13 @@ def event_detail(request, event_id):
         metadata = expense.external_metadata or {}
         expense.meta_ads_last_synced_display = _format_meta_ads_datetime(metadata.get('last_synced_at'))
     ads_insights = _get_event_ads_insights(event, meta_ads_expenses)
+    ads_compare_candidates = list(
+        MetaAdDailyInsight.objects.filter(organization=org)
+        .values('campaign_id')
+        .annotate(name=Max('campaign_name'))
+        .order_by('name')
+        [:100]
+    ) if ads_insights['show'] else []
     mailchimp_campaigns = list(
         EventEmailCampaign.objects.filter(
             event=event,
@@ -6558,6 +6606,7 @@ def event_detail(request, event_id):
         'ads_daily_json': ads_insights.get('daily_json', '[]'),
         'ads_campaigns_daily_json': ads_insights.get('campaigns_daily_json', '[]'),
         'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
+        'ads_compare_candidates': ads_compare_candidates,
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,
