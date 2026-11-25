@@ -78,6 +78,10 @@
 .ads-stat-compare {
     font-size: 0.72rem; color: var(--text-tertiary); margin-top: 2px; letter-spacing: 0.01em;
 }
+.ads-stat-delta { font-weight: 600; margin-left: 4px; }
+.ads-stat-delta--good  { color: #22c55e; }
+.ads-stat-delta--bad   { color: #ef4444; }
+.ads-stat-delta--neutral { color: var(--text-secondary); }
 @media (prefers-reduced-motion: no-preference) {
     .marketing-section:not([hidden]), .finance-section:not([hidden]), .event-subsection:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
@@ -3615,12 +3619,10 @@ if (document.readyState === 'loading') {
 
     function series() { return days.map(METRICS[current].get); }
 
-    function adsCompareTotals() {
-        if (!compareData || !compareData.days || !compareData.days.length) return null;
-        var d = compareData.days;
+    function adsDayTotals(source) {
         var spend = 0, impressions = 0, clicks = 0, results = 0, pv = 0;
         var hasResults = false, hasPv = false;
-        d.forEach(function (r) {
+        source.forEach(function (r) {
             spend += r.spend || 0;
             impressions += r.impressions || 0;
             clicks += r.clicks || 0;
@@ -3640,6 +3642,15 @@ if (document.readyState === 'loading') {
         };
     }
 
+    function adsCompareTotals() {
+        if (!compareData || !compareData.days || !compareData.days.length) return null;
+        return adsDayTotals(compareData.days);
+    }
+
+    // true = higher current is better (green ▲), false = lower current is better (green ▼)
+    var ADS_HIGHER_IS_BETTER = { impressions: true, clicks: true, results: true, roas: true, ctr: true,
+                                  spend: false, cpm: false, cpc: false, cost_per_result: false };
+
     function refreshStatCards() {
         var els = document.querySelectorAll('.ads-stat-compare');
         if (!compareMode || !compareData) {
@@ -3651,6 +3662,7 @@ if (document.readyState === 'loading') {
             Array.prototype.forEach.call(els, function (el) { el.hidden = true; });
             return;
         }
+        var cur = adsDayTotals(days);
         var FMT = {
             spend:           function (v) { return money(v); },
             impressions:     function (v) { return count(v); },
@@ -3665,10 +3677,25 @@ if (document.readyState === 'loading') {
         Array.prototype.forEach.call(els, function (el) {
             var key = el.getAttribute('data-ads-stat');
             if (!key || !FMT[key]) return;
-            var val = cmp[key];
-            var formatted = FMT[key](val);
+            var cmpVal = cmp[key];
+            var formatted = FMT[key](cmpVal);
             if (formatted == null) { el.hidden = true; return; }
-            el.textContent = 'vs ' + formatted;
+
+            // Build delta badge
+            var curVal = cur[key];
+            var deltaHtml = '';
+            if (curVal != null && cmpVal != null && cmpVal !== 0) {
+                var pct = (curVal - cmpVal) / Math.abs(cmpVal) * 100;
+                if (Math.abs(pct) >= 0.5) {
+                    var higherGood = ADS_HIGHER_IS_BETTER[key];
+                    var isGood = higherGood ? pct > 0 : pct < 0;
+                    var cls = isGood ? 'ads-stat-delta--good' : 'ads-stat-delta--bad';
+                    var sign = pct > 0 ? '+' : '';
+                    deltaHtml = '<span class="ads-stat-delta ' + cls + '">' + sign + pct.toFixed(0) + '%</span>';
+                }
+            }
+
+            el.innerHTML = 'vs ' + formatted + deltaHtml;
             el.hidden = false;
         });
     }
