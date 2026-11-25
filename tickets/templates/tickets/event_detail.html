@@ -67,7 +67,14 @@
 .ads-metric-btn:hover { color: var(--text-primary); }
 .ads-metric-btn.active { background: var(--accent); color: var(--text-inverse); }
 .ads-compare-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
-#adsCampaignCompare.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
+#adsCampaignCompare {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--text-tertiary); display: inline-flex; align-items: center; gap: 4px;
+    transition: color 0.12s;
+}
+#adsCampaignCompare:hover { color: var(--text-secondary); }
+#adsCampaignCompare.active { color: var(--accent); }
 @media (prefers-reduced-motion: no-preference) {
     .marketing-section:not([hidden]), .finance-section:not([hidden]), .event-subsection:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
@@ -2061,8 +2068,8 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <div class="d-flex align-items-center gap-2 flex-wrap">
             <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
-            <button type="button" id="adsCampaignCompare" class="btn btn-sm btn-outline-secondary" aria-pressed="false" style="font-size: 11px; padding: 2px 10px;">
-                <i class="bi bi-layout-split" style="font-size: 11px;"></i> Compare
+            <button type="button" id="adsCampaignCompare" aria-pressed="false">
+                <i class="bi bi-layout-split"></i> Compare
             </button>
             {% if ads_compare_candidates %}
             <label class="d-flex align-items-center gap-2 mb-0" id="adsCompareComboWrap" hidden>
@@ -2071,13 +2078,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     <input type="text" class="pacing-compare-input" id="adsCompareInput"
                            role="combobox" aria-expanded="false" aria-controls="adsCompareList"
                            aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign">
+                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign"
+                           value="{% if ads_default_compare_id %}{% for c in ads_compare_candidates %}{% if c.campaign_id == ads_default_compare_id %}{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}{% endif %}{% endfor %}{% endif %}">
                     <ul class="pacing-combo-list" id="adsCompareList" role="listbox" aria-label="Comparison campaign" hidden>
                         {% for c in ads_compare_candidates %}
-                        <li class="pacing-combo-option{% if forloop.first %} is-selected{% endif %}"
+                        <li class="pacing-combo-option{% if c.campaign_id == ads_default_compare_id %} is-selected{% endif %}"
                             role="option" id="adsCompareOpt-{{ forloop.counter }}"
                             data-id="{{ c.campaign_id }}"
-                            data-label="{{ c.name }}">{{ c.name }}</li>
+                            data-label="{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}">{{ c.name }}{% if c.event_name %} <span style="color:var(--text-tertiary);">&middot; {{ c.event_name }}</span>{% endif %}{% if c.is_same_venue %} <span style="color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Same venue</span>{% endif %}</li>
                         {% endfor %}
                     </ul>
                 </div>
