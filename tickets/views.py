@@ -5651,7 +5651,7 @@ def _get_ads_comparison_candidates(org, event, limit=100):
     """
     expenses = list(
         EventExpense.objects.filter(
-            organization=org,
+            event__organization=org,
             source='meta_ads',
             deleted_at__isnull=True,
         )
