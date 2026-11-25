@@ -66,6 +66,8 @@
 }
 .ads-metric-btn:hover { color: var(--text-primary); }
 .ads-metric-btn.active { background: var(--accent); color: var(--text-inverse); }
+.ads-compare-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
+#adsCampaignCompare.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
 @media (prefers-reduced-motion: no-preference) {
     .marketing-section:not([hidden]), .finance-section:not([hidden]), .event-subsection:not([hidden]) { animation: marketingFade 0.25s ease both; }
     @keyframes marketingFade { from { opacity: 0; } to { opacity: 1; } }
@@ -2056,7 +2058,14 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
+        <div class="d-flex align-items-center gap-2">
+            <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
+            {% if ads_campaigns|length > 1 %}
+            <button type="button" id="adsCampaignCompare" class="btn btn-sm btn-outline-secondary" aria-pressed="false" style="font-size: 11px; padding: 2px 10px;">
+                <i class="bi bi-layout-split" style="font-size: 11px;"></i> Compare
+            </button>
+            {% endif %}
+        </div>
         {% comment %}Conversion-based views only appear when Meta has conversion (pixel) data.{% endcomment %}
         <div class="ads-metric-toggles" role="group" aria-label="Daily chart metric">
             <div class="ads-metric-toggle">
@@ -2099,8 +2108,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 </thead>
                 <tbody>
                     {% for c in ads_campaigns %}
-                    <tr>
-                        <td class="fw-medium">{{ c.name }}</td>
+                    <tr data-campaign-id="{{ c.campaign_id }}">
+                        <td class="fw-medium d-flex align-items-center gap-1"><span class="ads-compare-dot" style="display:none;"></span>{{ c.name }}</td>
                         <td class="text-end">{{ ads_currency_prefix }}{{ c.spend|currency }}</td>
                         <td class="text-end">{{ c.impressions|intcomma }}</td>
                         <td class="text-end">{{ c.link_clicks|intcomma }}</td>
@@ -2126,6 +2135,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 </div><!-- /Ads view -->
 <script type="application/json" id="ads-daily-data" data-currency-prefix="{{ ads_currency_prefix }}">{{ ads_daily_json|safe }}</script>
+<script type="application/json" id="ads-campaigns-daily-data">{{ ads_campaigns_daily_json|safe }}</script>
 {% endif %}
 
 <div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %} hidden{% endif %}>
@@ -3536,6 +3546,21 @@ if (document.readyState === 'loading') {
     if (!days.length) return;
     var prefix = dataEl.getAttribute('data-currency-prefix') || '$';
 
+    var campaignsDataEl = document.getElementById('ads-campaigns-daily-data');
+    var campaignsData = campaignsDataEl ? JSON.parse(campaignsDataEl.textContent) : [];
+
+    // Colors for multi-series compare mode (up to 8 campaigns)
+    var COMPARE_COLORS = [
+        { line: '#6366f1', bg: 'rgba(99,102,241,0.07)' },
+        { line: '#10b981', bg: 'rgba(16,185,129,0.07)' },
+        { line: '#f59e0b', bg: 'rgba(245,158,11,0.07)' },
+        { line: '#ef4444', bg: 'rgba(239,68,68,0.07)' },
+        { line: '#06b6d4', bg: 'rgba(6,182,212,0.07)' },
+        { line: '#8b5cf6', bg: 'rgba(139,92,246,0.07)' },
+        { line: '#f97316', bg: 'rgba(249,115,22,0.07)' },
+        { line: '#ec4899', bg: 'rgba(236,72,153,0.07)' },
+    ];
+
     function money(v) { return prefix + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function count(v) { return Math.round(v).toLocaleString(); }
     function ratio(num, den) { return (num == null || !den) ? null : num / den; }
@@ -3553,61 +3578,152 @@ if (document.readyState === 'loading') {
         roas:              { label: 'ROAS',              fmt: function (v) { return v.toFixed(2) + 'x'; }, get: function (d) { return ratio(d.purchase_value, d.spend); } }
     };
     var current = 'spend';
+    var compareMode = false;
     var chart = null;
     var title = document.getElementById('adsChartTitle');
     var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-ads-metric]'));
+    var compareBtn = document.getElementById('adsCampaignCompare');
 
     function series() { return days.map(METRICS[current].get); }
 
+    // Build a unified date axis from all campaigns' days, then map each campaign's
+    // values onto those dates (null for missing dates = gap in chart).
+    function compareDatasets() {
+        var dateSet = {};
+        campaignsData.forEach(function (c) { c.days.forEach(function (d) { dateSet[d.date] = true; }); });
+        var sortedDates = Object.keys(dateSet).sort();
+        return {
+            labels: sortedDates,
+            datasets: campaignsData.map(function (c, i) {
+                var dayMap = {};
+                c.days.forEach(function (d) { dayMap[d.date] = d; });
+                var clr = COMPARE_COLORS[i % COMPARE_COLORS.length];
+                return {
+                    label: c.name,
+                    data: sortedDates.map(function (dt) { return dayMap[dt] ? METRICS[current].get(dayMap[dt]) : null; }),
+                    borderColor: clr.line,
+                    backgroundColor: clr.bg,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: false,
+                    tension: 0.35,
+                };
+            }),
+        };
+    }
+
+    function getChartTheme() {
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        return {
+            labelColor: isDark ? '#94a3b8' : '#64748b',
+            gridColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)',
+        };
+    }
+
     function buildChart() {
         var canvas = document.getElementById('adsDailyChart');
-        if (!canvas || canvas.offsetParent === null || typeof Chart === 'undefined') return;  // still hidden
+        if (!canvas || canvas.offsetParent === null || typeof Chart === 'undefined') return;
         if (chart) { chart.resize(); return; }
-        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        var labelColor = isDark ? '#94a3b8' : '#64748b';
-        var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+        var theme = getChartTheme();
+        var initialData = compareMode ? compareDatasets() : {
+            labels: days.map(function (d) { return d.date; }),
+            datasets: [{
+                data: series(),
+                borderColor: '#6366f1',
+                backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                borderWidth: 2,
+                pointRadius: function (ctx) {
+                    var v = ctx.dataset.data, i = ctx.dataIndex;
+                    if (v[i] == null) return 0;
+                    var prevGap = i === 0 || v[i - 1] == null;
+                    var nextGap = i === v.length - 1 || v[i + 1] == null;
+                    return prevGap && nextGap ? 4 : 0;
+                },
+                pointHoverRadius: 4,
+                fill: true,
+                tension: 0.35,
+            }]
+        };
         chart = new Chart(canvas, {
             type: 'line',
-            data: {
-                labels: days.map(function (d) { return d.date; }),
-                datasets: [{
-                    data: series(),
-                    borderColor: '#6366f1',
-                    backgroundColor: 'rgba(99, 102, 241, 0.08)',
-                    borderWidth: 2,
-                    // A day with no neighbours (a lone day, or one boxed in by gaps)
-                    // has no line segment, so draw it as a dot.
-                    pointRadius: function (ctx) {
-                        var v = ctx.dataset.data, i = ctx.dataIndex;
-                        if (v[i] == null) return 0;
-                        var prevGap = i === 0 || v[i - 1] == null;
-                        var nextGap = i === v.length - 1 || v[i + 1] == null;
-                        return prevGap && nextGap ? 4 : 0;
-                    },
-                    pointHoverRadius: 4,
-                    fill: true,
-                    tension: 0.35,
-                }]
-            },
+            data: initialData,
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { display: false },
+                    legend: { display: compareMode, position: 'bottom', labels: { color: theme.labelColor, boxWidth: 12, padding: 12 } },
                     tooltip: {
-                        mode: 'index', intersect: false, displayColors: false,
-                        callbacks: { label: function (ctx) { return ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y); } }
+                        mode: 'index', intersect: false, displayColors: compareMode,
+                        callbacks: { label: function (ctx) { return (compareMode ? ctx.dataset.label + ': ' : '') + (ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y)); } }
                     }
                 },
                 interaction: { mode: 'index', intersect: false },
                 scales: {
-                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    x: { grid: { display: false }, ticks: { color: theme.labelColor, maxTicksLimit: 8 } },
                     y: {
                         beginAtZero: true,
-                        grid: { color: gridColor, drawBorder: false },
-                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return METRICS[current].fmt(v); } }
+                        grid: { color: theme.gridColor, drawBorder: false },
+                        ticks: { color: theme.labelColor, maxTicksLimit: 5, callback: function (v) { return METRICS[current].fmt(v); } }
                     }
                 }
+            }
+        });
+        applyCompareDots();
+    }
+
+    function refreshChart() {
+        if (!chart) return;
+        var theme = getChartTheme();
+        if (compareMode) {
+            var cd = compareDatasets();
+            chart.data.labels = cd.labels;
+            chart.data.datasets = cd.datasets;
+            chart.options.plugins.legend.display = true;
+            chart.options.plugins.tooltip.displayColors = true;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.dataset.label + ': ' + (ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y));
+            };
+        } else {
+            chart.data.labels = days.map(function (d) { return d.date; });
+            chart.data.datasets = [{
+                data: series(),
+                borderColor: '#6366f1',
+                backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                borderWidth: 2,
+                pointRadius: function (ctx) {
+                    var v = ctx.dataset.data, i = ctx.dataIndex;
+                    if (v[i] == null) return 0;
+                    var prevGap = i === 0 || v[i - 1] == null;
+                    var nextGap = i === v.length - 1 || v[i + 1] == null;
+                    return prevGap && nextGap ? 4 : 0;
+                },
+                pointHoverRadius: 4,
+                fill: true,
+                tension: 0.35,
+            }];
+            chart.options.plugins.legend.display = false;
+            chart.options.plugins.tooltip.displayColors = false;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.parsed.y == null ? 'No data' : METRICS[current].fmt(ctx.parsed.y);
+            };
+        }
+        chart.update();
+        applyCompareDots();
+    }
+
+    // Color the campaign table row indicators to match chart series.
+    function applyCompareDots() {
+        var rows = document.querySelectorAll('[data-campaign-id]');
+        rows.forEach(function (row, i) {
+            var dot = row.querySelector('.ads-compare-dot');
+            if (!dot) return;
+            if (compareMode) {
+                var clr = COMPARE_COLORS[i % COMPARE_COLORS.length];
+                dot.style.background = clr.line;
+                dot.style.display = 'inline-block';
+            } else {
+                dot.style.display = 'none';
             }
         });
     }
@@ -3622,13 +3738,31 @@ if (document.readyState === 'loading') {
         });
         if (title) title.textContent = 'Daily ' + METRICS[metric].label;
         if (chart) {
-            chart.data.datasets[0].data = series();
+            if (compareMode) {
+                var cd = compareDatasets();
+                chart.data.datasets.forEach(function (ds, i) { ds.data = cd.datasets[i] ? cd.datasets[i].data : []; });
+            } else {
+                chart.data.datasets[0].data = series();
+            }
             chart.update();
         }
     }
     buttons.forEach(function (b) {
         b.addEventListener('click', function () { select(b.getAttribute('data-ads-metric')); });
     });
+
+    if (compareBtn) {
+        compareBtn.addEventListener('click', function () {
+            compareMode = !compareMode;
+            compareBtn.classList.toggle('active', compareMode);
+            compareBtn.setAttribute('aria-pressed', compareMode ? 'true' : 'false');
+            if (chart) {
+                refreshChart();
+            } else {
+                buildChart();
+            }
+        });
+    }
 
     document.addEventListener('marketing:view', function (e) {
         if (e.detail && e.detail.view === 'ads') buildChart();
