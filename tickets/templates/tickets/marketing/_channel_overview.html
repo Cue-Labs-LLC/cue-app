@@ -17,34 +17,36 @@ value, and the compare slot under it is filled with the comparison event's value
      data-compare-url="{% url 'tickets:event_marketing_compare_api' event.id %}">
     <div class="mkt-overview-head">
         <h5 class="mb-0">Overview</h5>
-        {% if candidates %}
-        <button type="button" class="mkt-compare-btn" data-compare-toggle aria-pressed="false">
-            <i class="bi bi-layout-split"></i> Compare
-        </button>
-        <label class="d-flex align-items-center gap-2 mb-0" data-compare-wrap hidden>
-            <span class="pacing-compare-label">vs</span>
-            <div class="pacing-combo" data-compare-combo>
-                <input type="text" class="pacing-compare-input"
-                       role="combobox" aria-expanded="false" aria-controls="{{ channel }}CompareList"
-                       aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                       placeholder="Search events&hellip;" aria-label="Comparison event"
-                       value="{% with c=candidates.0 %}{{ c.name }} · {{ c.start_date|date:'M j, Y' }}{% endwith %}">
-                <ul class="pacing-combo-list" id="{{ channel }}CompareList" role="listbox" aria-label="Comparison event" hidden>
-                    {% for c in candidates %}
-                    <li class="pacing-combo-option{% if forloop.first %} is-selected{% endif %}"
-                        role="option" id="{{ channel }}CompareOpt-{{ forloop.counter }}"
-                        data-id="{{ c.id }}"
-                        data-label="{{ c.name }} · {{ c.start_date|date:'M j, Y' }}">{{ c.name }} <span style="color:var(--text-tertiary);">&middot; {{ c.start_date|date:"M j, Y" }}</span>{% if c.is_same_venue %} <span class="mkt-same-venue">Same venue</span>{% endif %}</li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </label>
-        {% else %}
-        <button type="button" class="mkt-compare-btn" disabled
-                title="No earlier events with {{ channel_label }} data to compare against yet">
-            <i class="bi bi-layout-split"></i> Compare
-        </button>
-        {% endif %}
+        <div class="mkt-compare-controls">
+            {% if candidates %}
+            <button type="button" class="mkt-compare-btn" data-compare-toggle role="switch" aria-checked="false">
+                <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
+            </button>
+            <label class="mkt-compare-wrap" data-compare-wrap hidden>
+                <span class="pacing-compare-label">vs</span>
+                <div class="pacing-combo" data-compare-combo>
+                    <input type="text" class="pacing-compare-input"
+                           role="combobox" aria-expanded="false" aria-controls="{{ channel }}CompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search events&hellip;" aria-label="Comparison event"
+                           value="{% with c=candidates.0 %}{{ c.name }} · {{ c.start_date|date:'M j, Y' }}{% endwith %}">
+                    <ul class="pacing-combo-list" id="{{ channel }}CompareList" role="listbox" aria-label="Comparison event" hidden>
+                        {% for c in candidates %}
+                        <li class="pacing-combo-option{% if forloop.first %} is-selected{% endif %}"
+                            role="option" id="{{ channel }}CompareOpt-{{ forloop.counter }}"
+                            data-id="{{ c.id }}"
+                            data-label="{{ c.name }} · {{ c.start_date|date:'M j, Y' }}">{{ c.name }} <span style="color:var(--text-tertiary);">&middot; {{ c.start_date|date:"M j, Y" }}</span>{% if c.is_same_venue %} <span class="mkt-same-venue">Same venue</span>{% endif %}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </label>
+            {% else %}
+            <button type="button" class="mkt-compare-btn" role="switch" aria-checked="false" disabled
+                    title="No earlier events with {{ channel_label }} data to compare against yet">
+                <span class="mkt-switch" aria-hidden="true"><span class="mkt-switch-thumb"></span></span> Compare
+            </button>
+            {% endif %}
+        </div>
     </div>
     <div class="stats-grid mb-4">
         {% for s in overview.stats %}
