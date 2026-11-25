@@ -416,7 +416,7 @@ def event_meta_ads_apply(request, event_id):
         })
 
     messages.success(request, success_msg)
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='ads')
 
 
 @login_required
@@ -453,7 +453,7 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg})
         messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='ads')
 
     api_changed = _update_meta_ads_expense_from_insights(expense, insights, request.user)
     django_cache.delete(_event_stats_cache_key(event.pk))
@@ -465,7 +465,7 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         expense.refresh_from_db()
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
     messages.success(request, f'Meta Ads campaign spend refreshed to ${insights.spend:,.2f}.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='ads')
 
 
 @login_required
@@ -487,7 +487,7 @@ def event_meta_ads_remove(request, event_id, expense_id):
     if _wants_marketing_json(request):
         return JsonResponse({'ok': True, 'removed_id': str(expense.id)})
     messages.success(request, 'Meta Ads campaign removed from this event.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='ads')
 
 
 @login_required
@@ -512,11 +512,11 @@ def event_meta_ads_metrics_edit(request, event_id, expense_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg}, status=400)
         messages.error(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='ads')
     if not update_fields:
         if ajax:
             return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='ads')
     expense.updated_by = request.user
     update_fields += ['updated_by', 'updated_at']
     expense.save(update_fields=update_fields)
@@ -524,7 +524,7 @@ def event_meta_ads_metrics_edit(request, event_id, expense_id):
     if ajax:
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
     messages.success(request, 'Updated ad attribution.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='ads')
 
 
 def _resolve_ads_date_range(request):

@@ -1,0 +1,37 @@
+{% comment %}
+Marketing tab -> Integrations view. Lists only the marketing integrations this org
+hasn't connected yet; connected ones are served by their channel view (SMS / Email /
+Instagram / Ads). Inherits event_detail context (unconnected_marketing_providers).
+{% endcomment %}
+<div class="card mb-3">
+    <div class="card-header">
+        <h5 class="mb-0">Available integrations</h5>
+        <div class="text-body-secondary small mt-1">Connect a channel to track its results for this event.</div>
+    </div>
+    {% if unconnected_marketing_providers %}
+    <ul class="list-group list-group-flush">
+        {% for provider in unconnected_marketing_providers %}
+        <li class="list-group-item d-flex align-items-center gap-3 py-3">
+            <i class="bi {{ provider.icon }}" style="font-size: 1.1rem; color: var(--text-secondary);" aria-hidden="true"></i>
+            <div class="flex-grow-1">
+                <div class="fw-medium">{{ provider.label }} <span class="marketing-category-title d-inline mb-0 ms-1">{{ provider.category }}</span></div>
+                <div class="text-body-secondary small">{{ provider.description }}</div>
+            </div>
+            <a href="{% url provider.settings_url %}" class="btn btn-sm btn-outline-secondary flex-shrink-0">
+                <i class="bi bi-plug"></i> Connect
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <div class="card-body">
+        <div class="empty-state" style="padding: 28px 24px;">
+            <i class="bi bi-plug" style="font-size: 16px;"></i>
+            <p class="mb-0">No marketing integrations available to connect.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+<p class="text-body-secondary small mt-2 mb-0">
+    <a href="{% url 'tickets:integrations_overview' %}">Manage integrations</a>
+</p>

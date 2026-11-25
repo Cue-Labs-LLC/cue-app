@@ -1,0 +1,161 @@
+<script>
+// Marketing channel Overview compare (SMS / Email / Instagram; see
+// _channel_overview.html). The Compare toggle reveals a searchable event combobox
+// (same keyboard/mouse behaviour as the pacing combos); the chosen earlier event's
+// stats are fetched from event_marketing_compare_api and shown under each stat card
+// as "vs <value>" with a colour-coded change (green = better, red = worse).
+// Instagram's Overview arrives in a lazily fetched fragment, so the loader calls
+// window.initChannelCompare(root) after inserting it.
+(function () {
+    var cache = {};
+
+    function fmt(v, f) {
+        if (v == null) return null;
+        if (f === 'money') return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (f === 'pct') return v.toFixed(1) + '%';
+        if (f === 'x') return v < 0.1 ? '<0.1x' : v.toFixed(1) + 'x';
+        return Math.round(v).toLocaleString();
+    }
+
+    function render(root, data) {
+        Array.prototype.forEach.call(root.querySelectorAll('[data-stat-key]'), function (card) {
+            var slot = card.querySelector('.mkt-stat-compare');
+            if (!slot) return;
+            slot.textContent = '';
+            var cmp = data && data.stats ? data.stats[card.getAttribute('data-stat-key')] : null;
+            var text = fmt(cmp, card.getAttribute('data-fmt'));
+            if (text == null) { slot.hidden = true; return; }
+            slot.appendChild(document.createTextNode('vs ' + text));
+            var raw = card.getAttribute('data-stat-value');
+            var cur = raw === '' ? null : parseFloat(raw);
+            if (cur != null && cmp) {
+                var pct = (cur - cmp) / Math.abs(cmp) * 100;
+                if (Math.abs(pct) >= 0.5) {
+                    var higherGood = card.getAttribute('data-higher-better') === '1';
+                    var good = higherGood ? pct > 0 : pct < 0;
+                    var delta = document.createElement('span');
+                    delta.className = 'ads-stat-delta ' + (good ? 'ads-stat-delta--good' : 'ads-stat-delta--bad');
+                    delta.textContent = (pct > 0 ? '+' : '') + pct.toFixed(0) + '%';
+                    slot.appendChild(delta);
+                }
+            }
+            slot.title = data.event_name || '';
+            slot.hidden = false;
+        });
+    }
+
+    function init(root) {
+        if (!root || root.getAttribute('data-compare-ready')) return;
+        root.setAttribute('data-compare-ready', '1');
+        var toggle = root.querySelector('[data-compare-toggle]');
+        var wrap = root.querySelector('[data-compare-wrap]');
+        var combo = root.querySelector('[data-compare-combo]');
+        if (!toggle || !wrap || !combo) return;
+        var channel = root.getAttribute('data-channel-overview');
+        var url = root.getAttribute('data-compare-url');
+        var input = combo.querySelector('input');
+        var list = combo.querySelector('ul');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var on = false, selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label; }
+
+        function load() {
+            var id = selectedId;
+            if (!on || !id) return;
+            var key = channel + ':' + id;
+            if (cache[key]) { render(root, cache[key]); return; }
+            input.disabled = true;
+            fetch(url + '?channel=' + encodeURIComponent(channel) + '&compare_event=' + encodeURIComponent(id), {
+                credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function (json) {
+                cache[key] = json;
+                // Ignore a late response for an event that's no longer selected.
+                if (on && selectedId === id) render(root, json);
+            })
+            .catch(function (err) { console.error(err); })
+            .finally(function () { input.disabled = false; });
+        }
+
+        toggle.addEventListener('click', function () {
+            on = !on;
+            toggle.classList.toggle('active', on);
+            toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+            wrap.hidden = !on;
+            if (on) load(); else render(root, null);
+        });
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) {
+                emptyEl = document.createElement('li');
+                emptyEl.className = 'pacing-combo-empty';
+                emptyEl.textContent = 'No matching events';
+                list.appendChild(emptyEl);
+            }
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label;
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            load();
+        }
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
+        });
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    }
+
+    window.initChannelCompare = init;
+    function initAll() {
+        Array.prototype.forEach.call(document.querySelectorAll('[data-channel-overview]'), init);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+    else initAll();
+})();
+</script>

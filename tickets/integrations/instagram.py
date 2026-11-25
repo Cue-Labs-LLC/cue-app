@@ -726,6 +726,12 @@ def event_instagram_card(request, event_id):
     else:
         try:
             context['data'] = EventInstagramContentCalculator(org, event).calculate()
+            from ..services.marketing.channel_overview import ChannelOverviewCalculator
+            channel_calc = ChannelOverviewCalculator(org)
+            context['ig_overview'] = channel_calc.calculate(
+                event, 'instagram', instagram_totals=context['data']['totals'],
+            )
+            context['ig_compare_candidates'] = channel_calc.compare_candidates(event, 'instagram')
         except InstagramGraphAPIError as exc:
             context['error'] = 'expired' if exc.is_token_error else (
                 'rate_limited' if exc.is_rate_limited else str(exc)

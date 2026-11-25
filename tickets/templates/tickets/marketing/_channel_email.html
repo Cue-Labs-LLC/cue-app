@@ -1,0 +1,6 @@
+{% comment %}
+Marketing tab -> Email channel view: Overview of linked Mailchimp campaigns (with
+compare to an earlier event), then the Mailchimp linking card. Inherits event_detail context.
+{% endcomment %}
+{% include 'tickets/marketing/_channel_overview.html' with channel='email' channel_label='email' overview=email_overview candidates=email_compare_candidates %}
+{% include 'tickets/marketing/_provider_mailchimp.html' %}

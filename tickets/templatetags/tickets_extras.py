@@ -157,3 +157,19 @@ def survey_value(value):
     if isinstance(value, (list, tuple)):
         return ', '.join(str(v) for v in value if v not in (None, ''))
     return str(value)
+
+
+@register.filter
+def overview_stat(stat):
+    """Display string for a Marketing channel Overview stat (see channel_overview._stat)."""
+    value = stat.get('value')
+    if value is None:
+        return '\u2014'
+    fmt = stat.get('fmt')
+    if fmt == 'money':
+        return '$' + currency(value)
+    if fmt == 'pct':
+        return f'{value}%'
+    if fmt == 'x':
+        return '<0.1x' if Decimal(str(value)) < Decimal('0.1') else f'{value}x'
+    return intcomma(value)

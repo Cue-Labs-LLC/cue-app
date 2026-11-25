@@ -105,6 +105,15 @@ class EventInstagramContentCalculator:
             'browse': self._browse(pull, linked_ids, tz),
         }
 
+    def totals(self):
+        """Linked-post totals only (no suggestions/browse), for the Overview compare."""
+        links = list(
+            InstagramPostEvent.objects.filter(organization=self.organization, event=self.event)
+            .values_list('ig_media_id', flat=True)
+        )
+        rows, _missing = self.content.rows_for_media_ids(links)
+        return self._totals(rows)
+
     def _totals(self, rows):
         measured = [r for r in rows if r['has_insights'] and r['reach'] is not None]
         feed = [r for r in measured if r['format'] != FORMAT_REEL]

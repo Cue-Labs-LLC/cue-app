@@ -5641,61 +5641,14 @@ def _get_page_view_comparison_candidates(org, event, limit=100):
 
 
 def _get_ads_comparison_candidates(org, event, limit=100):
-    """Past Meta Ads campaigns available to compare against, for the ads compare combobox.
+    """Earlier events to compare this event's Meta Ads results against.
 
-    Mirrors the pacing candidates pattern: most recent first, same-venue event
-    campaigns floated to the top. Deduplicates by campaign_id so a campaign
-    linked to multiple events only appears once (the most recent event wins).
-    Falls back to all org MetaAdDailyInsight campaigns when no event-linked
-    campaigns exist.
+    Event vs event (like the other Marketing channels): earlier org events whose
+    linked Meta Ads campaigns have synced daily insights, most recent first with
+    same-venue events floated to the top. The first item is the default.
     """
-    expenses = list(
-        EventExpense.objects.filter(
-            event__organization=org,
-            source='meta_ads',
-            deleted_at__isnull=True,
-        )
-        .exclude(external_id='')
-        .exclude(event=event)
-        .select_related('event')
-        .order_by('-event__start_date', '-amount')
-        [: limit * 3]
-    )
-    seen = set()
-    candidates = []
-    for expense in expenses:
-        if expense.external_id in seen:
-            continue
-        seen.add(expense.external_id)
-        meta = expense.external_metadata or {}
-        candidates.append({
-            'campaign_id': expense.external_id,
-            'name': meta.get('campaign_name') or expense.external_id,
-            'event_name': expense.event.name,
-            'event_start_date': expense.event.start_date,
-            'is_same_venue': bool(event.venue_id and expense.event.venue_id == event.venue_id),
-        })
-
-    same_venue = [c for c in candidates if c['is_same_venue']]
-    other = [c for c in candidates if not c['is_same_venue']]
-    result = (same_venue + other)[:limit]
-
-    # Fall back to all org campaigns when nothing is event-linked.
-    if not result:
-        for row in (
-            MetaAdDailyInsight.objects.filter(organization=org)
-            .values('campaign_id')
-            .annotate(name=Max('campaign_name'))
-            .order_by('name')[:limit]
-        ):
-            result.append({
-                'campaign_id': row['campaign_id'],
-                'name': row['name'] or row['campaign_id'],
-                'event_name': '',
-                'event_start_date': None,
-                'is_same_venue': False,
-            })
-    return result
+    from .services.marketing.channel_overview import ChannelOverviewCalculator
+    return ChannelOverviewCalculator(org).compare_candidates(event, 'ads', limit=limit)
 
 
 def _recompute_utm_attribution_for_event(org, event):
@@ -5788,6 +5741,39 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     return had_error
 
 
+def _ads_daily_rows(rows, event):
+    """Serialise per-day MetaAdDailyInsight sums for the ads chart.
+
+    ``days_before`` (event start minus the day) lets the compare overlay align two
+    events on a shared days-before-event axis, since their calendar dates differ.
+    purchases/purchase_value stay None on days with no conversion data (no pixel),
+    so the chart leaves a gap instead of plotting a false zero.
+    """
+    return [
+        {
+            'date': r['date'].isoformat(),
+            'days_before': (event.start_date - r['date']).days,
+            'spend': float(r['spend'] or 0),
+            'impressions': r['impressions'] or 0,
+            'clicks': r['link_clicks'] or 0,
+            'purchases': r['purchases'],
+            'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
+            'results': r['results'],
+        }
+        for r in rows
+    ]
+
+
+_ADS_DAILY_SUMS = dict(
+    spend=Sum('spend'),
+    impressions=Sum('impressions'),
+    link_clicks=Sum('link_clicks'),
+    purchases=Sum('purchases'),
+    purchase_value=Sum('purchase_value'),
+    results=Sum('results'),
+)
+
+
 def _get_event_ads_insights(event, meta_ads_expenses):
     """Daily-insight metrics for an event's linked Meta Ads campaigns.
 
@@ -5818,32 +5804,12 @@ def _get_event_ads_insights(event, meta_ads_expenses):
     if not rows.exists():
         return empty
 
-    sums = dict(
-        spend=Sum('spend'),
-        impressions=Sum('impressions'),
-        link_clicks=Sum('link_clicks'),
-        purchases=Sum('purchases'),
-        purchase_value=Sum('purchase_value'),
-        results=Sum('results'),
-    )
+    sums = _ADS_DAILY_SUMS
     currency = rows.exclude(currency='').values_list('currency', flat=True).first() or ''
     currency_prefix = '$' if currency in ('', 'USD', 'CAD', 'AUD') else f'{currency} '
 
-    # purchases/purchase_value stay None on days with no conversion data (no
-    # pixel), so the chart leaves a gap instead of plotting a false zero.
     daily_rows = rows.values('date').annotate(**sums).order_by('date')
-    daily_json = json.dumps([
-        {
-            'date': r['date'].isoformat(),
-            'spend': float(r['spend'] or 0),
-            'impressions': r['impressions'] or 0,
-            'clicks': r['link_clicks'] or 0,
-            'purchases': r['purchases'],
-            'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
-            'results': r['results'],
-        }
-        for r in daily_rows
-    ])
+    daily_json = json.dumps(_ads_daily_rows(daily_rows, event))
 
     campaign_rows = list(
         rows.values('campaign_id')
@@ -5855,26 +5821,6 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         for row in campaign_rows
     ]
 
-    def _daily_for_campaign(cid):
-        cdays = rows.filter(campaign_id=cid).values('date').annotate(**sums).order_by('date')
-        return [
-            {
-                'date': r['date'].isoformat(),
-                'spend': float(r['spend'] or 0),
-                'impressions': r['impressions'] or 0,
-                'clicks': r['link_clicks'] or 0,
-                'purchases': r['purchases'],
-                'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
-                'results': r['results'],
-            }
-            for r in cdays
-        ]
-
-    campaigns_daily_json = json.dumps([
-        {'id': row['campaign_id'], 'name': row['name'] or 'Untitled campaign', 'days': _daily_for_campaign(row['campaign_id'])}
-        for row in campaign_rows
-    ])
-
     totals = _synced_metrics(rows.aggregate(**sums))
 
     return {
@@ -5883,7 +5829,6 @@ def _get_event_ads_insights(event, meta_ads_expenses):
         'totals': totals,
         'campaigns': campaigns,
         'daily_json': daily_json,
-        'campaigns_daily_json': campaigns_daily_json,
         'currency_prefix': currency_prefix,
     }
 
@@ -5891,47 +5836,113 @@ def _get_event_ads_insights(event, meta_ads_expenses):
 @login_required
 @require_org
 def event_ads_compare_api(request, event_id):
-    """Return daily MetaAdDailyInsight data for any org campaign, for the compare chart."""
+    """Daily Meta Ads data for an earlier event's linked campaigns, for the compare overlay.
+
+    ``?compare_event=<uuid>``: sums MetaAdDailyInsight across every campaign linked
+    to that event (event vs event), with ``days_before`` for axis alignment.
+    """
     org = get_organization(request)
-    campaign_id = request.GET.get('campaign_id', '').strip()
-    if not campaign_id:
+    get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    compare_id = request.GET.get('compare_event', '').strip()
+    if not compare_id:
         return JsonResponse({'days': [], 'name': ''})
+    try:
+        _uuid.UUID(compare_id)
+    except ValueError:
+        return JsonResponse({'error': 'Invalid compare_event'}, status=400)
+    compare_event = get_object_or_404(Event.objects.filter(organization=org), id=compare_id)
+    campaign_ids = list(
+        compare_event.expenses.filter(deleted_at__isnull=True, source='meta_ads')
+        .exclude(external_id='')
+        .values_list('external_id', flat=True)
+    )
     rows = (
-        MetaAdDailyInsight.objects.filter(organization=org, campaign_id=campaign_id)
+        MetaAdDailyInsight.objects.filter(organization=org, campaign_id__in=campaign_ids)
         .values('date')
-        .annotate(
-            spend=Sum('spend'),
-            impressions=Sum('impressions'),
-            link_clicks=Sum('link_clicks'),
-            purchases=Sum('purchases'),
-            purchase_value=Sum('purchase_value'),
-            results=Sum('results'),
-        )
+        .annotate(**_ADS_DAILY_SUMS)
         .order_by('date')
     )
-    name = (
-        MetaAdDailyInsight.objects.filter(organization=org, campaign_id=campaign_id)
-        .values_list('campaign_name', flat=True)
-        .first() or 'Campaign'
+    return JsonResponse({
+        'days': _ads_daily_rows(rows, compare_event),
+        'name': compare_event.name,
+        'event_date': compare_event.start_date.isoformat(),
+    })
+
+
+def _user_org_role(request, org):
+    membership = OrganizationMembership.objects.filter(user=request.user, organization=org).first()
+    if membership is not None:
+        return membership.org_role
+    profile = getattr(request.user, 'profile', None)
+    return getattr(profile, 'org_role', None)
+
+
+def _user_is_org_admin(request, org):
+    """Owner/Admin in ``org`` (or superuser) — the same rule as ``require_admin``."""
+    if request.user.is_superuser:
+        return True
+    return _user_org_role(request, org) in (UserProfile.OrgRole.OWNER, UserProfile.OrgRole.ADMIN)
+
+
+@login_required
+@require_org
+def event_marketing_compare_api(request, event_id):
+    """Overview stats for an earlier event on one Marketing channel (compare toggle).
+
+    ``?channel=sms|email|instagram&compare_event=<uuid>``. Both events are scoped to
+    the org. Instagram is admin-only behind the feature flag and a live connection,
+    matching the Instagram card itself.
+    """
+    from .services.marketing.channel_overview import ChannelOverviewCalculator, stats_as_json
+
+    org = get_organization(request)
+    get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    channel = request.GET.get('channel', '').strip()
+    if channel not in ('sms', 'email', 'instagram'):
+        return JsonResponse({'error': 'Unknown channel'}, status=400)
+    compare_id = request.GET.get('compare_event', '').strip()
+    try:
+        _uuid.UUID(compare_id)
+    except ValueError:
+        return JsonResponse({'error': 'Invalid compare_event'}, status=400)
+    compare_event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue', 'market'), id=compare_id,
     )
-    days = [
-        {
-            'date': r['date'].isoformat(),
-            'spend': float(r['spend'] or 0),
-            'impressions': r['impressions'] or 0,
-            'clicks': r['link_clicks'] or 0,
-            'purchases': r['purchases'],
-            'purchase_value': float(r['purchase_value']) if r['purchase_value'] is not None else None,
-            'results': r['results'],
-        }
-        for r in rows
-    ]
-    return JsonResponse({'days': days, 'name': name})
+
+    calc = ChannelOverviewCalculator(org)
+    if channel == 'instagram':
+        if not (
+            _user_is_org_admin(request, org)
+            and org.instagram_feature_enabled
+            and org.instagram_page_access_token
+            and org.instagram_business_account_id
+        ):
+            raise Http404
+        from .services.instagram import InstagramGraphAPIError
+        from .services.instagram.event_content import EventInstagramContentCalculator
+        try:
+            totals = EventInstagramContentCalculator(org, compare_event).totals()
+        except InstagramGraphAPIError:
+            return JsonResponse({'error': 'Instagram is unavailable right now'}, status=502)
+        overview = calc.calculate(compare_event, 'instagram', instagram_totals=totals)
+    else:
+        overview = calc.calculate(compare_event, channel)
+
+    return JsonResponse({
+        'event_name': compare_event.name,
+        'event_date': compare_event.start_date.isoformat(),
+        'stats': stats_as_json(overview),
+    })
 
 
-def _marketing_tab_redirect(event):
+def _marketing_tab_redirect(event, view=None):
+    """Redirect back to the event's Marketing tab, opening the ``view`` channel
+    (sms / email / instagram / ads) the action came from when given."""
     _invalidate_marketing_cache(getattr(event, 'organization', None))
-    return redirect(f"{reverse('tickets:event_detail', kwargs={'event_id': event.id})}?tab=marketing")
+    url = f"{reverse('tickets:event_detail', kwargs={'event_id': event.id})}?tab=marketing"
+    if view:
+        url += f"&mview={view}"
+    return redirect(url)
 
 
 def _get_active_meta_ads_expense_or_404(org, event_id, expense_id):
@@ -6437,8 +6448,11 @@ def event_detail(request, event_id):
         metadata = expense.external_metadata or {}
         expense.meta_ads_last_synced_display = _format_meta_ads_datetime(metadata.get('last_synced_at'))
     ads_insights = _get_event_ads_insights(event, meta_ads_expenses)
-    ads_compare_candidates = _get_ads_comparison_candidates(org, event) if ads_insights['show'] else []
-    ads_default_compare_id = ads_compare_candidates[0]['campaign_id'] if ads_compare_candidates else None
+    meta_ads_connected = bool(org.meta_ads_access_token and org.meta_ads_account_id)
+    ads_compare_candidates = (
+        _get_ads_comparison_candidates(org, event) if ads_insights['has_data'] else []
+    )
+    ads_default_compare_id = ads_compare_candidates[0]['id'] if ads_compare_candidates else None
     mailchimp_campaigns = list(
         EventEmailCampaign.objects.filter(
             event=event,
@@ -6627,9 +6641,32 @@ def event_detail(request, event_id):
         event_customers_page = cust_paginator.get_page(request.GET.get('cust_page'))
         event_org_tags = CustomerTag.objects.filter(organization=org)
 
+    # Per-channel Overview (stat cards + compare-to-earlier-event) for the Marketing
+    # tab's SMS and Email views. Instagram's is built in its lazy-loaded card.
+    from tickets.integrations.registry import unconnected_marketing_providers
+    from tickets.services.marketing.channel_overview import ChannelOverviewCalculator
+    channel_calc = ChannelOverviewCalculator(org)
+    # The template additionally gates native SMS on the viewer's host role.
+    sms_overview = sms_compare_candidates = None
+    if org.sms_marketing_enabled or slicktext_connection:
+        sms_overview = channel_calc.calculate(event, 'sms')
+        sms_compare_candidates = channel_calc.compare_candidates(event, 'sms')
+    show_email_view = bool(mailchimp_connection)
+    email_overview = email_compare_candidates = None
+    if show_email_view:
+        email_overview = channel_calc.calculate(event, 'email')
+        email_compare_candidates = channel_calc.compare_candidates(event, 'email')
+
     context = {
         'event': event,
         'native_sms_campaigns': native_sms_campaigns,
+        'sms_overview': sms_overview,
+        'sms_compare_candidates': sms_compare_candidates or [],
+        'show_email_view': show_email_view,
+        'email_overview': email_overview,
+        'email_compare_candidates': email_compare_candidates or [],
+        'unconnected_marketing_providers': unconnected_marketing_providers(org),
+        'meta_ads_connected': meta_ads_connected,
         'event_customers_page': event_customers_page,
         'org_tags': event_org_tags,
         'weather_forecast': weather_forecast,
@@ -6652,12 +6689,12 @@ def event_detail(request, event_id):
         'has_finance_flow': has_finance_flow,
         'finance_flow_json': finance_flow_json,
         'meta_ads_expenses': meta_ads_expenses,
-        'show_ads_view': ads_insights['show'],
+        'show_ads_view': ads_insights['show'] or meta_ads_connected,
+        'ads_has_links': ads_insights['show'],
         'ads_has_data': ads_insights['has_data'],
         'ads_totals': ads_insights.get('totals'),
         'ads_campaigns': ads_insights.get('campaigns', []),
         'ads_daily_json': ads_insights.get('daily_json', '[]'),
-        'ads_campaigns_daily_json': ads_insights.get('campaigns_daily_json', '[]'),
         'ads_currency_prefix': ads_insights.get('currency_prefix', '$'),
         'ads_compare_candidates': ads_compare_candidates,
         'ads_default_compare_id': ads_default_compare_id,
