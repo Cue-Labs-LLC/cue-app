@@ -66,18 +66,61 @@
 }
 .ads-metric-btn:hover { color: var(--text-primary); }
 .ads-metric-btn.active { background: var(--accent); color: var(--text-inverse); }
-.ads-compare-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
-#adsCampaignCompare {
+/* Marketing channel Overview header (SMS / Email / Instagram / Ads): title + the
+   "Compare vs <earlier event>" toggle, above the channel's stat cards. */
+.mkt-overview-head {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 12px;
+}
+.mkt-compare-btn {
     background: none; border: none; padding: 0; cursor: pointer;
     font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
     color: var(--text-tertiary); display: inline-flex; align-items: center; gap: 4px;
     transition: color 0.12s;
 }
-#adsCampaignCompare:hover { color: var(--text-secondary); }
-#adsCampaignCompare.active { color: var(--accent); }
-.ads-stat-compare {
+.mkt-compare-btn:hover:not(:disabled) { color: var(--text-secondary); }
+.mkt-compare-btn.active { color: var(--accent); }
+.mkt-compare-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Event names + dates run longer than the Sales Trends labels; give the picker room. */
+.mkt-overview-head .pacing-compare-input { width: 300px; max-width: min(340px, 70vw); }
+.mkt-overview-head .pacing-combo-list { left: 0; right: auto; min-width: 300px; max-width: 420px; }
+.mkt-same-venue { color: var(--accent); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.mkt-stat-sub { font-size: 0.72rem; color: var(--text-tertiary); margin-top: 2px; }
+.ads-stat-compare, .mkt-stat-compare {
     font-size: 0.72rem; color: var(--text-tertiary); margin-top: 2px; letter-spacing: 0.01em;
 }
+/* Searchable comparison-event combobox, shared by Sales Trends and Marketing. */
+.pacing-combo { position: relative; }
+.pacing-compare-input {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary);
+    font-size: 12px; padding: 4px 26px 4px 8px; font-family: inherit;
+    width: 210px; max-width: 240px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='%237A7672' d='M0 0h10L5 7z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+}
+.pacing-compare-input:focus { outline: none; border-color: var(--accent); }
+.pacing-compare-input:disabled { opacity: 0.6; cursor: progress; }
+.pacing-combo-list {
+    position: absolute; z-index: 1000; top: calc(100% + 4px); right: 0;
+    min-width: 220px; max-width: 320px; max-height: 240px; overflow-y: auto;
+    margin: 0; padding: 4px; list-style: none;
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.pacing-combo-option {
+    padding: 6px 8px; font-size: 12px; color: var(--text-primary);
+    border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.pacing-combo-option.is-active { background: var(--accent-muted); color: var(--accent); }
+.pacing-combo-option.is-selected { font-weight: 600; }
+.pacing-combo-option[hidden] { display: none; }
+.pacing-combo-empty { padding: 6px 8px; font-size: 12px; color: var(--text-tertiary); }
+.pacing-compare-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+}
+
 .ads-stat-delta { font-weight: 600; margin-left: 4px; }
 .ads-stat-delta--good  { color: #22c55e; }
 .ads-stat-delta--bad   { color: #ef4444; }
@@ -1379,39 +1422,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <!-- Sales > Trends (formerly the Analytics tab) -->
 <div class="event-subsection" data-subview-section="analytics">
-<style>
-.pacing-combo { position: relative; }
-.pacing-compare-input {
-    background: var(--bg-inset); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--text-primary);
-    font-size: 12px; padding: 4px 26px 4px 8px; font-family: inherit;
-    width: 210px; max-width: 240px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='%237A7672' d='M0 0h10L5 7z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 8px center;
-}
-.pacing-compare-input:focus { outline: none; border-color: var(--accent); }
-.pacing-compare-input:disabled { opacity: 0.6; cursor: progress; }
-.pacing-combo-list {
-    position: absolute; z-index: 1000; top: calc(100% + 4px); right: 0;
-    min-width: 220px; max-width: 320px; max-height: 240px; overflow-y: auto;
-    margin: 0; padding: 4px; list-style: none;
-    background: var(--bg-surface); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
-}
-.pacing-combo-option {
-    padding: 6px 8px; font-size: 12px; color: var(--text-primary);
-    border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis;
-}
-.pacing-combo-option.is-active { background: var(--accent-muted); color: var(--accent); }
-.pacing-combo-option.is-selected { font-weight: 600; }
-.pacing-combo-option[hidden] { display: none; }
-.pacing-combo-empty { padding: 6px 8px; font-size: 12px; color: var(--text-tertiary); }
-.pacing-compare-label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-tertiary);
-}
-</style>
 {% if show_pacing_card %}
 <div class="card mb-4" id="pacingCard"
      data-pacing-url="{% url 'tickets:event_pacing_api' '00000000-0000-0000-0000-000000000000' %}"
@@ -1905,116 +1915,28 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 4: Marketing ===== -->
 <div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
-{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %}
+{% comment %}Channel views (each with an Overview + compare): SMS / Email / Instagram / Ads.
+Integrations only lists marketing integrations that aren't connected yet; connected
+ones live in their channel view.{% endcomment %}
+{% if org.sms_marketing_enabled and is_org_host or slicktext_connection or show_email_view or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %}
 <div class="marketing-subnav" role="tablist">
-    {% if org.sms_marketing_enabled and is_org_host %}<button type="button" class="marketing-subnav-btn active" data-marketing-view="native">SMS</button>{% endif %}
+    {% if org.sms_marketing_enabled and is_org_host or slicktext_connection %}<button type="button" class="marketing-subnav-btn" data-marketing-view="sms">SMS</button>{% endif %}
+    {% if show_email_view %}<button type="button" class="marketing-subnav-btn" data-marketing-view="email">Email</button>{% endif %}
     {% if is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}<button type="button" class="marketing-subnav-btn" data-marketing-view="instagram">Instagram</button>{% endif %}
     {% if show_ads_view %}<button type="button" class="marketing-subnav-btn" data-marketing-view="ads">Ads</button>{% endif %}
-    <button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Integrations</button>
+    {% if unconnected_marketing_providers %}<button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Integrations</button>{% endif %}
 </div>
 {% endif %}
-{% if org.sms_marketing_enabled and is_org_host %}
-<div class="marketing-section" data-marketing-section="native">
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Marketing SMS</h5>
-        <div class="d-flex gap-2">
-            {% if org.ai_sms_strategist_enabled %}
-            <a href="{% url 'tickets:sms_plan_create' %}?event={{ event.id }}" class="btn btn-sm btn-outline-primary">
-                <i class="bi bi-stars"></i> Plan with AI
-            </a>
-            {% endif %}
-            <a href="{% url 'tickets:sms_campaign_create' %}?event={{ event.id }}" class="btn btn-sm btn-primary">
-                <i class="bi bi-send"></i> Send SMS to attendees
-            </a>
-        </div>
-    </div>
-    <div class="card-body">
-        {% if native_sms_campaigns %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th>Send</th>
-                        <th>Status</th>
-                        <th class="text-end">Sent</th>
-                        <th class="text-end">Clicks</th>
-                        <th class="text-end">Unsubs</th>
-                        <th>When</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for c in native_sms_campaigns %}
-                    <tr class="sms-campaign-row" role="button" style="cursor: pointer;"
-                        data-bs-toggle="modal" data-bs-target="#smsCampaignModal"
-                        data-name="{{ c.name }}"
-                        data-status-key="{{ c.status }}"
-                        data-status-label="{{ c.get_status_display }}"
-                        data-body="{{ c.body }}"
-                        data-link-url="{{ c.link_url }}"
-                        data-audience="{{ c.audience_size }}"
-                        data-sent="{{ c.sent_count }}"
-                        data-delivered="{{ c.delivered_count }}"
-                        data-failed="{{ c.failed_count }}"
-                        data-unique-clicks="{{ c.unique_clicks }}"
-                        data-total-clicks="{{ c.total_clicks }}"
-                        data-unsubs="{{ c.unsub_count }}"
-                        data-when-label="{% if c.status == 'scheduled' %}Scheduled for{% elif c.sent_at %}Sent{% else %}Created{% endif %}"
-                        data-when="{% if c.status == 'scheduled' %}{{ c.scheduled_at|date:'M d, Y g:i A' }}{% elif c.sent_at %}{{ c.sent_at|date:'M d, Y' }}{% else %}{{ c.created_at|date:'M d, Y' }}{% endif %}"
-                        data-detail-url="{% url 'tickets:sms_campaign_detail' pk=c.id %}">
-                        <td class="fw-medium">{{ c.name }}</td>
-                        <td>{{ c.get_status_display }}</td>
-                        <td class="text-end">{{ c.sent_count }}</td>
-                        <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
-                        <td class="text-end">{{ c.unsub_count }}</td>
-                        <td class="text-body-secondary small">
-                            {% if c.status == 'scheduled' %}{{ c.scheduled_at|date:"M d, Y g:i A" }}
-                            {% elif c.sent_at %}{{ c.sent_at|date:"M d, Y" }}
-                            {% else %}{{ c.created_at|date:"M d, Y" }}{% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <p class="text-body-secondary mb-0">Text this event's ticket buyers directly. No native SMS sends yet.</p>
-        {% endif %}
-    </div>
-</div>
-
-<!-- SMS campaign detail modal (populated from the clicked row's data-* attributes) -->
-<div class="modal fade" id="smsCampaignModal" tabindex="-1" aria-labelledby="smsCampaignModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <div>
-                    <h5 class="modal-title" id="smsCampaignModalLabel">Send</h5>
-                    <div class="text-body-secondary small mt-1" id="smsCampaignModalWhen"></div>
-                </div>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row g-3 mb-3" id="smsCampaignModalStats"></div>
-                <div class="text-body-secondary small mb-1">Message</div>
-                <div class="card">
-                    <div class="card-body">
-                        <div id="smsCampaignModalBody" style="white-space: pre-wrap;"></div>
-                        <div class="mt-2 small text-body-secondary" id="smsCampaignModalLink" hidden>
-                            <i class="bi bi-link-45deg"></i> <span></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <a href="#" class="btn btn-outline-primary btn-sm" id="smsCampaignModalDetailLink">
-                    <i class="bi bi-box-arrow-up-right"></i> Open full send
-                </a>
-            </div>
-        </div>
-    </div>
-</div>
+{% if org.sms_marketing_enabled and is_org_host or slicktext_connection %}
+<div class="marketing-section" data-marketing-section="sms">
+{% include 'tickets/marketing/_channel_sms.html' %}
 </div><!-- /SMS view -->
+{% endif %}
+
+{% if show_email_view %}
+<div class="marketing-section" data-marketing-section="email" hidden>
+{% include 'tickets/marketing/_channel_email.html' %}
+</div><!-- /Email view -->
 {% endif %}
 
 {% if is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id %}
@@ -2026,6 +1948,40 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if show_ads_view %}
 <div class="marketing-section" data-marketing-section="ads" hidden>
 {% if ads_has_data %}
+{% comment %}Overview: totals across this event's linked campaigns. Compare overlays an
+earlier event's linked campaigns (event vs event) on the stat cards and the daily
+chart, aligned on days before each event.{% endcomment %}
+<div class="mkt-overview-head">
+    <h5 class="mb-0">Overview</h5>
+    {% if ads_compare_candidates %}
+    <button type="button" id="adsCampaignCompare" class="mkt-compare-btn" aria-pressed="false">
+        <i class="bi bi-layout-split"></i> Compare
+    </button>
+    <label class="d-flex align-items-center gap-2 mb-0" id="adsCompareComboWrap" hidden>
+        <span class="pacing-compare-label">vs</span>
+        <div class="pacing-combo" id="adsCompareCombo">
+            <input type="text" class="pacing-compare-input" id="adsCompareInput"
+                   role="combobox" aria-expanded="false" aria-controls="adsCompareList"
+                   aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                   placeholder="Search events&hellip;" aria-label="Comparison event"
+                   value="{% with c=ads_compare_candidates.0 %}{{ c.name }} · {{ c.start_date|date:'M j, Y' }}{% endwith %}">
+            <ul class="pacing-combo-list" id="adsCompareList" role="listbox" aria-label="Comparison event" hidden>
+                {% for c in ads_compare_candidates %}
+                <li class="pacing-combo-option{% if c.id == ads_default_compare_id %} is-selected{% endif %}"
+                    role="option" id="adsCompareOpt-{{ forloop.counter }}"
+                    data-id="{{ c.id }}"
+                    data-label="{{ c.name }} · {{ c.start_date|date:'M j, Y' }}">{{ c.name }} <span style="color:var(--text-tertiary);">&middot; {{ c.start_date|date:"M j, Y" }}</span>{% if c.is_same_venue %} <span class="mkt-same-venue">Same venue</span>{% endif %}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </label>
+    {% else %}
+    <button type="button" class="mkt-compare-btn" disabled
+            title="No earlier events with synced ads data to compare against yet">
+        <i class="bi bi-layout-split"></i> Compare
+    </button>
+    {% endif %}
+</div>
 <div class="stats-grid mb-4">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Spend</div>
@@ -2084,29 +2040,6 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <div class="d-flex align-items-center gap-2 flex-wrap">
             <h5 class="mb-0" id="adsChartTitle">Daily spend</h5>
-            <button type="button" id="adsCampaignCompare" aria-pressed="false">
-                <i class="bi bi-layout-split"></i> Compare
-            </button>
-            {% if ads_compare_candidates %}
-            <label class="d-flex align-items-center gap-2 mb-0" id="adsCompareComboWrap" hidden>
-                <span class="pacing-compare-label">vs</span>
-                <div class="pacing-combo" id="adsCompareCombo">
-                    <input type="text" class="pacing-compare-input" id="adsCompareInput"
-                           role="combobox" aria-expanded="false" aria-controls="adsCompareList"
-                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                           placeholder="Search campaigns&hellip;" aria-label="Comparison campaign"
-                           value="{% if ads_default_compare_id %}{% for c in ads_compare_candidates %}{% if c.campaign_id == ads_default_compare_id %}{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}{% endif %}{% endfor %}{% endif %}">
-                    <ul class="pacing-combo-list" id="adsCompareList" role="listbox" aria-label="Comparison campaign" hidden>
-                        {% for c in ads_compare_candidates %}
-                        <li class="pacing-combo-option{% if c.campaign_id == ads_default_compare_id %} is-selected{% endif %}"
-                            role="option" id="adsCompareOpt-{{ forloop.counter }}"
-                            data-id="{{ c.campaign_id }}"
-                            data-label="{{ c.name }}{% if c.event_name %} · {{ c.event_name }}{% endif %}">{{ c.name }}{% if c.event_name %} <span style="color:var(--text-tertiary);">&middot; {{ c.event_name }}</span>{% endif %}{% if c.is_same_venue %} <span style="color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Same venue</span>{% endif %}</li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </label>
-            {% endif %}
         </div>
         {% comment %}Conversion-based views only appear when Meta has conversion (pixel) data.{% endcomment %}
         <div class="ads-metric-toggles" role="group" aria-label="Daily chart metric">
@@ -2151,7 +2084,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <tbody>
                     {% for c in ads_campaigns %}
                     <tr data-campaign-id="{{ c.campaign_id }}">
-                        <td class="fw-medium d-flex align-items-center gap-1"><span class="ads-compare-dot" style="display:none;"></span>{{ c.name }}</td>
+                        <td class="fw-medium">{{ c.name }}</td>
                         <td class="text-end">{{ ads_currency_prefix }}{{ c.spend|currency }}</td>
                         <td class="text-end">{{ c.impressions|intcomma }}</td>
                         <td class="text-end">{{ c.link_clicks|intcomma }}</td>
@@ -2168,41 +2101,40 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
     </div>
 </div>
-{% else %}
-<div class="empty-state" style="padding: 28px 24px;">
+{% elif ads_has_links %}
+<div class="mkt-overview-head"><h5 class="mb-0">Overview</h5></div>
+<div class="empty-state mb-4" style="padding: 28px 24px;">
     <i class="bi bi-graph-up" style="font-size: 16px;"></i>
     <p class="mb-2">No synced data yet for the linked campaigns.</p>
     <p class="text-body-secondary small mb-0">Metrics will appear once the nightly sync has run.</p>
 </div>
+{% else %}
+<div class="mkt-overview-head"><h5 class="mb-0">Overview</h5></div>
+<div class="empty-state mb-4" style="padding: 28px 24px;">
+    <i class="bi bi-megaphone" style="font-size: 16px;"></i>
+    <p class="mb-2">No Meta Ads campaigns linked to this event yet.</p>
+    <p class="text-body-secondary small mb-0">Link a campaign below to see spend, reach, and results here.</p>
+</div>
+{% endif %}
+{% if meta_ads_connected %}
+{% include 'tickets/marketing/_provider_meta_ads.html' %}
 {% endif %}
 </div><!-- /Ads view -->
 <script type="application/json" id="ads-daily-data" data-currency-prefix="{{ ads_currency_prefix }}">{{ ads_daily_json|safe }}</script>
-<script type="application/json" id="ads-campaigns-daily-data">{{ ads_campaigns_daily_json|safe }}</script>
 {% endif %}
 
-<div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %} hidden{% endif %}>
-    <h5 class="mb-3">Integrations</h5>
-    {% regroup marketing_providers by category as provider_groups %}
-    {% for group in provider_groups %}
-    <div class="marketing-category-title">{{ group.grouper }}</div>
-    {% for provider in group.list %}
-    {% include provider.marketing_card %}
-    {% endfor %}
-    {% endfor %}
-    {% if marketing_providers %}
-    <p class="text-body-secondary small mt-2 mb-0">
-        <a href="{% url 'tickets:integrations_overview' %}">Manage integrations</a>
-    </p>
-    {% else %}
-    <div class="empty-state" style="padding: 28px 24px;">
-        <i class="bi bi-plug" style="font-size: 16px;"></i>
-        <p class="mb-2">No marketing integrations connected yet.</p>
-        <a href="{% url 'tickets:integrations_overview' %}" class="btn btn-sm btn-outline-secondary" style="padding: 3px 9px; font-size: 9.5px; letter-spacing: 0.04em;">
-            Connect in Integrations
-        </a>
-    </div>
-    {% endif %}
+{% if org.sms_marketing_enabled and is_org_host or slicktext_connection or show_email_view or is_org_admin and instagram_feature_enabled and org.instagram_page_access_token and org.instagram_business_account_id or show_ads_view %}
+{% if unconnected_marketing_providers %}
+<div class="marketing-section" data-marketing-section="linked" hidden>
+{% include 'tickets/marketing/_channel_integrations.html' %}
 </div><!-- /Integrations view -->
+{% endif %}
+{% else %}
+{% comment %}No channel views apply: Integrations renders alone, without the sub-nav.{% endcomment %}
+<div class="marketing-section" data-marketing-section="linked">
+{% include 'tickets/marketing/_channel_integrations.html' %}
+</div><!-- /Integrations view -->
+{% endif %}
 
 </div><!-- /tab-marketing -->
 
@@ -3544,10 +3476,12 @@ if (document.readyState === 'loading') {
     });
 })();
 </script>
+{% include 'tickets/marketing/_channel_compare_js.html' %}
 <script>
-// Marketing tab sub-views: SMS / Instagram / Integrations (whichever apply). Hidden
-// sections stay in the DOM so the SlickText/Meta refresh + confirm handlers keep
-// working. ?mview=<view> opens a specific one (e.g. links from Instagram Content);
+// Marketing tab sub-views: SMS / Email / Instagram / Ads / Integrations (whichever
+// apply). Each channel view opens with an Overview + compare; Integrations only lists
+// unconnected providers. Hidden sections stay in the DOM so the SlickText/Mailchimp/
+// Meta refresh + confirm handlers keep working. ?mview=<view> opens a specific one (e.g. links from Instagram Content);
 // a 'marketing:view' event lets lazy sections (Instagram) load on first reveal.
 (function() {
     var nav = document.querySelector('.marketing-subnav');
@@ -3572,6 +3506,7 @@ if (document.readyState === 'loading') {
         btn.addEventListener('click', function() { show(btn.getAttribute('data-marketing-view'), true); });
     });
     var wanted = new URLSearchParams(window.location.search).get('mview');
+    if (wanted === 'native') wanted = 'sms';  // pre-rework name for the SMS view
     var initial = buttons.filter(function(b) { return b.getAttribute('data-marketing-view') === wanted; })[0] || buttons[0];
     if (initial) show(initial.getAttribute('data-marketing-view'), false);
 })();
@@ -3590,6 +3525,7 @@ if (document.readyState === 'loading') {
 
     var card = document.getElementById('adsDailyCard');
     var compareUrl = card ? card.getAttribute('data-compare-url') : null;
+    // Compare = this event's linked campaigns vs an earlier event's (event vs event).
 
     function money(v) { return prefix + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function count(v) { return Math.round(v).toLocaleString(); }
@@ -3708,19 +3644,27 @@ if (document.readyState === 'loading') {
         };
     }
 
-    // Build a 2-series config: current event (solid accent) vs comparison (dashed info).
+    // Label for a days-before-event offset on the compare axis.
+    function offsetLabel(n) {
+        if (n === 0) return 'Event day';
+        return n > 0 ? n + 'd before' : (-n) + 'd after';
+    }
+
+    // Build a 2-series config: current event (solid accent) vs an earlier event
+    // (dashed). Two events' calendar dates never overlap, so both series are keyed
+    // by days before their own event and the axis runs from furthest out to after.
     function compareChartData() {
-        var dateSet = {};
-        days.forEach(function (d) { dateSet[d.date] = true; });
+        var offsetSet = {};
+        days.forEach(function (d) { offsetSet[d.days_before] = true; });
         if (compareData && compareData.days) {
-            compareData.days.forEach(function (d) { dateSet[d.date] = true; });
+            compareData.days.forEach(function (d) { offsetSet[d.days_before] = true; });
         }
-        var sortedDates = Object.keys(dateSet).sort();
+        var offsets = Object.keys(offsetSet).map(Number).sort(function (a, b) { return b - a; });
         var currentMap = {};
-        days.forEach(function (d) { currentMap[d.date] = d; });
+        days.forEach(function (d) { currentMap[d.days_before] = d; });
         var datasets = [{
             label: '{{ event.name|escapejs }}',
-            data: sortedDates.map(function (dt) { return currentMap[dt] ? METRICS[current].get(currentMap[dt]) : null; }),
+            data: offsets.map(function (o) { return currentMap[o] ? METRICS[current].get(currentMap[o]) : null; }),
             borderColor: '#6366f1',
             backgroundColor: 'rgba(99,102,241,0.08)',
             borderWidth: 2,
@@ -3731,10 +3675,10 @@ if (document.readyState === 'loading') {
         }];
         if (compareData && compareData.days) {
             var cmpMap = {};
-            compareData.days.forEach(function (d) { cmpMap[d.date] = d; });
+            compareData.days.forEach(function (d) { cmpMap[d.days_before] = d; });
             datasets.push({
                 label: compareData.name || 'Comparison',
-                data: sortedDates.map(function (dt) { return cmpMap[dt] ? METRICS[current].get(cmpMap[dt]) : null; }),
+                data: offsets.map(function (o) { return cmpMap[o] ? METRICS[current].get(cmpMap[o]) : null; }),
                 borderColor: '#7B8FBF',
                 backgroundColor: 'rgba(123,143,191,0.05)',
                 borderWidth: 2,
@@ -3745,7 +3689,7 @@ if (document.readyState === 'loading') {
                 pointHoverRadius: 4,
             });
         }
-        return { labels: sortedDates, datasets: datasets };
+        return { labels: offsets.map(offsetLabel), datasets: datasets };
     }
 
     function buildChart() {
@@ -3830,10 +3774,10 @@ if (document.readyState === 'loading') {
         chart.update();
     }
 
-    function loadComparison(campaignId, onDone) {
-        if (!campaignId || !compareUrl) return;
+    function loadComparison(eventId, onDone) {
+        if (!eventId || !compareUrl) return;
         if (compareInput) compareInput.disabled = true;
-        fetch(compareUrl + '?campaign_id=' + encodeURIComponent(campaignId), {
+        fetch(compareUrl + '?compare_event=' + encodeURIComponent(eventId), {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
@@ -3906,7 +3850,7 @@ if (document.readyState === 'loading') {
             if (emptyEl) return;
             emptyEl = document.createElement('li');
             emptyEl.className = 'pacing-combo-empty';
-            emptyEl.textContent = 'No matching campaigns';
+            emptyEl.textContent = 'No matching events';
             list.appendChild(emptyEl);
         }
         function filter(q) {

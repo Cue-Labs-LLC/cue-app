@@ -19,7 +19,10 @@ def _gcal_connected(org):
 # connection page; `is_connected` takes an Organization and returns a bool.
 # `marketing_card`, when present, is the partial that renders this provider's
 # card on the event detail Marketing tab (providers without it don't appear
-# there). List order defines the category order shown to users.
+# there). `marketing_channel` names the Marketing tab channel view (SMS / Email /
+# Instagram / Ads) that serves a connected provider; unconnected ones are offered
+# on the Marketing -> Integrations view instead. List order defines the category
+# order shown to users.
 INTEGRATIONS = [
     {
         'key': 'meta_ads',
@@ -31,6 +34,7 @@ INTEGRATIONS = [
         'is_connected': lambda org: bool(org.meta_ads_access_token and org.meta_ads_account_id),
         'superuser_only': False,
         'marketing_card': 'tickets/marketing/_provider_meta_ads.html',
+        'marketing_channel': 'ads',
     },
     {
         'key': 'mailchimp',
@@ -42,6 +46,7 @@ INTEGRATIONS = [
         'is_connected': lambda org: bool(org.mailchimp_access_token and org.mailchimp_dc),
         'superuser_only': False,
         'marketing_card': 'tickets/marketing/_provider_mailchimp.html',
+        'marketing_channel': 'email',
     },
     {
         'key': 'slicktext',
@@ -53,6 +58,7 @@ INTEGRATIONS = [
         'is_connected': lambda org: bool(org.slicktext_api_key and org.slicktext_brand_id),
         'superuser_only': False,
         'marketing_card': 'tickets/marketing/_provider_slicktext.html',
+        'marketing_channel': 'sms',
     },
     {
         'key': 'typeform',
@@ -87,6 +93,7 @@ INTEGRATIONS = [
         'superuser_only': False,
         # Rollout gate: hide the card entirely until the org opts into the feature.
         'feature_enabled': lambda org: bool(org.instagram_feature_enabled),
+        'marketing_channel': 'instagram',
     },
     {
         'key': 'webhooks',
@@ -130,4 +137,20 @@ def marketing_providers(org):
         for entry in INTEGRATIONS
         if entry.get('marketing_card') and entry['is_connected'](org)
         and (entry.get('feature_enabled') is None or entry['feature_enabled'](org))
+    ]
+
+
+def unconnected_marketing_providers(org):
+    """Marketing-channel integrations this org has not connected yet.
+
+    Connected providers are served by their channel view on the event Marketing
+    tab (SMS / Email / Instagram / Ads), so the Marketing -> Integrations view only
+    offers the ones still to connect. Rollout-gated entries are omitted.
+    """
+    return [
+        {**entry, 'connected': False}
+        for entry in INTEGRATIONS
+        if entry.get('marketing_channel')
+        and (entry.get('feature_enabled') is None or entry['feature_enabled'](org))
+        and not entry['is_connected'](org)
     ]

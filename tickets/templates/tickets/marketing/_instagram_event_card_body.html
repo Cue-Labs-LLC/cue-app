@@ -15,42 +15,7 @@ Buttons carrying data-ig-action are wired by _provider_instagram.html.
 {% else %}
 
 {% if data.posts %}
-{% with t=data.totals %}
-<div class="igev-stats">
-    <div class="igev-stat">
-        <div class="igev-stat-label">Posts</div>
-        <div class="igev-stat-value">{{ t.posts }}</div>
-        <div class="igev-stat-sub">{% for label, n in t.formats %}{{ n }} {{ label|lower }}{% if not forloop.last %} &middot; {% endif %}{% endfor %}</div>
-    </div>
-    <div class="igev-stat">
-        <div class="igev-stat-label">Total reach</div>
-        <div class="igev-stat-value">{{ t.reach|intcomma_or_dash }}</div>
-        <div class="igev-stat-sub" title="Reach is added up per post, so someone who saw two posts counts twice">{% if t.views is not None %}{{ t.views|intcomma }} views{% else %}Summed per post{% endif %}</div>
-    </div>
-    <div class="igev-stat">
-        <div class="igev-stat-label">Engagement rate</div>
-        <div class="igev-stat-value">{% if t.engagement_rate is None %}&mdash;{% else %}{{ t.engagement_rate }}%{% endif %}</div>
-        <div class="igev-stat-sub">{{ t.interactions|intcomma_or_dash }} interactions</div>
-    </div>
-    <div class="igev-stat">
-        <div class="igev-stat-label">Shares &amp; saves</div>
-        <div class="igev-stat-value">{{ t.shares_saves|intcomma_or_dash }}</div>
-        <div class="igev-stat-sub">{{ t.shares|intcomma_or_dash }} shares &middot; {{ t.saves|intcomma_or_dash }} saves</div>
-    </div>
-    <div class="igev-stat">
-        <div class="igev-stat-label">vs typical post</div>
-        <div class="igev-stat-value">{% if t.median_reach_index is None %}&mdash;{% elif t.median_reach_index < 0.1 %}&lt;0.1x{% else %}{{ t.median_reach_index }}x{% endif %}</div>
-        <div class="igev-stat-sub" title="Median of the linked posts' reach compared with your typical post over the last 12 months">Median linked post</div>
-    </div>
-    {% if t.has_feed_posts %}
-    <div class="igev-stat">
-        <div class="igev-stat-label">Follows</div>
-        <div class="igev-stat-value">{{ t.follows|intcomma_or_dash }}</div>
-        <div class="igev-stat-sub">{{ t.profile_visits|intcomma_or_dash }} profile visits &middot; photos &amp; carousels</div>
-    </div>
-    {% endif %}
-</div>
-{% endwith %}
+{% include 'tickets/marketing/_channel_overview.html' with channel='instagram' channel_label='Instagram' overview=ig_overview candidates=ig_compare_candidates %}
 
 <div class="table-responsive">
     <table class="table table-hover mb-0 igev-table">

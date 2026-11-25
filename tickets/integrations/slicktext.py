@@ -138,11 +138,11 @@ def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg}, status=400)
         messages.error(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='sms')
     if not update_fields:
         if ajax:
             return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='sms')
     sms_campaign.updated_by = request.user
     update_fields += ['updated_by', 'updated_at']
     sms_campaign.save(update_fields=update_fields)
@@ -150,7 +150,7 @@ def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
     if ajax:
         return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
     messages.success(request, f'Updated metrics for "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='sms')
 
 
 @login_required
@@ -359,7 +359,7 @@ def event_slicktext_apply(request, event_id):
     if not succeeded and not failed_ids:
         messages.error(request, 'No SlickText broadcasts were applied.')
 
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='sms')
 
 
 @login_required
@@ -442,12 +442,12 @@ def event_slicktext_refresh(request, event_id, sms_campaign_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg}, status=502)
         messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='sms')
 
     if ajax:
         return JsonResponse({'ok': True, 'row': _serialize_sms_row(refreshed)})
     messages.success(request, f'SlickText broadcast "{refreshed.name}" refreshed.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='sms')
 
 
 @login_required
@@ -466,4 +466,4 @@ def event_slicktext_remove(request, event_id, sms_campaign_id):
     if _wants_marketing_json(request):
         return JsonResponse({'ok': True, 'removed_id': str(sms_campaign.id)})
     messages.success(request, 'SlickText broadcast removed from this event.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='sms')

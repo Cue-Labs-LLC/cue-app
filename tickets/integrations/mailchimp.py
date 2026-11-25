@@ -395,7 +395,7 @@ def event_mailchimp_apply(request, event_id):
     if not succeeded and not unknown_ids and not failed_ids:
         messages.error(request, 'No Mailchimp campaigns were applied.')
 
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='email')
 
 
 @login_required
@@ -485,12 +485,12 @@ def event_mailchimp_refresh(request, event_id, email_campaign_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg}, status=502)
         messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='email')
 
     if ajax:
         return JsonResponse({'ok': True, 'row': _serialize_email_row(refreshed)})
     messages.success(request, f'Mailchimp campaign "{refreshed.campaign_title}" refreshed.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='email')
 
 
 @login_required
@@ -509,7 +509,7 @@ def event_mailchimp_remove(request, event_id, email_campaign_id):
     if _wants_marketing_json(request):
         return JsonResponse({'ok': True, 'removed_id': str(email_campaign.id)})
     messages.success(request, 'Mailchimp campaign removed from this event.')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='email')
 
 
 @login_required
@@ -540,11 +540,11 @@ def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
         if ajax:
             return JsonResponse({'ok': False, 'error': msg}, status=400)
         messages.error(request, msg)
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='email')
     if not update_fields:
         if ajax:
             return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-        return _marketing_tab_redirect(event)
+        return _marketing_tab_redirect(event, view='email')
     email_campaign.updated_by = request.user
     update_fields += ['updated_by', 'updated_at']
     email_campaign.save(update_fields=update_fields)
@@ -552,4 +552,4 @@ def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
     if ajax:
         return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
     messages.success(request, f'Updated metrics for "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
+    return _marketing_tab_redirect(event, view='email')
