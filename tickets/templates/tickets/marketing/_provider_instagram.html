@@ -39,16 +39,44 @@ document.addEventListener('DOMContentLoaded', function () {
     var tabBtn = document.getElementById('tab-marketing-btn');
     if (!card || !body) return;
     var loaded = false;
+    var CACHE_KEY = 'igcard_' + card.dataset.cardUrl;
+    var CACHE_TTL = 5 * 60 * 1000;
 
-    function load() {
+    function getCached() {
+        try {
+            var raw = sessionStorage.getItem(CACHE_KEY);
+            if (!raw) return null;
+            var entry = JSON.parse(raw);
+            return (Date.now() - entry.ts < CACHE_TTL) ? entry.html : null;
+        } catch (e) { return null; }
+    }
+
+    function setCached(html) {
+        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ html: html, ts: Date.now() })); } catch (e) {}
+    }
+
+    function clearCached() {
+        try { sessionStorage.removeItem(CACHE_KEY); } catch (e) {}
+    }
+
+    function applyHtml(html) {
+        body.innerHTML = html;
+        if (window.initChannelCompare) {
+            window.initChannelCompare(body.querySelector('[data-channel-overview]'));
+        }
+    }
+
+    function load(forceRefresh) {
         loaded = true;
+        if (!forceRefresh) {
+            var cached = getCached();
+            if (cached) { applyHtml(cached); return; }
+        }
         return fetch(card.dataset.cardUrl, { credentials: 'same-origin' })
             .then(function (r) { return r.text().then(function (html) { return { ok: r.ok, html: html }; }); })
             .then(function (res) {
-                body.innerHTML = res.ok ? res.html : '<p class="text-danger mb-0">Couldn\'t load Instagram posts. Reload to try again.</p>';
-                if (res.ok && window.initChannelCompare) {
-                    window.initChannelCompare(body.querySelector('[data-channel-overview]'));
-                }
+                if (res.ok) { setCached(res.html); applyHtml(res.html); }
+                else body.innerHTML = '<p class="text-danger mb-0">Couldn\'t load Instagram posts. Reload to try again.</p>';
             })
             .catch(function () { body.innerHTML = '<p class="text-danger mb-0">Couldn\'t load Instagram posts. Reload to try again.</p>'; });
     }
@@ -79,7 +107,8 @@ document.addEventListener('DOMContentLoaded', function () {
         }).then(function (r) { return r.json(); })
           .then(function (res) {
               if (!res.ok) { btn.disabled = false; alert(res.error || 'Could not save. Try again.'); return; }
-              load();
+              clearCached();
+              load(true);
           })
           .catch(function () { btn.disabled = false; alert('Could not save. Try again.'); });
     });
